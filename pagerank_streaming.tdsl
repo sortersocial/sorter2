@@ -1,0 +1,11 @@
+eventually i want to have ranking histories.
+like "visionary" and "fraud" waxing and waning in a uplot graph over time for #elon-musk. 
+there are too many query combinations to precomupte the ranking histories 
+(arbitrary user filters, and tag overlap combinations maybe), 
+so we're just going to have to calculate them all on demand. 
+computers are fast, its okay. for each vote, we need to calculate rank centrality again. 
+i was thinking, for n votes we calculate the rank centrality, 
+and get node weights. we then output that data to the client (over websocket, or testable barrier). 
+then we calculate n+1 votes, _but we keep the node weights in memory_ 
+so the rank centrality process converges faster. 
+this also has the side effect of making the ranking stream in satisfyingly as you load the page.

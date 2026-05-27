@@ -1,0 +1,32 @@
+The parser is a series of edges/transitions, for example:
+r -> reddit.com/ 
+where -> means that all of
+  r->reddit.com/
+  re->reddit.com/
+  red->reddit.com/
+  redd->reddit.com/
+  reddi->reddit.com/
+  reddit->reddit.com/
+  reddit.->reddit.com/
+  reddit.c->reddit.com/
+  reddit.co->reddit.com/
+  reddit.com->reddt.com/
+  are defined as autocomplete suggestions
+
+re -> reddit.com/
+reddit.com/ -> {show infographic explaining that u (sort user posts) and r (sort subreddit posts)} -> reddit.com/r/
+reddit.com/r/ -> reddit.com/r/{randomly chose sub from list}
+reddit.com/r/{sub} -> {show subrdedit view} -> reddit.com/r/{sub}/
+reddit.com/r/{sub}/ -> {show infographic or something} -> reddit.com/r/{sub}/comments/{randomly chose comment from sql}
+
+
+h->https:// (show supported domains)
+
+// the edges are composable such that this is possible, while reusing the above reddit code.
+https://r->https://reddit.com/
+https://w->https://www.
+https://www.r->https://www.reddit.com/
+
+
+// and i also want to have commands after you press space, like
+reddit.com/r/programming !vote(reddit.comment{t3_123, t4_4444})%                                                                                                                                                
