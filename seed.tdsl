@@ -19,3 +19,5 @@ use websocket based bar i had built in afterlife...
 claude {{
 What I'd push on hardest: what's the artifact that gets shared? Letterboxd works because every movie has a beautiful URL, every user has a beautiful profile, every list is screenshot-worthy. AITA-but-ranked needs the same. "This person ranks 97th percentile of asshole, beating 4,891 other Reddit posters this month" — presented well, that's a tweet, that's a screenshot, that's how the next thousand users find you. Build the share artifact early. Streaks and progressive revelation are for retention; the share-out is for acquisition; you need both but the acquisition piece is what makes streaks worth designing.
 }}
+
+have index be sorted by viewcount.
