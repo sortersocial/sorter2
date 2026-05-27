@@ -14,6 +14,13 @@ pub const UI_RPC_FIELD: &str = "__rpc__";
 pub enum HtmlUiAction {
     /// Demo: morph `#demo-counter-panel` after bumping the persisted counter.
     BumpDemoCounter,
+    /// Record a pairwise vote and morph `#ranking-panel`.
+    RecordVote {
+        a: String,
+        b: String,
+        ratio_left: i32,
+        ratio_right: i32,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -51,5 +58,32 @@ mod tests {
         );
         let a = parse_html_ui_from_form(&form).unwrap();
         assert_eq!(a, HtmlUiAction::BumpDemoCounter);
+    }
+
+    #[test]
+    fn record_vote_round_trip_with_form_holes() {
+        let template = serde_json::json!({
+            "action": "record_vote",
+            "a": {"$form": "item_a"},
+            "b": {"$form": "item_b"},
+            "ratio_left": 2,
+            "ratio_right": 1
+        });
+        let mut form = HashMap::new();
+        form.insert(
+            UI_RPC_FIELD.to_string(),
+            serde_json::to_string(&template).unwrap(),
+        );
+        form.insert("item_a".into(), "alpha".into());
+        form.insert("item_b".into(), "beta".into());
+        assert_eq!(
+            parse_html_ui_from_form(&form).unwrap(),
+            HtmlUiAction::RecordVote {
+                a: "alpha".into(),
+                b: "beta".into(),
+                ratio_left: 2,
+                ratio_right: 1,
+            }
+        );
     }
 }

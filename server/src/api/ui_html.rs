@@ -6,7 +6,7 @@ use axum::{
 use std::collections::HashMap;
 
 use crate::{
-    html::{demo_counter_panel, JsBuilder},
+    html::{demo_counter_panel, ranking_panel, JsBuilder},
     state::AppState,
     ui_action::{parse_html_ui_from_form, HtmlUiAction},
 };
@@ -40,6 +40,24 @@ pub async fn post_ui_html(
                 .morph_selector("#demo-counter-panel", panel)
                 .into_response()
         }
+        HtmlUiAction::RecordVote {
+            a,
+            b,
+            ratio_left,
+            ratio_right,
+        } => {
+            if let Err(e) = state
+                .record_vote(&a, &b, ratio_left, ratio_right)
+                .await
+            {
+                return ui_js_warn(&e).into_response();
+            }
+            let mut group = state.group.write().await;
+            let panel = ranking_panel(&mut group);
+            JsBuilder::new()
+                .morph_selector("#ranking-panel", panel)
+                .into_response()
+        }
     }
 }
 
@@ -66,6 +84,31 @@ mod tests {
         assert_eq!(
             parse_html_ui_from_form(&form).unwrap(),
             HtmlUiAction::BumpDemoCounter
+        );
+    }
+
+    #[test]
+    fn record_vote_action_deserializes() {
+        let template = serde_json::json!({
+            "action": "record_vote",
+            "a": "x",
+            "b": "y",
+            "ratio_left": 3,
+            "ratio_right": 1
+        });
+        let mut form = HashMap::new();
+        form.insert(
+            UI_RPC_FIELD.to_string(),
+            serde_json::to_string(&template).unwrap(),
+        );
+        assert_eq!(
+            parse_html_ui_from_form(&form).unwrap(),
+            HtmlUiAction::RecordVote {
+                a: "x".into(),
+                b: "y".into(),
+                ratio_left: 3,
+                ratio_right: 1,
+            }
         );
     }
 }

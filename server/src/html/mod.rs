@@ -11,6 +11,8 @@ use serde::Deserialize;
 
 use crate::{
     form_template::template_json_compact,
+    ranking::ranked_items,
+    reducer::GroupState,
     state::AppState,
     ui_action::UI_RPC_FIELD,
 };
@@ -188,6 +190,67 @@ fn layout(title: &str, body: Markup, views: u64, theme: &str, theme_next: &str) 
     }
 }
 
+pub fn ranking_panel(group: &mut GroupState) -> Markup {
+    const MAX_ITERS: usize = 10_000;
+    const TOL: f64 = 1e-8;
+    let items = ranked_items(group, MAX_ITERS, TOL);
+    html! {
+        section id="ranking-panel" class="demo-panel" {
+            h2 { "Ranking" }
+            @if items.is_empty() {
+                p class="muted" { "No votes yet — compare two items below." }
+            } @else {
+                ol class="rank-list" {
+                    @for (i, r) in items.iter().enumerate() {
+                        li {
+                            span class="rank-num" { (i + 1) ". " }
+                            strong { (r.item.as_str()) }
+                            span class="muted" {
+                                " — "
+                                ({ format!("{:.1}%", r.score * 100.0) })
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn vote_panel() -> Markup {
+    let rpc = template_json_compact(&serde_json::json!({
+        "action": "record_vote",
+        "a": {"$form": "item_a"},
+        "b": {"$form": "item_b"},
+        "ratio_left": 2,
+        "ratio_right": 1
+    }))
+    .expect("vote rpc json");
+    html! {
+        section id="vote-panel" class="demo-panel" {
+            h2 { "Compare" }
+            p class="muted small" {
+                "Left item wins at 2:1. Votes append to the JSONL log and update rank centrality."
+            }
+            form method="post" action="/ui" id="vote-form" {
+                input type="hidden" name=(UI_RPC_FIELD) value=(rpc);
+                div class="vote-fields" {
+                    label {
+                        "Left (wins) "
+                        input type="text" name="item_a" required placeholder="alpha" autocomplete="off";
+                    }
+                    label {
+                        "Right "
+                        input type="text" name="item_b" required placeholder="beta" autocomplete="off";
+                    }
+                }
+                button type="submit" class="btn-primary" { "Vote" }
+            }
+        }
+    }
+}
+
+
 pub fn demo_counter_panel(count: u64, event_log_path: &str) -> Markup {
     let rpc = template_json_compact(&serde_json::json!({ "action": "bump_demo_counter" }))
         .expect("rpc json");
@@ -195,8 +258,7 @@ pub fn demo_counter_panel(count: u64, event_log_path: &str) -> Markup {
         section id="demo-counter-panel" class="demo-panel" {
             h1 { "sorter2" }
             p class="muted" {
-                "Pairwise ranking over Reddit — seed scaffold. "
-                "Click bumps a counter persisted to the JSONL event log."
+                "Pairwise ranking scaffold — votes persist to JSONL and replay on boot."
             }
             p class="demo-count" {
                 strong { "Counter: " }
@@ -229,6 +291,11 @@ pub async fn home(
     let count = *state.demo_counter.read().await;
     let theme = theme_from_jar(&jar);
     let theme_next = theme_next_from_uri(&uri);
-    let body = demo_counter_panel(count, state.event_log.path().to_string_lossy().as_ref());
+    let mut group = state.group.write().await;
+    let body = html! {
+        (vote_panel())
+        (ranking_panel(&mut group))
+        (demo_counter_panel(count, state.event_log.path().to_string_lossy().as_ref()))
+    };
     layout("sorter2", body, views, theme, &theme_next)
 }

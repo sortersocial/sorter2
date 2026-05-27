@@ -2,7 +2,12 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::{event_log::EventLog, events::Event, views::ViewStore};
+use crate::{
+    event_log::EventLog,
+    events::Event,
+    reducer::{GroupState, VoteData},
+    views::ViewStore,
+};
 
 #[derive(Clone)]
 pub struct AppConfig {
@@ -34,6 +39,7 @@ pub struct AppState {
     pub event_log: Arc<EventLog>,
     pub views: ViewStore,
     pub demo_counter: Arc<RwLock<u64>>,
+    pub group: Arc<RwLock<GroupState>>,
 }
 
 impl AppState {
@@ -43,10 +49,27 @@ impl AppState {
         let views = ViewStore::new(&views_path);
 
         let mut demo_counter: u64 = 0;
+        let mut group = GroupState::new();
         if let Ok((events, _)) = event_log.load_all().await {
             for ev in events {
-                if let Event::DemoCounterBumped { value, .. } = ev {
-                    demo_counter = demo_counter.max(value);
+                match ev {
+                    Event::DemoCounterBumped { value, .. } => {
+                        demo_counter = demo_counter.max(value);
+                    }
+                    Event::VoteRecorded {
+                        ts,
+                        a,
+                        b,
+                        ratio_left,
+                        ratio_right,
+                    } => {
+                        if let Some(vote) =
+                            VoteData::from_recorded(ts, &a, &b, ratio_left, ratio_right)
+                        {
+                            group.apply_vote(vote);
+                        }
+                    }
+                    Event::ViewRecorded { .. } => {}
                 }
             }
         }
@@ -56,6 +79,7 @@ impl AppState {
             event_log,
             views,
             demo_counter: Arc::new(RwLock::new(demo_counter)),
+            group: Arc::new(RwLock::new(group)),
         }
     }
 
@@ -72,5 +96,36 @@ impl AppState {
             .await;
 
         value
+    }
+
+    pub async fn record_vote(
+        &self,
+        a: &str,
+        b: &str,
+        ratio_left: i32,
+        ratio_right: i32,
+    ) -> Result<(), String> {
+        let ts = crate::html::now_ms();
+        let vote = VoteData::from_recorded(ts, a, b, ratio_left, ratio_right)
+            .ok_or_else(|| "invalid vote: need two distinct non-empty items".to_string())?;
+
+        {
+            let mut group = self.group.write().await;
+            group.apply_vote(vote.clone());
+        }
+
+        let _ = self
+            .event_log
+            .append(&Event::VoteRecorded {
+                ts,
+                a: vote.a.as_str().to_string(),
+                b: vote.b.as_str().to_string(),
+                ratio_left: vote.ratio_left,
+                ratio_right: vote.ratio_right,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
     }
 }
