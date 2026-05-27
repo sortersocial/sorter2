@@ -1,0 +1,7 @@
+target/
+.git/
+.cpcache/
+.clj-kondo/
+legacy/
+*.tdsl
+test/

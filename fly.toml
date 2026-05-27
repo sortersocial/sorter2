@@ -1,13 +1,17 @@
-app = "slugsocial"
+app = "sorter2"
 primary_region = "iad"
 
 [build]
   dockerfile = "Dockerfile"
 
 [env]
-  SLUG_DATA_DIR = "/data"
-  SLUG_EVENT_LOG = "/data/events.jsonl"
+  SORTER2_DATA_DIR = "/data"
+  SORTER2_EVENT_LOG = "/data/events.jsonl"
   PORT = "8080"
+
+[vm]
+  memory = "256mb"
+  cpus = 1
 
 [[services]]
   internal_port = 8080
@@ -24,19 +28,17 @@ primary_region = "iad"
 
   [services.concurrency]
     type = "connections"
-    hard_limit = 1000
-    soft_limit = 500
+    hard_limit = 250
+    soft_limit = 100
 
   [[services.http_checks]]
-    interval = "10s"
+    interval = "15s"
     timeout = "2s"
-    grace_period = "5s"
+    grace_period = "10s"
     method = "GET"
     path = "/healthz"
     protocol = "http"
-    tls_skip_verify = false
 
 [[mounts]]
-  source = "slugsocial_data"
+  source = "sorter2_data"
   destination = "/data"
-

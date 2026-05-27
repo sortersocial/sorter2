@@ -1,5 +1,4 @@
-# time 0.3.47+ requires Rust 1.88 (edition 2024)
-FROM rust:1.88-slim as builder
+FROM rust:1.88-slim AS builder
 
 WORKDIR /build
 
@@ -7,9 +6,8 @@ RUN apt-get update && \
     apt-get install -y pkg-config libssl-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy source and build. (Keep it simple to avoid remote build cache oddities.)
 COPY . .
-RUN cargo build --release --package slugsocial-server
+RUN cargo build --release --package sorter2-server
 
 FROM debian:bookworm-slim
 
@@ -19,16 +17,14 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY --from=builder /build/target/release/slugsocial-server /app/slugsocial-server
+COPY --from=builder /build/target/release/sorter2-server /app/sorter2-server
 
-# Create data directory for persistent volume
 RUN mkdir -p /data
 
-ENV SLUG_DATA_DIR=/data
-ENV SLUG_EVENT_LOG=/data/events.jsonl
+ENV SORTER2_DATA_DIR=/data
+ENV SORTER2_EVENT_LOG=/data/events.jsonl
 ENV PORT=8080
 
 EXPOSE 8080
 
-CMD ["/app/slugsocial-server"]
-
+CMD ["/app/sorter2-server"]
