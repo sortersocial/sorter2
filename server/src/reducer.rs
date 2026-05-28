@@ -18,6 +18,34 @@ pub struct VoteData {
     pub thread_tag: String,
 }
 
+impl VoteData {
+    /// Build a vote from persisted event fields (web UI / replay).
+    pub fn from_recorded(
+        ts: i64,
+        a: &str,
+        b: &str,
+        ratio_left: i32,
+        ratio_right: i32,
+    ) -> Option<Self> {
+        let a = ItemId::parse(a)?;
+        let b = ItemId::parse(b)?;
+        if a == b {
+            return None;
+        }
+        Some(Self {
+            ts,
+            a,
+            b,
+            ratio_left,
+            ratio_right,
+            body: String::new(),
+            principal: "web".to_string(),
+            delegate: None,
+            thread_tag: "default".to_string(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GroupState {
     pub item_to_idx: HashMap<ItemId, usize>,
@@ -90,5 +118,20 @@ impl GroupState {
         while self.recent_votes.len() > 200 {
             self.recent_votes.pop_back();
         }
+    }
+}
+
+#[cfg(test)]
+mod from_recorded_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_same_item() {
+        assert!(VoteData::from_recorded(1, "a", "a", 2, 1).is_none());
+    }
+
+    #[test]
+    fn rejects_empty() {
+        assert!(VoteData::from_recorded(1, "", "b", 2, 1).is_none());
     }
 }

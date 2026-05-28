@@ -85,3 +85,33 @@ code {
   padding: 0.1em 0.35em;
   border-radius: 3px;
 }
+
+.vote-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.vote-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.vote-fields input {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.rank-list {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.rank-list li {
+  margin-bottom: 0.35rem;
+}
