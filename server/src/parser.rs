@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::OnceLock;
+
 use crate::parser_action::{GuideOption, ParserAction, ScrollingSuggestion, Suggestion};
 
 // --- Core Abstractions ---
@@ -98,8 +98,8 @@ pub struct Edge {
     description: Option<&'static str>,
 }
 
-/// Handler function for generating UI actions
-type Handler = Box<dyn Fn(&str, &str, &HashMap<String, String>) -> ParserAction>;
+/// Handler function for generating UI actions (Send + Sync so the graph can live in `OnceLock`).
+type Handler = Box<dyn Fn(&str, &str, &HashMap<String, String>) -> ParserAction + Send + Sync>;
 
 /// Node in the graph
 pub struct Node {
@@ -109,16 +109,16 @@ pub struct Node {
     handler: Option<Handler>,
 }
 
-/// The composable parser graph
+/// The composable parser graph (immutable after `build`).
 pub struct Graph {
-    nodes: HashMap<NodeId, Rc<RefCell<Node>>>,
+    nodes: HashMap<NodeId, Node>,
     root: NodeId,
 }
 
 // --- Graph Builder (Fluent API) ---
 
 pub struct GraphBuilder {
-    nodes: HashMap<NodeId, Rc<RefCell<Node>>>,
+    nodes: HashMap<NodeId, Node>,
     current_node: Option<NodeId>,
     root: NodeId,
 }
@@ -126,31 +126,29 @@ pub struct GraphBuilder {
 impl GraphBuilder {
     pub fn new() -> Self {
         let mut nodes = HashMap::new();
-        let root_node = Rc::new(RefCell::new(Node {
-            id: "root",
-            edges: Vec::new(),
-            handler: None,
-        }));
-        nodes.insert("root", root_node);
-        
+        nodes.insert(
+            "root",
+            Node {
+                id: "root",
+                edges: Vec::new(),
+                handler: None,
+            },
+        );
+
         GraphBuilder {
             nodes,
             current_node: Some("root"),
             root: "root",
         }
     }
-    
+
     /// Select a node to add edges to
     pub fn at(mut self, node_id: NodeId) -> Self {
-        // Create node if it doesn't exist
-        if !self.nodes.contains_key(node_id) {
-            let node = Rc::new(RefCell::new(Node {
-                id: node_id,
-                edges: Vec::new(),
-                handler: None,
-            }));
-            self.nodes.insert(node_id, node);
-        }
+        self.nodes.entry(node_id).or_insert_with(|| Node {
+            id: node_id,
+            edges: Vec::new(),
+            handler: None,
+        });
         self.current_node = Some(node_id);
         self
     }
@@ -161,39 +159,39 @@ impl GraphBuilder {
     }
     
     /// Add an edge with description
-    pub fn edge_with_desc(mut self, pattern: EdgePattern, target: NodeId, desc: Option<&'static str>) -> Self {
+    pub fn edge_with_desc(
+        mut self,
+        pattern: EdgePattern,
+        target: NodeId,
+        desc: Option<&'static str>,
+    ) -> Self {
         let current = self.current_node.expect("No current node selected");
-        
-        // Create target node if it doesn't exist
-        if !self.nodes.contains_key(target) {
-            let node = Rc::new(RefCell::new(Node {
-                id: target,
-                edges: Vec::new(),
-                handler: None,
-            }));
-            self.nodes.insert(target, node);
-        }
-        
-        // Add edge to current node
-        if let Some(node) = self.nodes.get(current) {
-            node.borrow_mut().edges.push(Edge {
+
+        self.nodes.entry(target).or_insert_with(|| Node {
+            id: target,
+            edges: Vec::new(),
+            handler: None,
+        });
+
+        if let Some(node) = self.nodes.get_mut(current) {
+            node.edges.push(Edge {
                 pattern,
                 target,
                 description: desc,
             });
         }
-        
+
         self
     }
-    
+
     /// Set handler for current node
-    pub fn handler<F>(self, handler: F) -> Self 
-    where 
-        F: Fn(&str, &str, &HashMap<String, String>) -> ParserAction + 'static
+    pub fn handler<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&str, &str, &HashMap<String, String>) -> ParserAction + Send + Sync + 'static,
     {
         let current = self.current_node.expect("No current node selected");
-        if let Some(node) = self.nodes.get(current) {
-            node.borrow_mut().handler = Some(Box::new(handler));
+        if let Some(node) = self.nodes.get_mut(current) {
+            node.handler = Some(Box::new(handler));
         }
         self
     }
@@ -225,24 +223,25 @@ impl Graph {
     }
     
     fn parse_recursive(&self, state: &mut ParserState) -> ParserAction {
-        let node = self.nodes.get(state.current_node_id)
+        let node = self
+            .nodes
+            .get(state.current_node_id)
             .expect("Node not found in graph");
-        let node_ref = node.borrow();
-        
+
         // If we've consumed all input, check for handler or suggestions
         if state.cursor >= state.input.len() {
-            if let Some(handler) = &node_ref.handler {
+            if let Some(handler) = &node.handler {
                 return handler(&state.original_query, &state.current_prefix, &state.context);
             }
-            
+
             // No handler, try to suggest based on available edges
-            return self.suggest_from_edges(&node_ref, state);
+            return self.suggest_from_edges(node, state);
         }
-        
+
         let remaining = &state.input[state.cursor..];
-        
+
         // Try to match each edge
-        for edge in &node_ref.edges {
+        for edge in &node.edges {
             if let Some((consumed, captured)) = edge.pattern.matches(remaining) {
                 // Save state for potential backtracking
                 let saved_cursor = state.cursor;
@@ -297,7 +296,7 @@ impl Graph {
         }
         
         // No edges matched - try to provide suggestions
-        self.suggest_from_edges(&node_ref, state)
+        self.suggest_from_edges(node, state)
     }
     
     fn suggest_from_edges(&self, node: &Node, state: &ParserState) -> ParserAction {
@@ -692,10 +691,15 @@ pub fn build_reddit_graph() -> Graph {
 
 // --- Public API ---
 
+static REDDIT_GRAPH: OnceLock<Graph> = OnceLock::new();
+
+fn reddit_graph() -> &'static Graph {
+    REDDIT_GRAPH.get_or_init(build_reddit_graph)
+}
+
 /// Parse a query string and return a UI action
 pub fn parse_reddit_url(query: &str) -> ParserAction {
-    let graph = build_reddit_graph();
-    graph.parse(query)
+    reddit_graph().parse(query)
 }
 
 #[cfg(test)]
