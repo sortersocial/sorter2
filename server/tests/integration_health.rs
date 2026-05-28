@@ -38,7 +38,7 @@ async fn healthz_ok() {
 }
 
 #[tokio::test]
-async fn home_has_demo_panel() {
+async fn home_has_main_panels() {
     let (addr, _tmp) = start_test_server().await;
     let client = reqwest::Client::new();
     let html = client

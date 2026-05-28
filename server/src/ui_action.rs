@@ -12,8 +12,6 @@ pub const UI_RPC_FIELD: &str = "__rpc__";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum HtmlUiAction {
-    /// Demo: morph `#demo-counter-panel` after bumping the persisted counter.
-    BumpDemoCounter,
     /// Record a pairwise vote and morph `#ranking-panel`.
     RecordVote {
         a: String,
@@ -51,18 +49,6 @@ pub fn parse_html_ui_from_form(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn bump_demo_counter_round_trip() {
-        let template = serde_json::json!({ "action": "bump_demo_counter" });
-        let mut form = HashMap::new();
-        form.insert(
-            UI_RPC_FIELD.to_string(),
-            serde_json::to_string(&template).unwrap(),
-        );
-        let a = parse_html_ui_from_form(&form).unwrap();
-        assert_eq!(a, HtmlUiAction::BumpDemoCounter);
-    }
 
     #[test]
     fn record_vote_round_trip_with_form_holes() {

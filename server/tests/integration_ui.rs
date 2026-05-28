@@ -26,33 +26,6 @@ async fn start_test_server() -> (SocketAddr, TempDir) {
 }
 
 #[tokio::test]
-async fn post_ui_bump_returns_javascript_morph() {
-    let (addr, tmp) = start_test_server().await;
-    let rpc = serde_json::json!({ "action": "bump_demo_counter" }).to_string();
-    let mut form = HashMap::new();
-    form.insert(UI_RPC_FIELD.to_string(), rpc);
-
-    let client = reqwest::Client::new();
-    let body = client
-        .post(format!("http://{addr}/ui"))
-        .form(&form)
-        .send()
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-
-    assert!(body.contains("Idiomorph.morph"));
-    assert!(body.contains("demo-counter-panel"));
-    assert!(body.contains("Counter:"));
-
-    let log_path = tmp.path().join("events.jsonl");
-    let log = std::fs::read_to_string(log_path).unwrap();
-    assert!(log.contains("demo_counter_bumped"));
-}
-
-#[tokio::test]
 async fn post_ui_record_vote_morphs_ranking_and_persists() {
     let (addr, tmp) = start_test_server().await;
     let rpc = serde_json::json!({
@@ -90,8 +63,8 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
         port: 0,
     };
     let state = create_app_state(cfg).await;
-    let mut group = state.group.write().await;
-    let ranked = sorter2_server::ranking::ranked_items(&mut group, 10_000, 1e-8);
+    let group = state.group.read().await;
+    let ranked = sorter2_server::ranking::ranked_items_cached(&group);
     assert_eq!(ranked.len(), 2);
     assert_eq!(ranked[0].item.as_str(), "alpha");
 }

@@ -13,7 +13,7 @@ use crate::{
     form_template::template_json_compact,
     parser_action::ParserAction,
     parser_render::parser_panel,
-    ranking::ranked_items,
+    ranking::ranked_items_cached,
     reducer::GroupState,
     state::AppState,
     ui_action::UI_RPC_FIELD,
@@ -199,10 +199,8 @@ fn layout(title: &str, body: Markup, views: u64, theme: &str, theme_next: &str) 
     }
 }
 
-pub fn ranking_panel(group: &mut GroupState) -> Markup {
-    const MAX_ITERS: usize = 10_000;
-    const TOL: f64 = 1e-8;
-    let items = ranked_items(group, MAX_ITERS, TOL);
+pub fn ranking_panel(group: &GroupState) -> Markup {
+    let items = ranked_items_cached(group);
     html! {
         section id="ranking-panel" class="demo-panel" {
             h2 { "Ranking" }
@@ -260,35 +258,6 @@ pub fn vote_panel() -> Markup {
 }
 
 
-pub fn demo_counter_panel(count: u64, event_log_path: &str) -> Markup {
-    let rpc = template_json_compact(&serde_json::json!({ "action": "bump_demo_counter" }))
-        .expect("rpc json");
-    html! {
-        section id="demo-counter-panel" class="demo-panel" {
-            h1 { "sorter2" }
-            p class="muted" {
-                "Pairwise ranking scaffold — votes persist to JSONL and replay on boot."
-            }
-            p class="demo-count" {
-                strong { "Counter: " }
-                span id="demo-count-value" { (count) }
-            }
-            p class="muted small" {
-                "Event log: " code { (event_log_path) }
-            }
-            form method="post" action="/ui" id="demo-bump-form" {
-                input type="hidden" name=(UI_RPC_FIELD) value=(rpc);
-                button type="submit" class="btn-primary" { "Bump (POST /ui → eval JS)" }
-            }
-            p class="muted small" {
-                "Uses hidden "
-                code { "__rpc__" }
-                " JSON + Idiomorph morph — no full page reload."
-            }
-        }
-    }
-}
-
 pub async fn home(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -297,16 +266,15 @@ pub async fn home(
     let path = uri.path().to_string();
     state.views.increment(path.clone());
     let views = state.views.get_views(&path);
-    let count = *state.demo_counter.read().await;
     let theme = theme_from_jar(&jar);
     let theme_next = theme_next_from_uri(&uri);
-    let mut group = state.group.write().await;
+    let group = state.group.read().await;
     let empty_action = ParserAction::suggest(String::new(), None);
     let body = html! {
+        h1 { "sorter2" }
         (parser_panel("", &empty_action))
         (vote_panel())
-        (ranking_panel(&mut group))
-        (demo_counter_panel(count, state.event_log.path().to_string_lossy().as_ref()))
+        (ranking_panel(&group))
     };
     layout("sorter2", body, views, theme, &theme_next)
 }

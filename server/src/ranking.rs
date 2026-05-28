@@ -91,6 +91,11 @@ pub fn compute_group_ranking(group: &mut GroupState, max_iters: usize, tol: f64)
 
 pub fn ranked_items(group: &mut GroupState, max_iters: usize, tol: f64) -> Vec<RankedItem> {
     compute_group_ranking(group, max_iters, tol);
+    ranked_items_cached(group)
+}
+
+/// Read cached scores without recomputing (HTTP fast path).
+pub fn ranked_items_cached(group: &GroupState) -> Vec<RankedItem> {
     let mut items: Vec<RankedItem> = group
         .idx_to_item
         .iter()
@@ -105,7 +110,12 @@ pub fn ranked_items(group: &mut GroupState, max_iters: usize, tol: f64) -> Vec<R
     items
 }
 
-fn compute_scores_from_edges(n: usize, edges: impl Iterator<Item = ((usize, usize), f64)>, max_iters: usize, tol: f64) -> Vec<f64> {
+pub fn compute_scores_from_edges(
+    n: usize,
+    edges: impl Iterator<Item = ((usize, usize), f64)>,
+    max_iters: usize,
+    tol: f64,
+) -> Vec<f64> {
     if n == 0 {
         return vec![];
     }

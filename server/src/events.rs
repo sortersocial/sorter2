@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 pub enum Event {
     /// Page view recorded (path → counter in views.json).
     ViewRecorded { path: String, ts: i64 },
-    /// Demo counter bump from `POST /ui` (persisted in the single JSONL log).
-    DemoCounterBumped { ts: i64, value: u64 },
     /// Pairwise comparison vote (replayed into [`crate::reducer::GroupState`] on boot).
     VoteRecorded {
         ts: i64,

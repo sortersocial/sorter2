@@ -26,7 +26,7 @@
             false))))))
 
 (deftest http-smoke-against-running-server
-  (testing "build, start, healthz, home contains RPC demo"
+  (testing "build, start, healthz, home contains main panels"
     (let [root (repo-root)
           data-dir (.getAbsolutePath (doto (io/file (System/getProperty "java.io.tmpdir")
                                                    (str "sorter2-smoke-" (System/currentTimeMillis)))

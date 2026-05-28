@@ -6,6 +6,7 @@ use crate::{
     event_log::EventLog,
     events::Event,
     reducer::{GroupState, VoteData},
+    settlement::{warm_ranking_cache, SettlementClient},
     views::ViewStore,
 };
 
@@ -38,8 +39,8 @@ pub struct AppState {
     pub cfg: Arc<AppConfig>,
     pub event_log: Arc<EventLog>,
     pub views: ViewStore,
-    pub demo_counter: Arc<RwLock<u64>>,
     pub group: Arc<RwLock<GroupState>>,
+    settlement: SettlementClient,
 }
 
 impl AppState {
@@ -48,14 +49,10 @@ impl AppState {
         let views_path = format!("{}/views.json", cfg.data_dir);
         let views = ViewStore::new(&views_path);
 
-        let mut demo_counter: u64 = 0;
         let mut group = GroupState::new();
         if let Ok((events, _)) = event_log.load_all().await {
             for ev in events {
                 match ev {
-                    Event::DemoCounterBumped { value, .. } => {
-                        demo_counter = demo_counter.max(value);
-                    }
                     Event::VoteRecorded {
                         ts,
                         a,
@@ -74,28 +71,18 @@ impl AppState {
             }
         }
 
+        warm_ranking_cache(&mut group);
+
+        let group = Arc::new(RwLock::new(group));
+        let settlement = SettlementClient::spawn(group.clone(), event_log.clone());
+
         Self {
             cfg: Arc::new(cfg),
             event_log,
             views,
-            demo_counter: Arc::new(RwLock::new(demo_counter)),
-            group: Arc::new(RwLock::new(group)),
+            group,
+            settlement,
         }
-    }
-
-    pub async fn bump_demo_counter(&self) -> u64 {
-        let mut guard = self.demo_counter.write().await;
-        *guard += 1;
-        let value = *guard;
-        drop(guard);
-
-        let ts = crate::html::now_ms();
-        let _ = self
-            .event_log
-            .append(&Event::DemoCounterBumped { ts, value })
-            .await;
-
-        value
     }
 
     pub async fn record_vote(
@@ -109,23 +96,14 @@ impl AppState {
         let vote = VoteData::from_recorded(ts, a, b, ratio_left, ratio_right)
             .ok_or_else(|| "invalid vote: need two distinct non-empty items".to_string())?;
 
-        {
-            let mut group = self.group.write().await;
-            group.apply_vote(vote.clone());
-        }
+        let event = Event::VoteRecorded {
+            ts,
+            a: vote.a.as_str().to_string(),
+            b: vote.b.as_str().to_string(),
+            ratio_left: vote.ratio_left,
+            ratio_right: vote.ratio_right,
+        };
 
-        let _ = self
-            .event_log
-            .append(&Event::VoteRecorded {
-                ts,
-                a: vote.a.as_str().to_string(),
-                b: vote.b.as_str().to_string(),
-                ratio_left: vote.ratio_left,
-                ratio_right: vote.ratio_right,
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-
-        Ok(())
+        self.settlement.record_vote(vote, event).await
     }
 }

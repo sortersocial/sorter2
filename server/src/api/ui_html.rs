@@ -6,7 +6,7 @@ use axum::{
 use std::collections::HashMap;
 
 use crate::{
-    html::{demo_counter_panel, js_string_literal, ranking_panel, JsBuilder},
+    html::{js_string_literal, ranking_panel, JsBuilder},
     parser::parse_reddit_url,
     parser_render::parser_panel_morph,
     state::AppState,
@@ -35,13 +35,6 @@ pub async fn post_ui_html(
     };
 
     match action {
-        HtmlUiAction::BumpDemoCounter => {
-            let count = state.bump_demo_counter().await;
-            let panel = demo_counter_panel(count, state.event_log.path().to_string_lossy().as_ref());
-            JsBuilder::new()
-                .morph_selector("#demo-counter-panel", panel)
-                .into_response()
-        }
         HtmlUiAction::RecordVote {
             a,
             b,
@@ -54,8 +47,8 @@ pub async fn post_ui_html(
             {
                 return ui_js_warn(&e).into_response();
             }
-            let mut group = state.group.write().await;
-            let panel = ranking_panel(&mut group);
+            let group = state.group.read().await;
+            let panel = ranking_panel(&group);
             JsBuilder::new()
                 .morph_selector("#ranking-panel", panel)
                 .into_response()
@@ -85,20 +78,6 @@ mod tests {
         let form = HashMap::new();
         let err = parse_html_ui_from_form(&form).unwrap_err();
         assert!(matches!(err, HtmlUiParseError::MissingRpc));
-    }
-
-    #[test]
-    fn bump_action_deserializes() {
-        let template = serde_json::json!({ "action": "bump_demo_counter" });
-        let mut form = HashMap::new();
-        form.insert(
-            UI_RPC_FIELD.to_string(),
-            serde_json::to_string(&template).unwrap(),
-        );
-        assert_eq!(
-            parse_html_ui_from_form(&form).unwrap(),
-            HtmlUiAction::BumpDemoCounter
-        );
     }
 
     #[test]

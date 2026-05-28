@@ -9,6 +9,7 @@ pub mod parser_render;
 pub mod path_types;
 pub mod ranking;
 pub mod reducer;
+pub mod settlement;
 pub mod state;
 pub mod ui_action;
 pub mod views;
