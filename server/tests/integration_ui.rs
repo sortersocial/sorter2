@@ -95,3 +95,30 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
     assert_eq!(ranked.len(), 2);
     assert_eq!(ranked[0].item.as_str(), "alpha");
 }
+
+#[tokio::test]
+async fn post_ui_parse_query_morphs_parser_panel() {
+    let (addr, _tmp) = start_test_server().await;
+    let rpc = serde_json::json!({
+        "action": "parse_query",
+        "query": "r"
+    })
+    .to_string();
+    let mut form = HashMap::new();
+    form.insert(UI_RPC_FIELD.to_string(), rpc);
+
+    let client = reqwest::Client::new();
+    let body = client
+        .post(format!("http://{addr}/ui"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(body.contains("Idiomorph.morph"));
+    assert!(body.contains("parser-panel"));
+    assert!(body.contains("r/"));
+}

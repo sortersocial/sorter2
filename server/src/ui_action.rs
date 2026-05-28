@@ -21,6 +21,10 @@ pub enum HtmlUiAction {
         ratio_left: i32,
         ratio_right: i32,
     },
+    /// Parse address-bar query via Reddit transition graph; morph `#parser-panel`.
+    ParseQuery {
+        query: String,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -83,6 +87,26 @@ mod tests {
                 b: "beta".into(),
                 ratio_left: 2,
                 ratio_right: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_query_round_trip_with_form_hole() {
+        let template = serde_json::json!({
+            "action": "parse_query",
+            "query": {"$form": "query"},
+        });
+        let mut form = HashMap::new();
+        form.insert(
+            UI_RPC_FIELD.to_string(),
+            serde_json::to_string(&template).unwrap(),
+        );
+        form.insert("query".into(), "r/rust".into());
+        assert_eq!(
+            parse_html_ui_from_form(&form).unwrap(),
+            HtmlUiAction::ParseQuery {
+                query: "r/rust".into(),
             }
         );
     }

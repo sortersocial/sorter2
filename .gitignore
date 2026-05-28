@@ -4,3 +4,5 @@
 /.lsp/
 *.swp
 .DS_Store
+data/
+repomix-output.xml

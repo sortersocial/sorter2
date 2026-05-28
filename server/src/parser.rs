@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
-use crate::ui::action::UIAction;
-use crate::ui::types::{Suggestion, GuideOption, ScrollingSuggestion};
+use crate::parser_action::{GuideOption, ParserAction, ScrollingSuggestion, Suggestion};
 
 // --- Core Abstractions ---
 
@@ -100,7 +99,7 @@ pub struct Edge {
 }
 
 /// Handler function for generating UI actions
-type Handler = Box<dyn Fn(&str, &str, &HashMap<String, String>) -> UIAction>;
+type Handler = Box<dyn Fn(&str, &str, &HashMap<String, String>) -> ParserAction>;
 
 /// Node in the graph
 pub struct Node {
@@ -190,7 +189,7 @@ impl GraphBuilder {
     /// Set handler for current node
     pub fn handler<F>(self, handler: F) -> Self 
     where 
-        F: Fn(&str, &str, &HashMap<String, String>) -> UIAction + 'static
+        F: Fn(&str, &str, &HashMap<String, String>) -> ParserAction + 'static
     {
         let current = self.current_node.expect("No current node selected");
         if let Some(node) = self.nodes.get(current) {
@@ -211,7 +210,7 @@ impl GraphBuilder {
 // --- Parser Implementation ---
 
 impl Graph {
-    pub fn parse(&self, input: &str) -> UIAction {
+    pub fn parse(&self, input: &str) -> ParserAction {
         let normalized = input.trim().to_lowercase();
         let mut state = ParserState {
             input: &normalized,
@@ -225,7 +224,7 @@ impl Graph {
         self.parse_recursive(&mut state)
     }
     
-    fn parse_recursive(&self, state: &mut ParserState) -> UIAction {
+    fn parse_recursive(&self, state: &mut ParserState) -> ParserAction {
         let node = self.nodes.get(state.current_node_id)
             .expect("Node not found in graph");
         let node_ref = node.borrow();
@@ -270,7 +269,7 @@ impl Graph {
                             state.current_prefix, 
                             completion_suffix.strip_prefix(remaining).unwrap_or(&completion_suffix)
                         );
-                        return UIAction::suggest(
+                        return ParserAction::suggest(
                             state.original_query.clone(),
                             Some(Suggestion {
                                 text: full_completion.clone(),
@@ -286,7 +285,7 @@ impl Graph {
                 let result = self.parse_recursive(state);
                 
                 // If we got a valid response, return it
-                if !matches!(result, UIAction::ShowError(_)) {
+                if !matches!(result, ParserAction::ShowError(_)) {
                     return result;
                 }
                 
@@ -301,7 +300,7 @@ impl Graph {
         self.suggest_from_edges(&node_ref, state)
     }
     
-    fn suggest_from_edges(&self, node: &Node, state: &ParserState) -> UIAction {
+    fn suggest_from_edges(&self, node: &Node, state: &ParserState) -> ParserAction {
         let remaining = &state.input[state.cursor..];
         
         // Find edges that could match with more input
@@ -311,7 +310,7 @@ impl Graph {
                     if target.starts_with(remaining) && !remaining.is_empty() {
                         // Use current_prefix instead of rebuilding from input
                         let full_completion = format!("{}{}", state.current_prefix, target);
-                        return UIAction::suggest(
+                        return ParserAction::suggest(
                             state.original_query.clone(),
                             Some(Suggestion {
                                 text: full_completion.clone(),
@@ -325,7 +324,7 @@ impl Graph {
                 EdgePattern::Literal(lit) => {
                     if lit.starts_with(remaining) && !remaining.is_empty() {
                         let full_completion = format!("{}{}", state.current_prefix, lit);
-                        return UIAction::suggest(
+                        return ParserAction::suggest(
                             state.original_query.clone(),
                             Some(Suggestion {
                                 text: full_completion.clone(),
@@ -340,7 +339,7 @@ impl Graph {
             }
         }
         
-        UIAction::error(
+        ParserAction::error(
             "InvalidPath".to_string(),
             format!("'{}' doesn't match any known pattern", state.original_query)
         )
@@ -481,7 +480,7 @@ pub fn build_reddit_graph() -> Graph {
                 // Suggest adding the slash using the current prefix
                 let completion = format!("{}/", prefix);
                 
-                UIAction::suggest(
+                ParserAction::suggest(
                     query.to_string(),
                     Some(Suggestion {
                         text: completion.clone(),
@@ -497,8 +496,8 @@ pub fn build_reddit_graph() -> Graph {
             .edge(EdgePattern::Literal("r/"), "subreddit_selection")
             .edge(EdgePattern::Literal("u/"), "user_selection")
             .handler(|query, prefix, _ctx| {
-                UIAction::multiple(vec![
-                    UIAction::scrolling_suggestions(
+                ParserAction::multiple(vec![
+                    ParserAction::scrolling_suggestions(
                         query.to_string(),
                         vec![
                             ScrollingSuggestion {
@@ -511,7 +510,7 @@ pub fn build_reddit_graph() -> Graph {
                         1400, // 1.4 second interval (slower)
                         true  // loop through
                     ),
-                    UIAction::guide(
+                    ParserAction::guide(
                         query.to_string(),
                         "Welcome to Sorter for Reddit".to_string(),
                         "Where would you like to start?".to_string(),
@@ -540,8 +539,8 @@ pub fn build_reddit_graph() -> Graph {
         .at("subreddit_selection")
             .edge(EdgePattern::Variable("subreddit"), "subreddit_page")
             .handler(|query, prefix, _ctx| {
-                UIAction::multiple(vec![
-                    UIAction::scrolling_suggestions(
+                ParserAction::multiple(vec![
+                    ParserAction::scrolling_suggestions(
                         query.to_string(),
                         vec![
                             ScrollingSuggestion {
@@ -564,7 +563,7 @@ pub fn build_reddit_graph() -> Graph {
                         true  // loop through
                     ),
                     // Live DB-backed suggestions for subreddits as the user types
-                    UIAction::SuggestSubredditsFromDb { partial: query.to_string(), prefix: prefix.to_string() }
+                    ParserAction::SuggestSubredditsFromDb { partial: query.to_string(), prefix: prefix.to_string() }
                 ])
             })
         
@@ -574,7 +573,7 @@ pub fn build_reddit_graph() -> Graph {
             .handler(|_query, prefix, ctx| {
                 // Use the new unified subreddit resolution logic
                 let subreddit = ctx.get("subreddit").cloned().unwrap_or_default();
-                UIAction::ResolveAndDisplaySubreddit {
+                ParserAction::ResolveAndDisplaySubreddit {
                     subreddit,
                     prefix: prefix.to_string(),
                 }
@@ -587,7 +586,7 @@ pub fn build_reddit_graph() -> Graph {
             .edge(EdgePattern::Literal("comments"), "subreddit_comments")
             .handler(|query, prefix, ctx| {
                 let subreddit = ctx.get("subreddit").cloned().unwrap_or_default();
-                UIAction::guide(
+                ParserAction::guide(
                     query.to_string(), 
                     format!("What to sort in r/{}?", subreddit), 
                     "Choose a category to begin sorting.".to_string(), 
@@ -625,7 +624,7 @@ pub fn build_reddit_graph() -> Graph {
         .at("user_selection")
             .edge(EdgePattern::Variable("username"), "user_profile")
             .handler(|query, prefix, _ctx| {
-                UIAction::guide(
+                ParserAction::guide(
                     query.to_string(),
                     "User Profile Sorting".to_string(),
                     "Enter a Reddit username to sort their content.".to_string(),
@@ -644,7 +643,7 @@ pub fn build_reddit_graph() -> Graph {
         .at("subreddit_hot")
             .handler(|_query, _prefix, ctx| {
                 let subreddit = ctx.get("subreddit").cloned().unwrap_or_default();
-                UIAction::RenderEntityView {
+                ParserAction::RenderEntityView {
                     ns: "reddit.subreddit".to_string(),
                     pk: subreddit,
                 }
@@ -653,7 +652,7 @@ pub fn build_reddit_graph() -> Graph {
         .at("subreddit_top")
             .handler(|_query, _prefix, ctx| {
                 let subreddit = ctx.get("subreddit").cloned().unwrap_or_default();
-                UIAction::RenderEntityView {
+                ParserAction::RenderEntityView {
                     ns: "reddit.subreddit".to_string(),
                     pk: subreddit,
                 }
@@ -662,7 +661,7 @@ pub fn build_reddit_graph() -> Graph {
         .at("subreddit_new")
             .handler(|_query, _prefix, ctx| {
                 let subreddit = ctx.get("subreddit").cloned().unwrap_or_default();
-                UIAction::RenderEntityView {
+                ParserAction::RenderEntityView {
                     ns: "reddit.subreddit".to_string(),
                     pk: subreddit,
                 }
@@ -671,7 +670,7 @@ pub fn build_reddit_graph() -> Graph {
         .at("subreddit_comments")
             .handler(|_query, _prefix, ctx| {
                 let subreddit = ctx.get("subreddit").cloned().unwrap_or_default();
-                UIAction::RenderEntityView {
+                ParserAction::RenderEntityView {
                     ns: "reddit.subreddit".to_string(),
                     pk: subreddit,
                 }
@@ -681,7 +680,7 @@ pub fn build_reddit_graph() -> Graph {
         .at("user_profile")
             .handler(|_query, _prefix, ctx| {
                 let username = ctx.get("username").cloned().unwrap_or_default();
-                UIAction::RenderEntityView {
+                ParserAction::RenderEntityView {
                     ns: "reddit.user".to_string(),
                     pk: username,
                 }
@@ -694,7 +693,7 @@ pub fn build_reddit_graph() -> Graph {
 // --- Public API ---
 
 /// Parse a query string and return a UI action
-pub fn parse_reddit_url(query: &str) -> UIAction {
+pub fn parse_reddit_url(query: &str) -> ParserAction {
     let graph = build_reddit_graph();
     graph.parse(query)
 }
@@ -730,39 +729,39 @@ mod tests {
     }
 
     impl ExpectedAction {
-        fn matches(&self, action: &UIAction) -> bool {
+        fn matches(&self, action: &ParserAction) -> bool {
             match (self, action) {
-                (ExpectedAction::Suggestion { completion }, UIAction::ShowSuggestions(data)) => {
+                (ExpectedAction::Suggestion { completion }, ParserAction::ShowSuggestions(data)) => {
                     data.suggestion.as_ref()
                         .map(|s| s.completion == *completion)
                         .unwrap_or(false)
                 }
-                (ExpectedAction::ScrollingSuggestions { completions }, UIAction::ShowScrollingSuggestions { suggestions, .. }) => {
+                (ExpectedAction::ScrollingSuggestions { completions }, ParserAction::ShowScrollingSuggestions { suggestions, .. }) => {
                     let actual_completions: Vec<String> = suggestions.iter().map(|s| s.completion.clone()).collect();
                     *completions == actual_completions
                 }
-                (ExpectedAction::Guide { title_contains }, UIAction::ShowStaticGuide { title, .. }) => {
+                (ExpectedAction::Guide { title_contains }, ParserAction::ShowStaticGuide { title, .. }) => {
                     title.contains(title_contains)
                 }
                 (ExpectedAction::RenderSubreddit { subreddit, sort: _ }, 
-                 UIAction::RenderEntityView { ns, pk }) => {
+                 ParserAction::RenderEntityView { ns, pk }) => {
                     ns == "reddit.subreddit" && pk == subreddit
                 }
                 (ExpectedAction::RenderSubredditComments { subreddit }, 
-                 UIAction::RenderEntityView { ns, pk }) => {
+                 ParserAction::RenderEntityView { ns, pk }) => {
                     ns == "reddit.subreddit" && pk == subreddit
                 }
-                (ExpectedAction::RenderUser { username }, UIAction::RenderEntityView { ns, pk }) => {
+                (ExpectedAction::RenderUser { username }, ParserAction::RenderEntityView { ns, pk }) => {
                     ns == "reddit.user" && pk == username
                 }
                 (ExpectedAction::ResolveSubreddit { subreddit, prefix }, 
-                 UIAction::ResolveAndDisplaySubreddit { subreddit: s, prefix: p }) => {
+                 ParserAction::ResolveAndDisplaySubreddit { subreddit: s, prefix: p }) => {
                     s == subreddit && p == prefix
                 }
-                (ExpectedAction::Error { error_type }, UIAction::ShowError(data)) => {
+                (ExpectedAction::Error { error_type }, ParserAction::ShowError(data)) => {
                     data.error_type == *error_type
                 }
-                (ExpectedAction::Multiple { expected_actions }, UIAction::ShowMultiple { actions }) => {
+                (ExpectedAction::Multiple { expected_actions }, ParserAction::ShowMultiple { actions }) => {
                     // Check that all expected actions are present
                     if expected_actions.len() != actions.len() {
                         return false;
@@ -771,9 +770,9 @@ mod tests {
                         expected.matches(actual)
                     })
                 }
-                (ExpectedAction::MultipleAny, UIAction::ShowMultiple { .. }) => true,
+                (ExpectedAction::MultipleAny, ParserAction::ShowMultiple { .. }) => true,
                 (ExpectedAction::DbSuggestions { partial, prefix }, 
-                 UIAction::SuggestSubredditsFromDb { partial: p, prefix: pr }) => {
+                 ParserAction::SuggestSubredditsFromDb { partial: p, prefix: pr }) => {
                     p == partial && pr == prefix
                 }
 
@@ -783,7 +782,7 @@ mod tests {
     }
 
     /// Test helper to simulate a sequence of keystrokes
-    fn simulate_keystrokes(actions: Vec<KeyAction>) -> Vec<(String, UIAction)> {
+    fn simulate_keystrokes(actions: Vec<KeyAction>) -> Vec<(String, ParserAction)> {
         let graph = build_reddit_graph();
         let mut current_text = String::new();
         let mut results = Vec::new();
@@ -798,7 +797,7 @@ mod tests {
                 KeyAction::Tab => {
                     // Tab accepts the current suggestion if there is one
                     let result = graph.parse(&current_text);
-                    if let UIAction::ShowSuggestions(ref data) = result {
+                    if let ParserAction::ShowSuggestions(ref data) = result {
                         if let Some(ref suggestion) = data.suggestion {
                             current_text = suggestion.completion.clone();
                             let new_result = graph.parse(&current_text);
@@ -829,7 +828,7 @@ mod tests {
                 KeyAction::Tab => {
                     // Tab accepts the current suggestion
                     let result = graph.parse(&current_text);
-                    if let UIAction::ShowSuggestions(data) = result {
+                    if let ParserAction::ShowSuggestions(data) = result {
                         if let Some(suggestion) = &data.suggestion {
                             current_text = suggestion.completion.clone();
                         }
@@ -857,7 +856,7 @@ mod tests {
     fn assert_flow(
         name: &str,
         actions: Vec<KeyAction>,
-        expected_checks: Vec<Box<dyn Fn(&str, &UIAction) -> bool>>,
+        expected_checks: Vec<Box<dyn Fn(&str, &ParserAction) -> bool>>,
     ) {
         let results = simulate_keystrokes(actions);
         
@@ -889,13 +888,13 @@ mod tests {
             vec![
                 Box::new(|text, action| {
                     // After typing "https://reddit.com", should get a suggestion
-                    text == "https://reddit.com" && matches!(action, UIAction::ShowSuggestions(data) if 
+                    text == "https://reddit.com" && matches!(action, ParserAction::ShowSuggestions(data) if 
                         data.suggestion.as_ref().map(|s| s.completion == "https://reddit.com/").unwrap_or(false)
                     )
                 }),
                 Box::new(|text, action| {
                     // After tab, should have "https://reddit.com/" and show guide
-                    text == "https://reddit.com/" && matches!(action, UIAction::ShowMultiple { .. })
+                    text == "https://reddit.com/" && matches!(action, ParserAction::ShowMultiple { .. })
                 }),
             ],
         );
@@ -914,17 +913,17 @@ mod tests {
             vec![
                 Box::new(|text, action| {
                     // "r" should suggest "r/"
-                    text == "r" && matches!(action, UIAction::ShowSuggestions(data) if 
+                    text == "r" && matches!(action, ParserAction::ShowSuggestions(data) if 
                         data.suggestion.as_ref().map(|s| s.completion == "r/").unwrap_or(false)
                     )
                 }),
                 Box::new(|text, action| {
                     // After tab, should have "r/" and show subreddit selection
-                    text == "r/" && matches!(action, UIAction::ShowMultiple { .. })
+                    text == "r/" && matches!(action, ParserAction::ShowMultiple { .. })
                 }),
                 Box::new(|text, action| {
                     // "r/rust" should resolve the subreddit
-                    text == "r/rust" && matches!(action, UIAction::ResolveAndDisplaySubreddit { subreddit, prefix } if subreddit == "rust" && prefix == "r/rust")
+                    text == "r/rust" && matches!(action, ParserAction::ResolveAndDisplaySubreddit { subreddit, prefix } if subreddit == "rust" && prefix == "r/rust")
                 }),
             ],
         );
@@ -952,7 +951,7 @@ mod tests {
             // First step: "r" should suggest "r/"
             if i == 0 && text == "r" {
                 match action {
-                    UIAction::ShowSuggestions(data) => {
+                    ParserAction::ShowSuggestions(data) => {
                         assert_eq!(
                             data.suggestion.as_ref().unwrap().completion,
                             "r/",
@@ -965,7 +964,7 @@ mod tests {
             // Other steps before tab should suggest "reddit.com"
             else if i > 0 && i < results.len() - 1 {
                 match action {
-                    UIAction::ShowSuggestions(data) => {
+                    ParserAction::ShowSuggestions(data) => {
                         assert_eq!(
                             data.suggestion.as_ref().unwrap().completion,
                             "reddit.com",
@@ -994,7 +993,7 @@ mod tests {
             vec![
                 Box::new(|text, action| {
                     text == "reddit.com/r/programming/hot" && 
-                    matches!(action, UIAction::RenderEntityView { ns, pk } 
+                    matches!(action, ParserAction::RenderEntityView { ns, pk } 
                         if ns == "reddit.subreddit" && pk == "programming")
                 }),
             ],
@@ -1012,7 +1011,7 @@ mod tests {
             vec![
                 Box::new(|text, action| {
                     text == "reddit.com/u/spez" && 
-                    matches!(action, UIAction::RenderEntityView { ns, pk } if ns == "reddit.user" && pk == "spez")
+                    matches!(action, ParserAction::RenderEntityView { ns, pk } if ns == "reddit.user" && pk == "spez")
                 }),
             ],
         );
@@ -1029,11 +1028,11 @@ mod tests {
             ],
             vec![
                 Box::new(|text, action| {
-                    text == "r/" && matches!(action, UIAction::ShowMultiple { .. })
+                    text == "r/" && matches!(action, ParserAction::ShowMultiple { .. })
                 }),
                 Box::new(|text, action| {
                     text == "r/technology" && 
-                    matches!(action, UIAction::ResolveAndDisplaySubreddit { subreddit, prefix } if subreddit == "technology" && prefix == "r/technology")
+                    matches!(action, ParserAction::ResolveAndDisplaySubreddit { subreddit, prefix } if subreddit == "technology" && prefix == "r/technology")
                 }),
             ],
         );
@@ -1051,13 +1050,13 @@ mod tests {
             vec![
                 Box::new(|text, action| {
                     // Should suggest adding slash
-                    text == "www.reddit.com" && matches!(action, UIAction::ShowSuggestions(data) if 
+                    text == "www.reddit.com" && matches!(action, ParserAction::ShowSuggestions(data) if 
                         data.suggestion.as_ref().map(|s| s.completion == "www.reddit.com/").unwrap_or(false)
                     )
                 }),
                 Box::new(|text, action| {
                     // After tab, should show guide
-                    text == "www.reddit.com/" && matches!(action, UIAction::ShowMultiple { .. })
+                    text == "www.reddit.com/" && matches!(action, ParserAction::ShowMultiple { .. })
                 }),
             ],
         );
@@ -1074,7 +1073,7 @@ mod tests {
             vec![
                 Box::new(|text, action| {
                     text == "reddit.com/invalid/path" && 
-                    matches!(action, UIAction::ShowError(_))
+                    matches!(action, ParserAction::ShowError(_))
                 }),
             ],
         );
@@ -1098,43 +1097,43 @@ mod tests {
             vec![
                 Box::new(|text, action| {
                     // "http" should suggest "https://"
-                    text == "http" && matches!(action, UIAction::ShowSuggestions(data) if 
+                    text == "http" && matches!(action, ParserAction::ShowSuggestions(data) if 
                         data.suggestion.as_ref().map(|s| s.completion == "https://").unwrap_or(false)
                     )
                 }),
                 Box::new(|text, action| {
                     // "https://r" should suggest "https://reddit.com"
-                    text == "https://r" && matches!(action, UIAction::ShowSuggestions(data) if 
+                    text == "https://r" && matches!(action, ParserAction::ShowSuggestions(data) if 
                         data.suggestion.as_ref().map(|s| s.completion == "https://reddit.com").unwrap_or(false)
                     )
                 }),
                 Box::new(|text, action| {
                     // After tab, should have "https://reddit.com"
-                    text == "https://reddit.com" && matches!(action, UIAction::ShowSuggestions(_))
+                    text == "https://reddit.com" && matches!(action, ParserAction::ShowSuggestions(_))
                 }),
                 Box::new(|text, action| {
                     // "https://reddit.com/" should show guide
-                    text == "https://reddit.com/" && matches!(action, UIAction::ShowMultiple { .. })
+                    text == "https://reddit.com/" && matches!(action, ParserAction::ShowMultiple { .. })
                 }),
                 Box::new(|text, action| {
                     // "https://reddit.com/r/" should show subreddit selection
-                    text == "https://reddit.com/r/" && matches!(action, UIAction::ShowMultiple { .. })
+                    text == "https://reddit.com/r/" && matches!(action, ParserAction::ShowMultiple { .. })
                 }),
                 Box::new(|text, action| {
                     // "https://reddit.com/r/programming" should resolve subreddit
                     text == "https://reddit.com/r/programming" && 
-                    matches!(action, UIAction::ResolveAndDisplaySubreddit { subreddit, prefix } 
+                    matches!(action, ParserAction::ResolveAndDisplaySubreddit { subreddit, prefix } 
                         if subreddit == "programming" && prefix == "https://reddit.com/r/programming")
                 }),
                 Box::new(|text, action| {
                     // "https://reddit.com/r/programming/" should show sort options
                     text == "https://reddit.com/r/programming/" && 
-                    matches!(action, UIAction::ShowStaticGuide { .. })
+                    matches!(action, ParserAction::ShowStaticGuide { .. })
                 }),
                 Box::new(|text, action| {
                     // "https://reddit.com/r/programming/top" should render entity view
                     text == "https://reddit.com/r/programming/top" && 
-                    matches!(action, UIAction::RenderEntityView { ns, pk } 
+                    matches!(action, ParserAction::RenderEntityView { ns, pk } 
                         if ns == "reddit.subreddit" && pk == "programming")
                 }),
             ],
@@ -1366,7 +1365,7 @@ mod tests {
         
         // 1. Parser generates unified action for partial input
         match graph.parse("r/pro") {
-            UIAction::ResolveAndDisplaySubreddit { subreddit, prefix } => {
+            ParserAction::ResolveAndDisplaySubreddit { subreddit, prefix } => {
                 assert_eq!(subreddit, "pro");
                 assert_eq!(prefix, "r/pro");
                 println!("✓ Parser correctly identifies 'r/pro' as subreddit resolution");
@@ -1705,7 +1704,7 @@ mod tests {
         
         // "r" now suggests "r/", others suggest "reddit.com"
         match graph.parse("r") {
-            UIAction::ShowSuggestions(data) => {
+            ParserAction::ShowSuggestions(data) => {
                 assert_eq!(data.suggestion.as_ref().unwrap().completion, "r/");
                 println!("✓ 'r' → r/");
             }
@@ -1717,7 +1716,7 @@ mod tests {
         
         for prefix in prefixes {
             match graph.parse(prefix) {
-                UIAction::ShowSuggestions(data) => {
+                ParserAction::ShowSuggestions(data) => {
                     assert_eq!(data.suggestion.as_ref().unwrap().completion, "reddit.com");
                     println!("✓ '{}' → reddit.com", prefix);
                 }
@@ -1743,7 +1742,7 @@ mod tests {
         
         for (input, expected) in tests {
             match graph.parse(input) {
-                UIAction::ShowSuggestions(data) => {
+                ParserAction::ShowSuggestions(data) => {
                     assert_eq!(data.suggestion.as_ref().unwrap().completion, expected);
                     println!("✓ '{}' → {}", input, expected);
                 }
@@ -1758,9 +1757,9 @@ mod tests {
         
         // reddit.com/ should show guide, r/ should show subreddit selection
         match graph.parse("reddit.com/") {
-            UIAction::ShowMultiple { actions } => {
+            ParserAction::ShowMultiple { actions } => {
                 let has_guide = actions.iter()
-                    .any(|a| matches!(a, UIAction::ShowStaticGuide { .. }));
+                    .any(|a| matches!(a, ParserAction::ShowStaticGuide { .. }));
                 assert!(has_guide, "Path 'reddit.com/' should show guide");
                 println!("✓ 'reddit.com/' shows Reddit root guide");
             }
@@ -1768,11 +1767,11 @@ mod tests {
         }
         
         match graph.parse("r/") {
-            UIAction::ShowMultiple { actions } => {
+            ParserAction::ShowMultiple { actions } => {
                 let has_scrolling_suggestions = actions.iter()
-                    .any(|a| matches!(a, UIAction::ShowScrollingSuggestions { .. }));
+                    .any(|a| matches!(a, ParserAction::ShowScrollingSuggestions { .. }));
                 let has_db_suggestions = actions.iter()
-                    .any(|a| matches!(a, UIAction::SuggestSubredditsFromDb { .. }));
+                    .any(|a| matches!(a, ParserAction::SuggestSubredditsFromDb { .. }));
                 assert!(has_scrolling_suggestions && has_db_suggestions, 
                        "Path 'r/' should show scrolling suggestions and DB suggestions");
                 println!("✓ 'r/' shows subreddit selection");
@@ -1787,7 +1786,7 @@ mod tests {
         
         // Test navigation to subreddit - now uses ResolveAndDisplaySubreddit
         match graph.parse("reddit.com/r/rust") {
-            UIAction::ResolveAndDisplaySubreddit { subreddit, prefix } => {
+            ParserAction::ResolveAndDisplaySubreddit { subreddit, prefix } => {
                 assert_eq!(subreddit, "rust");
                 assert_eq!(prefix, "reddit.com/r/rust");
                 println!("✓ reddit.com/r/rust recognized");
@@ -1797,7 +1796,7 @@ mod tests {
         
         // Test with alias (r/ goes directly to subreddit, no double r/)
         match graph.parse("r/programming") {
-            UIAction::ResolveAndDisplaySubreddit { subreddit, prefix } => {
+            ParserAction::ResolveAndDisplaySubreddit { subreddit, prefix } => {
                 assert_eq!(subreddit, "programming");
                 assert_eq!(prefix, "r/programming");
                 println!("✓ r/programming (alias) recognized");

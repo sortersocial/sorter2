@@ -11,6 +11,8 @@ use serde::Deserialize;
 
 use crate::{
     form_template::template_json_compact,
+    parser_action::ParserAction,
+    parser_render::parser_panel,
     ranking::ranked_items,
     reducer::GroupState,
     state::AppState,
@@ -128,6 +130,13 @@ impl JsBuilder {
             "var __el = document.querySelector({sel}); if (__el) {{ Idiomorph.morph(__el, {html}); }}",
             sel = js_string_literal(selector),
         ));
+        self
+    }
+
+    pub(crate) fn raw(mut self, js: &str) -> Self {
+        if !js.is_empty() {
+            self.snippets.push(js.to_string());
+        }
         self
     }
 
@@ -292,7 +301,9 @@ pub async fn home(
     let theme = theme_from_jar(&jar);
     let theme_next = theme_next_from_uri(&uri);
     let mut group = state.group.write().await;
+    let empty_action = ParserAction::suggest(String::new(), None);
     let body = html! {
+        (parser_panel("", &empty_action))
         (vote_panel())
         (ranking_panel(&mut group))
         (demo_counter_panel(count, state.event_log.path().to_string_lossy().as_ref()))

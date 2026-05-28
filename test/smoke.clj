@@ -51,6 +51,7 @@
                                          "curl" "-sf" (str base "/")))]
             (is (str/includes? home "vote-panel"))
             (is (str/includes? home "ranking-panel"))
+            (is (str/includes? home "parser-panel"))
             (is (str/includes? home "__rpc__")))
           (finally
             (process/destroy proc)))))))

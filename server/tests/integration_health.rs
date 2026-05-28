@@ -51,5 +51,6 @@ async fn home_has_demo_panel() {
         .unwrap();
     assert!(html.contains("vote-panel"));
     assert!(html.contains("ranking-panel"));
+    assert!(html.contains("parser-panel"));
     assert!(html.contains("__rpc__"));
 }
