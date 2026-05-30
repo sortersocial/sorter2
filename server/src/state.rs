@@ -104,6 +104,7 @@ impl AppState {
         let entity_store = EntityStore::from_db(&db).expect("entity store");
         let projection_store = ProjectionStore::from_db(&db).expect("projection store");
         let views = ViewStore::from_db(&db).expect("view store");
+        views.spawn_flush_worker();
 
         if let Err(e) =
             catch_up_projection(&event_log, &entity_store, &projection_store, &views).await
