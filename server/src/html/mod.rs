@@ -185,7 +185,11 @@ pub fn fetch_entity_panel(item: &ItemId, has_data: bool, fetching: bool) -> Mark
     html! {
         form method="post" action="/ui" id="fetch-entity-form" class="fetch-entity-form" {
             input type="hidden" name=(UI_RPC_FIELD) value=(rpc);
-            button type="submit" class="btn-secondary" disabled=(fetching) { (label) }
+            @if fetching {
+                button type="submit" class="btn-secondary" disabled { (label) }
+            } @else {
+                button type="submit" class="btn-secondary" { (label) }
+            }
         }
     }
 }
