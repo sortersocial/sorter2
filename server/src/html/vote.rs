@@ -194,6 +194,7 @@ pub async fn vote_page(
     let left_param = q.left.as_deref().map(parse_item_param);
     let right_param = q.right.as_deref().map(parse_item_param);
 
+    let _ = state.hydrate_scope(&parent).await;
     let tree = state.tree.read().await;
     let empty = NodeState::default();
     let parent_node = tree.get(&parent).unwrap_or(&empty);

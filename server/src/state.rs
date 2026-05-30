@@ -89,12 +89,13 @@ async fn load_projected_tree(
     let cursor = projection_store
         .last_applied_event_count()
         .map_err(|e| crate::event_log::EventLogError::Apply(e.to_string()))?;
-    let mut tree = projection_store
-        .load_tree()
-        .map_err(|e| crate::event_log::EventLogError::Apply(e.to_string()))?;
+    let mut tree = GlobalTree::new();
 
     event_log
         .replay_from(cursor, |event_count, ev| {
+            projection_store
+                .hydrate_event(&mut tree, &ev)
+                .map_err(|e| crate::event_log::EventLogError::Apply(e.to_string()))?;
             apply_event(ev.clone(), &mut tree, entity_store)?;
             projection_store
                 .persist_event(&tree, event_count, &ev)
@@ -200,6 +201,13 @@ impl AppState {
         Ok(())
     }
 
+    pub async fn hydrate_scope(&self, id: &ItemId) -> Result<(), String> {
+        let mut w = self.tree.write().await;
+        self.projection_store
+            .hydrate_scope(&mut w, id)
+            .map_err(|e| e.to_string())
+    }
+
     /// User-initiated Reddit/API import (SSE / fetch module only).
     pub fn queue_entity_fetch(
         &self,
@@ -218,6 +226,7 @@ impl AppState {
         ratio_left: i32,
         ratio_right: i32,
     ) -> Result<(), String> {
+        self.hydrate_scope(parent).await?;
         let ts = crate::html::now_ms();
         let vote = VoteData::from_recorded(ts, a, b, ratio_left, ratio_right)
             .ok_or_else(|| "invalid vote: need two distinct non-empty items".to_string())?;
@@ -302,10 +311,14 @@ mod tests {
         let first_edge_total: f64 = first_root.local_ranking.edges.values().sum();
         assert_eq!(first_edge_total, 3.0);
 
-        let second = super::load_projected_tree(&log, &entity_store, &projection_store)
+        let mut second = super::load_projected_tree(&log, &entity_store, &projection_store)
             .await
             .unwrap();
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
+        assert_eq!(second.nodes.len(), 1);
+        projection_store
+            .hydrate_scope(&mut second, &ItemId::root())
+            .unwrap();
         let second_root = second.get(&ItemId::root()).unwrap();
         let second_edge_total: f64 = second_root.local_ranking.edges.values().sum();
         assert_eq!(second_edge_total, first_edge_total);
@@ -325,11 +338,18 @@ mod tests {
 
         state.ensure_node(&id).await.unwrap();
 
-        assert_eq!(state.projection_store.last_applied_event_count().unwrap(), 1);
+        assert_eq!(
+            state.projection_store.last_applied_event_count().unwrap(),
+            1
+        );
         let projected = state.projection_store.load_tree().unwrap();
         assert!(projected.get(&id).is_some());
-        let reddit = projected.get(&ItemId::parse("reddit.com").unwrap()).unwrap();
-        assert!(reddit.children.contains(&ItemId::parse("reddit.com/r").unwrap()));
+        let reddit = projected
+            .get(&ItemId::parse("reddit.com").unwrap())
+            .unwrap();
+        assert!(reddit
+            .children
+            .contains(&ItemId::parse("reddit.com/r").unwrap()));
     }
 
     #[tokio::test]
@@ -348,7 +368,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(state.projection_store.last_applied_event_count().unwrap(), 1);
+        assert_eq!(
+            state.projection_store.last_applied_event_count().unwrap(),
+            1
+        );
         let projected = state.projection_store.load_tree().unwrap();
         let root = projected.get(&ItemId::root()).unwrap();
         assert!(root.children.contains(&ItemId::parse("alpha").unwrap()));
@@ -356,6 +379,98 @@ mod tests {
         assert_eq!(root.local_ranking.idx_to_item.len(), 2);
         let edge_total: f64 = root.local_ranking.edges.values().sum();
         assert_eq!(edge_total, 3.0);
+    }
+
+    #[tokio::test]
+    async fn startup_does_not_load_entire_existing_projection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let log = EventLog::new(format!("{data_dir}/events.jsonl"));
+        log.append(&Event::NodeEnsured {
+            id: "reddit.com/r/rust".into(),
+        })
+        .await
+        .unwrap();
+        log.append(&Event::NodeEnsured {
+            id: "reddit.com/r/python".into(),
+        })
+        .await
+        .unwrap();
+        {
+            let db = durable::Db::open(tmp.path().join("store")).unwrap();
+            let entity_store = EntityStore::from_db(&db).unwrap();
+            let projection_store = ProjectionStore::from_db(&db).unwrap();
+            super::load_projected_tree(&log, &entity_store, &projection_store)
+                .await
+                .unwrap();
+        }
+
+        let cfg = AppConfig {
+            data_dir: data_dir.clone(),
+            event_log_path: format!("{data_dir}/events.jsonl"),
+            port: 0,
+        };
+        let second = AppState::new(cfg).await;
+        assert_eq!(
+            second.projection_store.last_applied_event_count().unwrap(),
+            2
+        );
+        assert_eq!(second.tree.read().await.nodes.len(), 1);
+
+        second
+            .hydrate_scope(&ItemId::parse("reddit.com/r/rust").unwrap())
+            .await
+            .unwrap();
+        let tree = second.tree.read().await;
+        assert!(tree
+            .get(&ItemId::parse("reddit.com/r/rust").unwrap())
+            .is_some());
+        assert!(tree
+            .get(&ItemId::parse("reddit.com/r/python").unwrap())
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn record_vote_after_restart_hydrates_existing_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let log = EventLog::new(format!("{data_dir}/events.jsonl"));
+        log.append(&Event::VoteRecorded {
+            ts: 1,
+            a: "alpha".into(),
+            b: "beta".into(),
+            ratio_left: 2,
+            ratio_right: 1,
+            scope: String::new(),
+        })
+        .await
+        .unwrap();
+        {
+            let db = durable::Db::open(tmp.path().join("store")).unwrap();
+            let entity_store = EntityStore::from_db(&db).unwrap();
+            let projection_store = ProjectionStore::from_db(&db).unwrap();
+            super::load_projected_tree(&log, &entity_store, &projection_store)
+                .await
+                .unwrap();
+        }
+
+        let cfg = AppConfig {
+            data_dir: data_dir.clone(),
+            event_log_path: format!("{data_dir}/events.jsonl"),
+            port: 0,
+        };
+        let second = AppState::new(cfg).await;
+        assert_eq!(second.tree.read().await.nodes.len(), 1);
+        second
+            .record_vote(&ItemId::root(), "alpha", "gamma", 3, 1)
+            .await
+            .unwrap();
+
+        let tree = second.tree.read().await;
+        let root = tree.get(&ItemId::root()).unwrap();
+        assert!(root.children.contains(&ItemId::parse("beta").unwrap()));
+        assert!(root.children.contains(&ItemId::parse("gamma").unwrap()));
+        assert_eq!(root.local_ranking.idx_to_item.len(), 3);
     }
 
     #[test]

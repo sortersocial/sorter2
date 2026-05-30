@@ -192,10 +192,7 @@ fn rank_list(label: &str, items: &[RankedItem], start_rank: usize, tree: &Global
 }
 
 fn display_label(id: &ItemId) -> String {
-    id.segments()
-        .last()
-        .map_or("Internet", |v| *v)
-        .to_string()
+    id.segments().last().map_or("Internet", |v| *v).to_string()
 }
 
 fn child_label(tree: &GlobalTree, id: &ItemId) -> String {
@@ -316,6 +313,7 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
     state.views.increment(path.clone());
     let views = state.views.get_views(&path);
 
+    let _ = state.hydrate_scope(&item).await;
     let tree = state.tree.read().await;
     let empty_node = NodeState::default();
     let node = tree.get(&item).unwrap_or(&empty_node);

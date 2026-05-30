@@ -87,6 +87,50 @@ impl ProjectionStore {
         }
     }
 
+    pub fn load_node(&self, id: &ItemId) -> Result<Option<NodeState>, ProjectionStoreError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| ProjectionStoreError::Poisoned)?;
+        Ok(inner.nodes.get(&id.as_str().to_string())?)
+    }
+
+    pub fn hydrate_scope(
+        &self,
+        tree: &mut GlobalTree,
+        id: &ItemId,
+    ) -> Result<(), ProjectionStoreError> {
+        let Some(node) = self.load_node(id)? else {
+            tree.ensure_path(id);
+            return Ok(());
+        };
+
+        let children: Vec<ItemId> = node.children.iter().cloned().collect();
+        tree.nodes.insert(node.id.clone(), node);
+
+        for child in children {
+            if let Some(child_node) = self.load_node(&child)? {
+                tree.nodes.insert(child_node.id.clone(), child_node);
+            } else {
+                tree.ensure_node(&child);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn hydrate_event(
+        &self,
+        tree: &mut GlobalTree,
+        event: &Event,
+    ) -> Result<(), ProjectionStoreError> {
+        for id in affected_nodes(event) {
+            if let Some(node) = self.load_node(&id)? {
+                tree.nodes.insert(node.id.clone(), node);
+            }
+        }
+        Ok(())
+    }
+
     pub fn persist_event(
         &self,
         tree: &GlobalTree,
@@ -210,5 +254,30 @@ mod tests {
         let root = loaded.get(&ItemId::root()).unwrap();
         assert_eq!(root.local_ranking.idx_to_item.len(), 2);
         assert!(root.children.contains(&ItemId::parse("alpha").unwrap()));
+    }
+
+    #[test]
+    fn hydrates_scope_with_child_nodes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ProjectionStore::open(tmp.path()).unwrap();
+        let parent = ItemId::root();
+        let vote = VoteData::from_recorded(1, "alpha", "beta", 2, 1).unwrap();
+        let mut tree = GlobalTree::new();
+        tree.apply_vote(&parent, vote);
+        let event = Event::VoteRecorded {
+            ts: 1,
+            a: "alpha".into(),
+            b: "beta".into(),
+            ratio_left: 2,
+            ratio_right: 1,
+            scope: String::new(),
+        };
+        store.persist_event(&tree, 1, &event).unwrap();
+
+        let mut hydrated = GlobalTree::new();
+        store.hydrate_scope(&mut hydrated, &ItemId::root()).unwrap();
+        let root = hydrated.get(&ItemId::root()).unwrap();
+        assert!(root.children.contains(&ItemId::parse("alpha").unwrap()));
+        assert!(hydrated.get(&ItemId::parse("alpha").unwrap()).is_some());
     }
 }
