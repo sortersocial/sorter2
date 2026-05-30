@@ -182,6 +182,9 @@ async fn vote_page_renders_live_ranking_sidebar() {
         .unwrap();
     assert!(html.contains("vote-ranking-panel"));
     assert!(html.contains("live ranking"));
+    assert!(html.contains("scope-theme"));
+    assert!(html.contains("--accent: oklch("));
+    assert!(html.contains("--bg: oklch("));
     assert!(html.contains("vote-ratio-display"));
     assert!(html.contains(">1:1<"));
     assert!(html.contains("--rank-bg: oklch("));

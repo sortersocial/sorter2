@@ -222,25 +222,58 @@ fn relative_luminance((r, g, b): (f64, f64, f64)) -> f64 {
     0.2126 * linear_channel(r) + 0.7152 * linear_channel(g) + 0.0722 * linear_channel(b)
 }
 
+fn scope_base_hue(parent: &ItemId) -> f64 {
+    let seed = format!("theme-seed-v1:{}", parent.as_str());
+    (stable_hash(&seed) % 360) as f64
+}
+
+fn contrast_text_for_oklch(lightness: f64, chroma: f64, hue: f64) -> &'static str {
+    let luminance = relative_luminance(oklch_to_srgb(lightness, chroma, hue));
+    let contrast_black = (luminance + 0.05) / 0.05;
+    let contrast_white = 1.05 / (luminance + 0.05);
+    if contrast_black >= contrast_white {
+        "#071014"
+    } else {
+        "#f8fbff"
+    }
+}
+
+pub fn scope_theme_style(parent: &ItemId) -> String {
+    let win_hue = scope_base_hue(parent);
+    let lose_hue = (win_hue + 118.0) % 360.0;
+    let accent_l = 0.76;
+    let accent_c = 0.145;
+    let bg_l = 0.13;
+    let bg_c = 0.050;
+    let accent_fg = contrast_text_for_oklch(accent_l, accent_c, win_hue);
+    let fg = contrast_text_for_oklch(bg_l, bg_c, lose_hue);
+    format!(
+        "--accent: oklch({:.1}% {:.3} {:.1}); --accent-fg: {}; --bg: oklch({:.1}% {:.3} {:.1}); --panel: oklch(18.0% 0.055 {:.1}); --border: oklch(34.0% 0.065 {:.1}); --fg: {}; --muted: oklch(78.0% 0.040 {:.1});",
+        accent_l * 100.0,
+        accent_c,
+        win_hue,
+        accent_fg,
+        bg_l * 100.0,
+        bg_c,
+        lose_hue,
+        lose_hue,
+        lose_hue,
+        fg,
+        lose_hue
+    )
+}
+
 fn rank_row_style(parent: &ItemId, ordinal: usize, total: usize) -> String {
     let t = if total <= 1 {
         0.0
     } else {
         ordinal as f64 / (total - 1) as f64
     };
-    let seed = format!("theme-seed-v1:{}", parent.as_str());
-    let base_hue = (stable_hash(&seed) % 360) as f64;
+    let base_hue = scope_base_hue(parent);
     let hue = (base_hue + 118.0 * t) % 360.0;
     let lightness = 0.74 - 0.34 * t;
     let chroma = 0.115 + 0.035 * (1.0 - (2.0 * t - 1.0).abs());
-    let luminance = relative_luminance(oklch_to_srgb(lightness, chroma, hue));
-    let contrast_black = (luminance + 0.05) / 0.05;
-    let contrast_white = 1.05 / (luminance + 0.05);
-    let fg = if contrast_black >= contrast_white {
-        "#071014"
-    } else {
-        "#f8fbff"
-    };
+    let fg = contrast_text_for_oklch(lightness, chroma, hue);
     format!(
         "--rank-bg: oklch({:.1}% {:.3} {:.1}); --rank-fg: {}; --rank-border: oklch({:.1}% {:.3} {:.1});",
         lightness * 100.0,
@@ -431,16 +464,18 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
     };
 
     let body = html! {
-        h1 { "sorter" }
-        (input_panel("", None))
-        (breadcrumb_path(&item))
-        (entity_section(&item, node, false))
-        @if let Some(href) = vote_link {
-            p class="vote-cta" {
-                a class="btn-primary" href=(href) data-testid="vote-children" { "Vote on children" }
+        div class="scope-theme" style=(scope_theme_style(&item)) {
+            h1 { "sorter" }
+            (input_panel("", None))
+            (breadcrumb_path(&item))
+            (entity_section(&item, node, false))
+            @if let Some(href) = vote_link {
+                p class="vote-cta" {
+                    a class="btn-primary" href=(href) data-testid="vote-children" { "Vote on children" }
+                }
             }
+            (ranking_panel(&item, node, &tree))
         }
-        (ranking_panel(&item, node, &tree))
     };
     layout("sorter2", body, views)
 }
