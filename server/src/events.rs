@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 pub enum Event {
     /// Page view recorded (path → counter in views.json).
     ViewRecorded { path: String, ts: i64 },
-    /// Pairwise comparison vote (replayed into the scope's [`crate::reducer::GroupState`] on boot).
-    /// `scope` is the ranking subject (e.g. a subreddit); empty string is the default/global scope.
+    /// Pairwise comparison vote (replayed into the parent node's [`crate::reducer::GroupState`] on boot).
+    /// `scope` is the parent [`crate::path_types::ItemId`] string; empty string is the tree root.
     VoteRecorded {
         ts: i64,
         a: String,
@@ -16,4 +16,6 @@ pub enum Event {
         #[serde(default)]
         scope: String,
     },
+    /// Register a node path in the fractal tree (no external fetch).
+    NodeEnsured { id: String },
 }

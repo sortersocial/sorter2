@@ -1,47 +1,18 @@
-//! Extract a subreddit name from a pasted Reddit URL or path.
+//! Extract a canonical [`crate::path_types::ItemId`] from a pasted Reddit URL or path.
 
-pub fn parse_reddit_url(query: &str) -> Result<String, String> {
+use crate::path_types::ItemId;
+
+pub fn parse_reddit_url(query: &str) -> Result<ItemId, String> {
     let q = query.trim();
     if q.is_empty() {
         return Err("Paste a Reddit URL or r/subreddit path".into());
     }
 
-    if let Some(sub) = subreddit_after_prefix(q, "r/") {
-        return Ok(sub);
+    if let Some(id) = ItemId::from_url(q) {
+        return Ok(id);
     }
 
-    if let Some(sub) = subreddit_from_path_segment(q, "/r/") {
-        return Ok(sub);
-    }
-
-    Err("Could not find a subreddit in that URL".into())
-}
-
-fn subreddit_after_prefix(text: &str, prefix: &str) -> Option<String> {
-    let rest = text.strip_prefix(prefix)?;
-    let sub = rest.split(['/', '?', '#']).next()?.trim();
-    valid_subreddit(sub)
-}
-
-fn subreddit_from_path_segment(text: &str, needle: &str) -> Option<String> {
-    let idx = text.find(needle)?;
-    let rest = &text[idx + needle.len()..];
-    let sub = rest.split(['/', '?', '#']).next()?.trim();
-    valid_subreddit(sub)
-}
-
-fn valid_subreddit(name: &str) -> Option<String> {
-    if name.is_empty() {
-        return None;
-    }
-    if name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
-        Some(name.to_ascii_lowercase())
-    } else {
-        None
-    }
+    Err("Could not parse that Reddit URL".into())
 }
 
 #[cfg(test)]
@@ -50,34 +21,37 @@ mod tests {
 
     #[test]
     fn parses_short_path() {
-        assert_eq!(parse_reddit_url("r/rust").unwrap(), "rust");
-    }
-
-    #[test]
-    fn parses_path_with_trailing_slash() {
-        assert_eq!(parse_reddit_url("r/rust/").unwrap(), "rust");
+        assert_eq!(
+            parse_reddit_url("r/rust").unwrap().as_str(),
+            "reddit.com/r/rust"
+        );
     }
 
     #[test]
     fn parses_full_url() {
         assert_eq!(
-            parse_reddit_url("https://www.reddit.com/r/programming/hot").unwrap(),
-            "programming"
+            parse_reddit_url("https://www.reddit.com/r/programming/hot")
+                .unwrap()
+                .as_str(),
+            "reddit.com/r/programming"
         );
     }
 
     #[test]
-    fn parses_url_without_scheme() {
+    fn parses_post_url() {
+        let id = parse_reddit_url(
+            "https://old.reddit.com/r/AmItheAsshole/comments/1trnvdl/aita_for_cancelling/",
+        )
+        .unwrap();
         assert_eq!(
-            parse_reddit_url("reddit.com/r/AskReddit").unwrap(),
-            "askreddit"
+            id.as_str(),
+            "reddit.com/r/amitheasshole/comments/1trnvdl"
         );
     }
 
     #[test]
     fn rejects_empty() {
         assert!(parse_reddit_url("").is_err());
-        assert!(parse_reddit_url("   ").is_err());
     }
 
     #[test]

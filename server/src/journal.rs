@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, RwLock};
@@ -6,55 +5,53 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 use crate::{
     event_log::EventLog,
     events::Event,
-    reducer::{GroupState, VoteData},
+    path_types::ItemId,
+    reducer::{GlobalTree, VoteData},
 };
 
-/// Per-scope ranking state, keyed by scope (e.g. subreddit; "" is the default scope).
-pub type GroupMap = HashMap<String, GroupState>;
-
-pub struct SettlementCommand {
-    pub scope: String,
+pub struct JournalCommand {
+    pub parent: ItemId,
     pub vote: VoteData,
     pub event: Event,
     pub reply: oneshot::Sender<Result<(), String>>,
 }
 
 #[derive(Clone)]
-pub struct SettlementClient {
-    tx: mpsc::Sender<SettlementCommand>,
+pub struct JournalClient {
+    tx: mpsc::Sender<JournalCommand>,
 }
 
-impl SettlementClient {
-    pub fn spawn(groups: Arc<RwLock<GroupMap>>, event_log: Arc<EventLog>) -> Self {
+impl JournalClient {
+    pub fn spawn(tree: Arc<RwLock<GlobalTree>>, event_log: Arc<EventLog>) -> Self {
         let (tx, rx) = mpsc::channel(64);
-        tokio::spawn(settlement_worker(rx, groups, event_log));
+        tokio::spawn(journal_worker(rx, tree, event_log));
         Self { tx }
     }
 
     pub async fn record_vote(
         &self,
-        scope: String,
+        parent: ItemId,
         vote: VoteData,
         event: Event,
     ) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(SettlementCommand {
-                scope,
+            .send(JournalCommand {
+                parent,
                 vote,
                 event,
                 reply,
             })
             .await
-            .map_err(|_| "settlement worker stopped".to_string())?;
+            .map_err(|_| "journal worker stopped".to_string())?;
         rx.await
-            .map_err(|_| "settlement worker stopped".to_string())?
+            .map_err(|_| "journal worker stopped".to_string())?
     }
 }
 
-async fn settlement_worker(
-    mut rx: mpsc::Receiver<SettlementCommand>,
-    groups: Arc<RwLock<GroupMap>>,
+async fn journal_worker(
+    mut rx: mpsc::Receiver<JournalCommand>,
+    tree: Arc<RwLock<GlobalTree>>,
     event_log: Arc<EventLog>,
 ) {
     while let Some(first) = rx.recv().await {
@@ -79,11 +76,9 @@ async fn settlement_worker(
         }
 
         {
-            let mut w = groups.write().await;
+            let mut w = tree.write().await;
             for cmd in &batch {
-                w.entry(cmd.scope.clone())
-                    .or_default()
-                    .apply_vote(cmd.vote.clone());
+                w.apply_vote(&cmd.parent, cmd.vote.clone());
             }
         }
 

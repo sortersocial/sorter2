@@ -12,9 +12,10 @@ use serde::Deserialize;
 use crate::{
     form_template::template_json_compact,
     parser_render::navigate_panel,
+    path_types::ItemId,
     ranking::{top_bottom, RankedItem},
-    reducer::GroupState,
-    state::{normalize_scope, AppState},
+    reducer::{GroupState, NodeState},
+    state::{parse_item_param, AppState},
     ui_action::UI_RPC_FIELD,
 };
 
@@ -216,6 +217,48 @@ fn layout(title: &str, body: Markup, views: u64, theme: &str, theme_next: &str) 
     }
 }
 
+fn item_href(id: &ItemId) -> String {
+    if id.is_root() {
+        "/".to_string()
+    } else {
+        format!("/?item={}", id.as_str())
+    }
+}
+
+fn segment_label(seg: &str) -> &str {
+    seg
+}
+
+/// Generic breadcrumb trail from an [`ItemId`] path.
+pub fn breadcrumb_path(item: &ItemId) -> Markup {
+    html! {
+        nav class="breadcrumbs" aria-label="Breadcrumb" {
+            a href="/" { "Internet" }
+            @for path in item.breadcrumb_paths() {
+                @let seg = path.segments().last().map_or("", |v| *v);
+                span class="separator" { " / " }
+                a href=(item_href(&path)) { (segment_label(seg)) }
+            }
+        }
+    }
+}
+
+fn entity_panel(node: &NodeState) -> Markup {
+    html! {
+        @if let Some(data) = &node.data {
+            section id="entity-panel" class="demo-panel entity-card" {
+                h2 { (data.title) }
+                @if let Some(author) = &data.author {
+                    p class="muted small" { "by " (author) }
+                }
+                @if let Some(body) = &data.body_html {
+                    div class="entity-body" { (maud::PreEscaped(body)) }
+                }
+            }
+        }
+    }
+}
+
 fn rank_list(label: &str, items: &[RankedItem], start_rank: usize) -> Markup {
     html! {
         @if !items.is_empty() {
@@ -224,7 +267,9 @@ fn rank_list(label: &str, items: &[RankedItem], start_rank: usize) -> Markup {
                 @for (i, r) in items.iter().enumerate() {
                     li {
                         span class="rank-num" { (start_rank + i) ". " }
-                        strong { (r.item.as_str()) }
+                        a href=(item_href(&r.item)) {
+                            strong { (display_label(&r.item)) }
+                        }
                         span class="muted" {
                             " — "
                             ({ format!("{:.1}%", r.score * 100.0) })
@@ -236,23 +281,30 @@ fn rank_list(label: &str, items: &[RankedItem], start_rank: usize) -> Markup {
     }
 }
 
-pub fn ranking_panel(scope: &str, group: &GroupState) -> Markup {
+fn display_label(id: &ItemId) -> String {
+    id.segments()
+        .last()
+        .map_or("Internet", |v| *v)
+        .to_string()
+}
+
+pub fn ranking_panel(item: &ItemId, group: &GroupState) -> Markup {
     let total = group.idx_to_item.len();
     let (top, bottom) = top_bottom(group, 8);
     html! {
         section id="ranking-panel" class="demo-panel" {
             h2 {
                 "Ranking"
-                @if !scope.is_empty() {
-                    " — " span class="scope-name" { "r/" (scope) }
+                @if !item.is_root() {
+                    " — " span class="scope-name" { (item.as_str()) }
                 }
             }
             @if total == 0 {
                 p class="muted" {
-                    @if scope.is_empty() {
+                    @if item.is_root() {
                         "No votes yet — compare two items below."
                     } @else {
-                        "No votes yet for r/" (scope) " — compare two items below to start the ranking."
+                        "No votes yet for " (item.as_str()) " — compare two items below to start the ranking."
                     }
                 }
             } @else {
@@ -266,7 +318,8 @@ pub fn ranking_panel(scope: &str, group: &GroupState) -> Markup {
     }
 }
 
-pub fn vote_panel(scope: &str) -> Markup {
+pub fn vote_panel(parent: &ItemId) -> Markup {
+    let parent_str = parent.as_str();
     let rpc = template_json_compact(&serde_json::json!({
         "action": "record_vote",
         "a": {"$form": "item_a"},
@@ -280,16 +333,17 @@ pub fn vote_panel(scope: &str) -> Markup {
         section id="vote-panel" class="demo-panel" {
             h2 { "Compare" }
             p class="muted small" {
-                @if scope.is_empty() {
+                @if parent.is_root() {
                     "Left item wins at 2:1. Votes append to the JSONL log and update rank centrality."
                 } @else {
-                    "Ranking " span class="scope-name" { "r/" (scope) }
+                    "Ranking children of "
+                    span class="scope-name" { (parent_str) }
                     ". Left item wins at 2:1; each vote updates this ranking."
                 }
             }
             form method="post" action="/ui" id="vote-form" {
                 input type="hidden" name=(UI_RPC_FIELD) value=(rpc);
-                input type="hidden" name="scope" value=(scope);
+                input type="hidden" name="scope" value=(parent_str);
                 div class="vote-fields" {
                     label {
                         "Left (wins) "
@@ -329,17 +383,30 @@ pub async fn home(
     let views = state.views.get_views(&path);
     let theme = theme_from_jar(&jar);
     let theme_next = theme_next_from_uri(&uri);
-    let scope = normalize_scope(&query_param(&uri, "sub").unwrap_or_default());
 
-    let groups = state.groups.read().await;
-    let empty = GroupState::new();
-    let group = groups.get(&scope).unwrap_or(&empty);
+    let item_raw = query_param(&uri, "item")
+        .or_else(|| query_param(&uri, "sub").map(|sub| {
+            if sub.is_empty() {
+                String::new()
+            } else {
+                format!("reddit.com/r/{sub}")
+            }
+        }))
+        .unwrap_or_default();
+    let item = parse_item_param(&item_raw);
+
+    let tree = state.tree.read().await;
+    let empty_node = NodeState::default();
+    let node = tree.get(&item).unwrap_or(&empty_node);
+    let group = &node.local_ranking;
 
     let body = html! {
         h1 { "sorter2" }
+        (breadcrumb_path(&item))
         (navigate_panel("", None))
-        (vote_panel(&scope))
-        (ranking_panel(&scope, group))
+        (entity_panel(node))
+        (vote_panel(&item))
+        (ranking_panel(&item, group))
     };
     layout("sorter2", body, views, theme, &theme_next)
 }

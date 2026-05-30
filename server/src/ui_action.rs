@@ -18,7 +18,7 @@ pub enum HtmlUiAction {
         b: String,
         ratio_left: i32,
         ratio_right: i32,
-        /// Ranking subject (e.g. a subreddit). Empty string = default/global scope.
+        /// Parent node [`ItemId`] string; empty = tree root.
         #[serde(default)]
         scope: String,
     },

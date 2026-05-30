@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -6,14 +5,22 @@ use tokio::sync::RwLock;
 use crate::{
     event_log::EventLog,
     events::Event,
-    reducer::VoteData,
-    settlement::{GroupMap, SettlementClient},
+    path_types::ItemId,
+    reducer::{GlobalTree, VoteData},
+    journal::JournalClient,
     views::ViewStore,
 };
 
-/// Normalize a raw ranking subject into a scope key: strip an optional `r/`
-/// prefix, keep only `[a-z0-9_]`, lowercase, and cap the length. Empty string
-/// is the default/global scope.
+/// Parse `?item=` query value into a canonical node id.
+pub fn parse_item_param(raw: &str) -> ItemId {
+    let s = raw.trim();
+    if s.is_empty() {
+        return ItemId::root();
+    }
+    ItemId::from_url(s).or_else(|| ItemId::parse(s)).unwrap_or_else(|| ItemId::opaque(s))
+}
+
+/// Legacy: normalize raw ranking subject into a scope key for old event replay.
 pub fn normalize_scope(raw: &str) -> String {
     let s = raw.trim();
     let s = s
@@ -25,6 +32,14 @@ pub fn normalize_scope(raw: &str) -> String {
         .flat_map(|c| c.to_lowercase())
         .take(64)
         .collect()
+}
+
+fn parent_from_event_scope(scope: &str) -> ItemId {
+    if scope.contains('/') {
+        ItemId::parse(scope).unwrap_or_else(|| ItemId::from_legacy_scope(scope))
+    } else {
+        ItemId::from_legacy_scope(scope)
+    }
 }
 
 #[derive(Clone)]
@@ -56,8 +71,8 @@ pub struct AppState {
     pub cfg: Arc<AppConfig>,
     pub event_log: Arc<EventLog>,
     pub views: ViewStore,
-    pub groups: Arc<RwLock<GroupMap>>,
-    settlement: SettlementClient,
+    pub tree: Arc<RwLock<GlobalTree>>,
+    journal: JournalClient,
 }
 
 impl AppState {
@@ -66,7 +81,7 @@ impl AppState {
         let views_path = format!("{}/views.json", cfg.data_dir);
         let views = ViewStore::new(&views_path);
 
-        let mut groups: GroupMap = HashMap::new();
+        let mut tree = GlobalTree::new();
         if let Ok((events, _)) = event_log.load_all().await {
             for ev in events {
                 match ev {
@@ -81,29 +96,45 @@ impl AppState {
                         if let Some(vote) =
                             VoteData::from_recorded(ts, &a, &b, ratio_left, ratio_right)
                         {
-                            groups.entry(scope).or_default().apply_vote(vote);
+                            let parent = parent_from_event_scope(&scope);
+                            tree.apply_vote(&parent, vote);
                         }
                     }
                     Event::ViewRecorded { .. } => {}
+                    Event::NodeEnsured { id } => {
+                        if let Some(parsed) = ItemId::parse(&id).or_else(|| ItemId::from_url(&id)) {
+                            tree.ensure_path(&parsed);
+                        }
+                    }
                 }
             }
         }
 
-        let groups = Arc::new(RwLock::new(groups));
-        let settlement = SettlementClient::spawn(groups.clone(), event_log.clone());
+        let tree = Arc::new(RwLock::new(tree));
+        let journal = JournalClient::spawn(tree.clone(), event_log.clone());
 
         Self {
             cfg: Arc::new(cfg),
             event_log,
             views,
-            groups,
-            settlement,
+            tree,
+            journal,
         }
+    }
+
+    pub async fn ensure_node(&self, id: &ItemId) -> Result<(), String> {
+        let event = Event::NodeEnsured {
+            id: id.as_str().to_string(),
+        };
+        self.event_log.append(&event).await.map_err(|e| e.to_string())?;
+        let mut w = self.tree.write().await;
+        w.ensure_path(id);
+        Ok(())
     }
 
     pub async fn record_vote(
         &self,
-        scope: &str,
+        parent: &ItemId,
         a: &str,
         b: &str,
         ratio_left: i32,
@@ -113,23 +144,24 @@ impl AppState {
         let vote = VoteData::from_recorded(ts, a, b, ratio_left, ratio_right)
             .ok_or_else(|| "invalid vote: need two distinct non-empty items".to_string())?;
 
-        let scope = normalize_scope(scope);
         let event = Event::VoteRecorded {
             ts,
             a: vote.a.as_str().to_string(),
             b: vote.b.as_str().to_string(),
             ratio_left: vote.ratio_left,
             ratio_right: vote.ratio_right,
-            scope: scope.clone(),
+            scope: parent.as_str().to_string(),
         };
 
-        self.settlement.record_vote(scope, vote, event).await
+        self.journal
+            .record_vote(parent.clone(), vote, event)
+            .await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_scope;
+    use super::{normalize_scope, parse_item_param};
 
     #[test]
     fn normalize_scope_strips_prefix_and_lowercases() {
@@ -137,5 +169,16 @@ mod tests {
         assert_eq!(normalize_scope("  rust  "), "rust");
         assert_eq!(normalize_scope("r/web_dev!!"), "web_dev");
         assert_eq!(normalize_scope(""), "");
+    }
+
+    #[test]
+    fn parse_item_param_from_url() {
+        let id = parse_item_param("https://reddit.com/r/rust");
+        assert_eq!(id.as_str(), "reddit.com/r/rust");
+    }
+
+    #[test]
+    fn parse_item_param_empty_is_root() {
+        assert!(parse_item_param("").is_root());
     }
 }

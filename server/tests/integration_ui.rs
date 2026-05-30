@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use axum::Router;
-use sorter2_server::{create_app, create_app_state, state::AppConfig, ui_action::UI_RPC_FIELD};
+use sorter2_server::{create_app, create_app_state, path_types::ItemId, state::AppConfig, ui_action::UI_RPC_FIELD};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 
@@ -63,9 +63,9 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
         port: 0,
     };
     let state = create_app_state(cfg).await;
-    let groups = state.groups.read().await;
-    let group = groups.get("").expect("default scope group after replay");
-    let ranked = sorter2_server::ranking::ranked_items(group);
+    let tree = state.tree.read().await;
+    let root = tree.get(&ItemId::root()).expect("root node after replay");
+    let ranked = sorter2_server::ranking::ranked_items(&root.local_ranking);
     assert_eq!(ranked.len(), 2);
     assert_eq!(ranked[0].item.as_str(), "alpha");
 }
@@ -93,5 +93,5 @@ async fn post_ui_parse_query_redirects_to_subreddit() {
         .unwrap();
 
     assert!(body.contains("window.location.href"));
-    assert!(body.contains("/?sub=rust"));
+    assert!(body.contains("/?item=reddit.com/r/rust"));
 }

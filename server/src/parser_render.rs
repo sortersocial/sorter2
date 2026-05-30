@@ -21,7 +21,7 @@ pub fn navigate_panel(query: &str, error: Option<&str>) -> Markup {
             p class="muted small" {
                 "Paste a Reddit URL or "
                 code { "r/subreddit" }
-                " path, then click Go to rank that subreddit."
+                " path. Breadcrumb links drill down the tree; rankings apply to each node's children."
             }
             form method="post" action="/ui" id="parser-form" {
                 textarea

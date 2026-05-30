@@ -9,7 +9,9 @@ use crate::{
     html::{js_string_literal, ranking_panel, JsBuilder},
     parser::parse_reddit_url,
     parser_render::navigate_panel,
-    state::AppState,
+    path_types::ItemId,
+    reddit::ensure_partial_tree,
+    state::{parse_item_param, AppState},
     ui_action::{parse_html_ui_from_form, HtmlUiAction},
 };
 
@@ -23,6 +25,10 @@ fn ui_js_warn(msg: &str) -> Response {
         )
         .body(axum::body::Body::from(js))
         .unwrap()
+}
+
+fn parent_from_scope(scope: &str) -> ItemId {
+    parse_item_param(scope)
 }
 
 pub async fn post_ui_html(
@@ -42,24 +48,36 @@ pub async fn post_ui_html(
             ratio_right,
             scope,
         } => {
+            let parent = parent_from_scope(&scope);
             if let Err(e) = state
-                .record_vote(&scope, &a, &b, ratio_left, ratio_right)
+                .record_vote(&parent, &a, &b, ratio_left, ratio_right)
                 .await
             {
                 return ui_js_warn(&e).into_response();
             }
-            let scope = crate::state::normalize_scope(&scope);
-            let groups = state.groups.read().await;
+            let tree = state.tree.read().await;
             let empty = crate::reducer::GroupState::new();
-            let group = groups.get(&scope).unwrap_or(&empty);
-            let panel = ranking_panel(&scope, group);
+            let group = tree
+                .get(&parent)
+                .map(|n| &n.local_ranking)
+                .unwrap_or(&empty);
+            let panel = ranking_panel(&parent, group);
             JsBuilder::new()
                 .morph_selector("#ranking-panel", panel)
                 .into_response()
         }
         HtmlUiAction::ParseQuery { query } => match parse_reddit_url(&query) {
-            Ok(subreddit) => {
-                let dest = format!("/?sub={subreddit}");
+            Ok(item) => {
+                {
+                    let mut tree = state.tree.write().await;
+                    ensure_partial_tree(&mut tree, &item);
+                }
+                let _ = state.ensure_node(&item).await;
+                let dest = if item.is_root() {
+                    "/".to_string()
+                } else {
+                    format!("/?item={}", item.as_str())
+                };
                 JsBuilder::new()
                     .raw(&format!(
                         "window.location.href={};",

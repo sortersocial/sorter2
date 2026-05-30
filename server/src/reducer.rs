@@ -115,6 +115,96 @@ impl GroupState {
     }
 }
 
+/// Structured data imported from Reddit or elsewhere.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityData {
+    pub title: String,
+    pub author: Option<String>,
+    pub body_html: Option<String>,
+    pub thumb_url: Option<String>,
+}
+
+/// One node in the fractal tree: entity + ranked children.
+#[derive(Debug, Clone, Default)]
+pub struct NodeState {
+    pub id: ItemId,
+    pub data: Option<EntityData>,
+    pub children: HashSet<ItemId>,
+    pub local_ranking: GroupState,
+}
+
+impl NodeState {
+    fn new(id: ItemId) -> Self {
+        Self {
+            id,
+            ..Default::default()
+        }
+    }
+}
+
+/// Global fractal graph: every URL is both an item and a ranking scope for its children.
+#[derive(Default)]
+pub struct GlobalTree {
+    pub nodes: HashMap<ItemId, NodeState>,
+}
+
+impl GlobalTree {
+    pub fn new() -> Self {
+        let mut tree = Self::default();
+        tree.ensure_node(&ItemId::root());
+        tree
+    }
+
+    pub fn ensure_node(&mut self, id: &ItemId) -> &mut NodeState {
+        if !self.nodes.contains_key(id) {
+            self.nodes.insert(id.clone(), NodeState::new(id.clone()));
+        }
+        self.nodes.get_mut(id).expect("node just inserted")
+    }
+
+    /// Register a node and wire parent→child links along the canonical path.
+    pub fn ensure_path(&mut self, id: &ItemId) {
+        if id.is_root() {
+            self.ensure_node(id);
+            return;
+        }
+        self.ensure_node(&ItemId::root());
+        for path in id.breadcrumb_paths() {
+            self.ensure_node(&path);
+            if let Some(parent) = path.parent() {
+                self.ensure_node(&parent);
+                if let Some(p) = self.nodes.get_mut(&parent) {
+                    p.children.insert(path.clone());
+                }
+            } else if let Some(r) = self.nodes.get_mut(&ItemId::root()) {
+                r.children.insert(path.clone());
+            }
+        }
+    }
+
+    pub fn get(&self, id: &ItemId) -> Option<&NodeState> {
+        self.nodes.get(id)
+    }
+
+    pub fn apply_vote(&mut self, parent: &ItemId, vote: VoteData) {
+        self.ensure_path(parent);
+        self.ensure_path(&vote.a);
+        self.ensure_path(&vote.b);
+        if let Some(node) = self.nodes.get_mut(parent) {
+            node.children.insert(vote.a.clone());
+            node.children.insert(vote.b.clone());
+            node.local_ranking.apply_vote(vote);
+        }
+    }
+
+    pub fn set_entity_data(&mut self, id: &ItemId, data: EntityData) {
+        self.ensure_path(id);
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.data = Some(data);
+        }
+    }
+}
+
 #[cfg(test)]
 mod from_recorded_tests {
     use super::*;
@@ -125,7 +215,20 @@ mod from_recorded_tests {
     }
 
     #[test]
-    fn rejects_empty() {
+    fn rejects_empty_pair() {
         assert!(VoteData::from_recorded(1, "", "b", 2, 1).is_none());
+    }
+
+    #[test]
+    fn ensure_path_wires_children() {
+        let mut tree = GlobalTree::new();
+        let id = ItemId::parse("reddit.com/r/rust").unwrap();
+        tree.ensure_path(&id);
+        let root = tree.get(&ItemId::root()).unwrap();
+        assert!(root.children.contains(&ItemId::parse("reddit.com").unwrap()));
+        let reddit = tree.get(&ItemId::parse("reddit.com").unwrap()).unwrap();
+        assert!(reddit.children.contains(&ItemId::parse("reddit.com/r").unwrap()));
+        let sub = tree.get(&id).unwrap();
+        assert_eq!(sub.id, id);
     }
 }
