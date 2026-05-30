@@ -225,3 +225,147 @@ code {
 h1 {
   margin: 0;
 }
+
+.vote-cta {
+  margin: 0.75rem 0;
+}
+
+.vote-compare-shell {
+  max-width: 960px;
+}
+
+.vote-compare-scope {
+  margin: 0.5rem 0 1rem;
+}
+
+.vote-compare-pair {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 1rem;
+  align-items: start;
+  margin: 1rem 0;
+}
+
+.vote-compare-vs {
+  align-self: center;
+  font-size: 1.25rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.vote-compare-side {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  min-height: 120px;
+}
+
+.vote-compare-item {
+  color: var(--accent);
+  text-decoration: none;
+  display: block;
+}
+
+.vote-compare-item:hover {
+  text-decoration: underline;
+}
+
+.vote-compare-figure {
+  margin: 0.75rem 0 0;
+}
+
+.vote-compare-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.vote-compare-item-body {
+  margin-top: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.vote-compare-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.vote-compare-next {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.vote-compare-next.is-disabled {
+  color: var(--muted);
+}
+
+.vote-compare-back {
+  text-decoration: none;
+}
+
+.vote-compare-back:hover {
+  text-decoration: underline;
+}
+
+.vote-compare-slider-label {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 0.75rem;
+  align-items: center;
+  margin: 1.25rem 0;
+}
+
+.vote-compare-slider-label input[type="range"] {
+  width: 100%;
+  min-width: 160px;
+}
+
+#vote-slider-left-label {
+  text-align: right;
+}
+
+#vote-slider-right-label {
+  text-align: left;
+}
+
+.vote-edge-history-title {
+  margin: 1.5rem 0 0.5rem;
+  font-size: 1rem;
+}
+
+.vote-edge-history {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.vote-edge-history-row {
+  margin-bottom: 0.75rem;
+}
+
+.vote-edge-meta {
+  font-size: 0.875rem;
+  margin-bottom: 0.25rem;
+}
+
+.ratio-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--border);
+}
+
+.ratio-left {
+  background: var(--accent);
+}
+
+.ratio-right {
+  background: var(--muted);
+}

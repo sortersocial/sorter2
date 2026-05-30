@@ -20,6 +20,8 @@ use crate::{
     ui_action::UI_RPC_FIELD,
 };
 
+pub mod vote;
+
 const SORTER_CSS: &str = include_str!("../../static/sorter.css");
 const SORTER_UI_JS: &str = include_str!("../../static/sorter_ui.js");
 
@@ -131,7 +133,7 @@ fn layout(title: &str, body: Markup, views: u64) -> Markup {
     }
 }
 
-fn item_href(id: &ItemId) -> String {
+pub(crate) fn item_href(id: &ItemId) -> String {
     id.browse_href()
 }
 
@@ -309,11 +311,23 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
     let empty_node = NodeState::default();
     let node = tree.get(&item).unwrap_or(&empty_node);
 
+    let child_count = node.children.len();
+    let vote_link = if child_count >= 2 {
+        Some(vote::vote_href(&item))
+    } else {
+        None
+    };
+
     let body = html! {
         h1 { "sorter" }
         (input_panel("", None))
         (breadcrumb_path(&item))
         (entity_section(&item, node, false))
+        @if let Some(href) = vote_link {
+            p class="vote-cta" {
+                a class="btn-primary" href=(href) data-testid="vote-children" { "Vote on children" }
+            }
+        }
         (ranking_panel(&item, node, &tree))
     };
     layout("sorter2", body, views)

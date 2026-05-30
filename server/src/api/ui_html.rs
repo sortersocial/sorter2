@@ -47,6 +47,7 @@ pub async fn post_ui_html(
             ratio_left,
             ratio_right,
             scope,
+            next,
         } => {
             let parent = parent_from_scope(&scope);
             if let Err(e) = state
@@ -56,9 +57,19 @@ pub async fn post_ui_html(
                 return ui_js_warn(&e).into_response();
             }
             let tree = state.tree.read().await;
+            if !next.trim().is_empty() {
+                drop(tree);
+                return JsBuilder::new()
+                    .raw(&format!(
+                        "window.location.href={};",
+                        js_string_literal(next.trim())
+                    ))
+                    .into_response();
+            }
             let empty = crate::reducer::NodeState::default();
             let node = tree.get(&parent).unwrap_or(&empty);
             let panel = ranking_panel(&parent, node, &tree);
+            drop(tree);
             JsBuilder::new()
                 .morph_selector("#ranking-panel", panel)
                 .into_response()
@@ -126,6 +137,7 @@ mod tests {
                 ratio_left: 3,
                 ratio_right: 1,
                 scope: String::new(),
+                next: String::new(),
             }
         );
     }

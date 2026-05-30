@@ -20,6 +20,8 @@ reqwest = { version = "0.12", features = ["json"] }
 dotenvy = "0.15"
 async-stream = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+rand = "0.8"
+urlencoding = "2"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }

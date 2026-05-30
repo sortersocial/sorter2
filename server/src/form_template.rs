@@ -7,19 +7,30 @@ pub fn template_json_compact<T: Serialize>(v: &T) -> serde_json::Result<String> 
     serde_json::to_string(v)
 }
 
-/// Recursively walk the JSON AST and replace `{"$form": "key"}` with the submitted
-/// string for `key` (empty if missing). Other keys are unchanged.
+/// Recursively walk the JSON AST and replace form holes with submitted values.
+///
+/// - `{"$form": "key"}` → string (empty if missing)
+/// - `{"$form:i32": "key"}` → JSON number (0 if missing or unparseable)
 pub fn substitute_form_vars(val: &mut Value, form_data: &HashMap<String, String>) {
     match val {
         Value::Object(map) => {
             if map.len() == 1 {
-                if let Some(Value::String(field_name)) = map.get("$form") {
-                    let submitted = form_data
-                        .get(field_name.as_str())
-                        .map(|s| s.as_str())
-                        .unwrap_or("");
-                    *val = Value::String(submitted.to_string());
-                    return;
+                if let Some((hole_key, Value::String(field_name))) = map.iter().next() {
+                    if let Some(form_type) = hole_key.strip_prefix("$form") {
+                        let submitted = form_data
+                            .get(field_name.as_str())
+                            .map(|s| s.as_str())
+                            .unwrap_or("");
+                        *val = match form_type {
+                            "" => Value::String(submitted.to_string()),
+                            ":i32" => {
+                                let n: i32 = submitted.trim().parse().unwrap_or(0);
+                                Value::Number(n.into())
+                            }
+                            _ => Value::String(submitted.to_string()),
+                        };
+                        return;
+                    }
                 }
             }
             for v in map.values_mut() {
@@ -60,6 +71,45 @@ mod tests {
     #[derive(Debug, Deserialize, PartialEq, Eq)]
     struct Nested {
         text: String,
+    }
+
+    #[test]
+    fn i32_holes_become_numbers() {
+        let json = r#"{
+            "ratio_left": {"$form:i32": "ratio_left"},
+            "ratio_right": {"$form:i32": "ratio_right"}
+        }"#;
+        let mut form = HashMap::new();
+        form.insert("ratio_left".into(), "75".into());
+        form.insert("ratio_right".into(), "25".into());
+        let v = fill_template_from_form(json, &form).unwrap();
+        assert_eq!(v["ratio_left"], 75);
+        assert_eq!(v["ratio_right"], 25);
+
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct Ratios {
+            ratio_left: i32,
+            ratio_right: i32,
+        }
+        let r: Ratios = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            r,
+            Ratios {
+                ratio_left: 75,
+                ratio_right: 25,
+            }
+        );
+    }
+
+    #[test]
+    fn i32_hole_missing_or_bad_defaults_to_zero() {
+        let json = r#"{"n": {"$form:i32": "missing"}}"#;
+        let v = fill_template_from_form(json, &HashMap::new()).unwrap();
+        assert_eq!(v["n"], 0);
+        let mut form = HashMap::new();
+        form.insert("missing".into(), "nope".into());
+        let v = fill_template_from_form(json, &form).unwrap();
+        assert_eq!(v["n"], 0);
     }
 
     #[test]

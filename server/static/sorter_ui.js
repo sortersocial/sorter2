@@ -81,7 +81,22 @@
     });
   }
 
+  function initVoteSlider() {
+    var slider = document.getElementById('vote-preference-slider');
+    if (!slider) return;
+    var leftInput = document.getElementById('vote-ratio-left');
+    var rightInput = document.getElementById('vote-ratio-right');
+    function update() {
+      var v = parseInt(slider.value, 10);
+      if (leftInput) leftInput.value = String(v);
+      if (rightInput) rightInput.value = String(100 - v);
+    }
+    slider.addEventListener('input', update);
+    update();
+  }
+
   function initSorterUi() {
+    initVoteSlider();
     document.addEventListener('submit', async function (e) {
       var f = e.target;
       if (!f || f.tagName !== 'FORM') return;
@@ -89,10 +104,11 @@
       if (f.getAttribute('data-navigate') === 'full') return;
       e.preventDefault();
       await postUiForm(f);
-      if (f.id === 'vote-form') {
+      if (f.id === 'vote-form' || f.id === 'vote-compare-form') {
         f.reset();
-        var firstField = f.querySelector('input[type="text"]');
-        if (firstField) firstField.focus();
+        var slider = f.querySelector('#vote-preference-slider');
+        if (slider) slider.value = '50';
+        initVoteSlider();
       }
     });
   }

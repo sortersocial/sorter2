@@ -31,6 +31,9 @@ pub enum HtmlUiAction {
         /// Parent node [`ItemId`] string; empty = tree root.
         #[serde(default)]
         scope: String,
+        /// After vote, navigate here (vote compare page).
+        #[serde(default)]
+        next: String,
     },
     /// Parse pasted Reddit URL/path; redirect to subreddit ranking on success.
     ParseQuery {
@@ -71,6 +74,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn record_vote_round_trip_with_typed_ratio_holes() {
+        let template = serde_json::json!({
+            "action": "record_vote",
+            "a": "x",
+            "b": "y",
+            "ratio_left": {"$form:i32": "ratio_left"},
+            "ratio_right": {"$form:i32": "ratio_right"},
+            "scope": "parent",
+        });
+        let mut form = HashMap::new();
+        form.insert(
+            UI_RPC_FIELD.to_string(),
+            serde_json::to_string(&template).unwrap(),
+        );
+        form.insert("ratio_left".into(), "60".into());
+        form.insert("ratio_right".into(), "40".into());
+        assert_eq!(
+            parse_html_ui_from_form(&form).unwrap(),
+            HtmlUiAction::RecordVote {
+                a: "x".into(),
+                b: "y".into(),
+                ratio_left: 60,
+                ratio_right: 40,
+                scope: "parent".into(),
+                next: String::new(),
+            }
+        );
+    }
+
+    #[test]
     fn record_vote_round_trip_with_form_holes() {
         let template = serde_json::json!({
             "action": "record_vote",
@@ -96,6 +129,7 @@ mod tests {
                 ratio_left: 2,
                 ratio_right: 1,
                 scope: "amitheasshole".into(),
+                next: String::new(),
             }
         );
     }
@@ -122,6 +156,7 @@ mod tests {
                 ratio_left: 2,
                 ratio_right: 1,
                 scope: String::new(),
+                next: String::new(),
             }
         );
     }

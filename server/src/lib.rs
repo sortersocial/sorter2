@@ -4,6 +4,7 @@ pub mod events;
 pub mod fetch;
 pub mod form_template;
 pub mod html;
+pub mod pair;
 pub mod parser;
 pub mod path_types;
 pub mod ranking;
@@ -33,6 +34,7 @@ pub fn create_app(state: AppState) -> Router {
         .route("/static/:filename", get(crate::html::serve_static))
         .route("/~/*item_path", get(crate::html::browse))
         .route("/", get(crate::html::home))
+        .route("/vote", get(crate::html::vote::vote_page))
         .route("/ui", post(crate::api::ui_html::post_ui_html))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
