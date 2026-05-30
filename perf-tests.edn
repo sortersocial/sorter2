@@ -1,11 +1,11 @@
 #kaocha/v1
 {:tests
- [{:id :all
+ [{:id :perf
    :test-paths ["test"]
    :source-paths ["."]
-   :ns-patterns ["^test\\..+"]
-   :kaocha.filter/skip-meta [:skip :perf]
+   :ns-patterns ["^test\\.perf\\..+"]
+   :kaocha.filter/skip-meta [:skip]
    :parallel? false}]
  :plugins [:kaocha.plugin/junit-xml]
- :kaocha.plugin.junit-xml/target-file "target/kaocha-junit.xml"
+ :kaocha.plugin.junit-xml/target-file "target/perf/kaocha-junit.xml"
  :reporter kaocha.report.progress/report}
