@@ -10,7 +10,6 @@ use crate::{
     html::{input_panel, js_string_literal, ranking_panel, JsBuilder},
     parser::parse_reddit_url,
     path_types::ItemId,
-    reddit::ensure_partial_tree,
     state::{parse_item_param, AppState},
     ui_action::{parse_html_ui_from_form, HtmlUiAction},
 };
@@ -56,28 +55,25 @@ pub async fn post_ui_html(
             {
                 return ui_js_warn(&e).into_response();
             }
-            let tree = state.tree.read().await;
+            let tree = match state.scope_tree(&parent) {
+                Ok(tree) => tree,
+                Err(e) => return ui_js_warn(&e).into_response(),
+            };
             if vote_compare {
                 let left = parse_item_param(&a);
                 let right = parse_item_param(&b);
                 let morph = crate::html::vote::vote_recorded_morph(&tree, &parent, &left, &right);
-                drop(tree);
                 return morph.into_response();
             }
             let empty = crate::reducer::NodeState::default();
             let node = tree.get(&parent).unwrap_or(&empty);
             let panel = ranking_panel(&parent, node, &tree);
-            drop(tree);
             JsBuilder::new()
                 .morph_selector("#ranking-panel", panel)
                 .into_response()
         }
         HtmlUiAction::ParseQuery { query } => match parse_reddit_url(&query) {
             Ok(item) => {
-                {
-                    let mut tree = state.tree.write().await;
-                    ensure_partial_tree(&mut tree, &item);
-                }
                 let _ = state.ensure_node(&item).await;
                 let dest = item.browse_href();
                 JsBuilder::new()

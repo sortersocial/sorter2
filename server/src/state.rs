@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
-
 use crate::{
     entity_store::EntityStore,
     event_log::EventLog,
     events::Event,
     journal::JournalClient,
     path_types::ItemId,
+    projection_apply,
     projection_store::ProjectionStore,
-    reddit::{apply_entity_import, RedditApiConfig, RedditBroker},
+    reddit::{RedditApiConfig, RedditBroker},
     reducer::{GlobalTree, VoteData},
     views::ViewStore,
 };
@@ -37,73 +36,22 @@ pub fn normalize_scope(raw: &str) -> String {
         .collect()
 }
 
-fn parent_from_event_scope(scope: &str) -> ItemId {
-    if scope.contains('/') {
-        ItemId::parse(scope).unwrap_or_else(|| ItemId::from_legacy_scope(scope))
-    } else {
-        ItemId::from_legacy_scope(scope)
-    }
-}
-
-fn apply_event(
-    ev: Event,
-    tree: &mut GlobalTree,
-    entity_store: &EntityStore,
-) -> Result<(), crate::event_log::EventLogError> {
-    match ev {
-        Event::VoteRecorded {
-            ts,
-            a,
-            b,
-            ratio_left,
-            ratio_right,
-            scope,
-        } => {
-            if let Some(vote) = VoteData::from_recorded(ts, &a, &b, ratio_left, ratio_right) {
-                let parent = parent_from_event_scope(&scope);
-                tree.apply_vote(&parent, vote);
-            }
-        }
-        Event::ViewRecorded { .. } => {}
-        Event::NodeEnsured { id } => {
-            if let Some(parsed) = ItemId::parse(&id).or_else(|| ItemId::from_url(&id)) {
-                tree.ensure_path(&parsed);
-            }
-        }
-        Event::EntityImported { id, payload, .. } => {
-            if let Some(parsed) = ItemId::parse(&id).or_else(|| ItemId::from_url(&id)) {
-                if let Err(e) = apply_entity_import(tree, entity_store, &parsed, payload) {
-                    tracing::warn!(item = %id, err = %e, "entity replay failed");
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn load_projected_tree(
+async fn catch_up_projection(
     event_log: &EventLog,
     entity_store: &EntityStore,
     projection_store: &ProjectionStore,
-) -> Result<GlobalTree, crate::event_log::EventLogError> {
+) -> Result<(), crate::event_log::EventLogError> {
     let cursor = projection_store
         .last_applied_event_count()
         .map_err(|e| crate::event_log::EventLogError::Apply(e.to_string()))?;
-    let mut tree = GlobalTree::new();
 
     event_log
         .replay_from(cursor, |event_count, ev| {
-            projection_store
-                .hydrate_event(&mut tree, &ev)
-                .map_err(|e| crate::event_log::EventLogError::Apply(e.to_string()))?;
-            apply_event(ev.clone(), &mut tree, entity_store)?;
-            projection_store
-                .persist_event(&tree, event_count, &ev)
-                .map_err(|e| crate::event_log::EventLogError::Apply(e.to_string()))
+            projection_apply::apply_event(projection_store, entity_store, event_count, &ev)
         })
         .await?;
 
-    Ok(tree)
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -137,7 +85,6 @@ pub struct AppState {
     pub entity_store: EntityStore,
     pub projection_store: ProjectionStore,
     pub views: ViewStore,
-    pub tree: Arc<RwLock<GlobalTree>>,
     journal: JournalClient,
     pub reddit: RedditBroker,
 }
@@ -152,19 +99,16 @@ impl AppState {
         let entity_store = EntityStore::from_db(&db).expect("entity store");
         let projection_store = ProjectionStore::from_db(&db).expect("projection store");
 
-        let tree = match load_projected_tree(&event_log, &entity_store, &projection_store).await {
-            Ok(tree) => tree,
-            Err(e) => {
-                tracing::warn!(err = %e, "event log replay failed");
-                GlobalTree::new()
-            }
-        };
+        if let Err(e) = catch_up_projection(&event_log, &entity_store, &projection_store).await {
+            tracing::warn!(err = %e, "event log replay failed");
+        }
 
-        let tree = Arc::new(RwLock::new(tree));
-        let journal =
-            JournalClient::spawn(tree.clone(), event_log.clone(), projection_store.clone());
+        let journal = JournalClient::spawn(
+            event_log.clone(),
+            entity_store.clone(),
+            projection_store.clone(),
+        );
         let reddit = RedditBroker::spawn(
-            tree.clone(),
             event_log.clone(),
             entity_store.clone(),
             projection_store.clone(),
@@ -177,7 +121,6 @@ impl AppState {
             entity_store,
             projection_store,
             views,
-            tree,
             journal,
             reddit,
         }
@@ -191,20 +134,14 @@ impl AppState {
             .append(&event)
             .await
             .map_err(|e| e.to_string())?;
-        {
-            let mut w = self.tree.write().await;
-            w.ensure_path(id);
-            self.projection_store
-                .persist_next_event(&w, &event)
-                .map_err(|e| e.to_string())?;
-        }
+        projection_apply::apply_next_event(&self.projection_store, &self.entity_store, &event)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    pub async fn hydrate_scope(&self, id: &ItemId) -> Result<(), String> {
-        let mut w = self.tree.write().await;
+    pub fn scope_tree(&self, id: &ItemId) -> Result<GlobalTree, String> {
         self.projection_store
-            .hydrate_scope(&mut w, id)
+            .scope_tree(id)
             .map_err(|e| e.to_string())
     }
 
@@ -226,7 +163,6 @@ impl AppState {
         ratio_left: i32,
         ratio_right: i32,
     ) -> Result<(), String> {
-        self.hydrate_scope(parent).await?;
         let ts = crate::html::now_ms();
         let vote = VoteData::from_recorded(ts, a, b, ratio_left, ratio_right)
             .ok_or_else(|| "invalid vote: need two distinct non-empty items".to_string())?;
@@ -240,7 +176,7 @@ impl AppState {
             scope: parent.as_str().to_string(),
         };
 
-        self.journal.record_vote(parent.clone(), vote, event).await
+        self.journal.record_vote(event).await
     }
 }
 
@@ -248,8 +184,8 @@ impl AppState {
 mod tests {
     use super::{normalize_scope, parse_item_param, AppConfig, AppState};
     use crate::{
-        entity_store::EntityStore, event_log::EventLog, events::Event, path_types::ItemId,
-        projection_store::ProjectionStore, reducer::GlobalTree,
+        entity_store::EntityStore, event_log::EventLog, event_reducer, events::Event,
+        path_types::ItemId, projection_store::ProjectionStore, reducer::GlobalTree,
     };
     use serde_json::json;
 
@@ -269,7 +205,7 @@ mod tests {
         .unwrap();
 
         let mut tree = GlobalTree::new();
-        log.replay(|ev| super::apply_event(ev, &mut tree, &entity_store))
+        log.replay(|ev| event_reducer::apply_event(ev, &mut tree, &entity_store))
             .await
             .unwrap();
         let node = tree
@@ -303,22 +239,20 @@ mod tests {
         let entity_store = EntityStore::from_db(&db).unwrap();
         let projection_store = ProjectionStore::from_db(&db).unwrap();
 
-        let first = super::load_projected_tree(&log, &entity_store, &projection_store)
+        super::catch_up_projection(&log, &entity_store, &projection_store)
             .await
             .unwrap();
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
+        let first = projection_store.scope_tree(&ItemId::root()).unwrap();
         let first_root = first.get(&ItemId::root()).unwrap();
         let first_edge_total: f64 = first_root.local_ranking.edges.values().sum();
         assert_eq!(first_edge_total, 3.0);
 
-        let mut second = super::load_projected_tree(&log, &entity_store, &projection_store)
+        super::catch_up_projection(&log, &entity_store, &projection_store)
             .await
             .unwrap();
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
-        assert_eq!(second.nodes.len(), 1);
-        projection_store
-            .hydrate_scope(&mut second, &ItemId::root())
-            .unwrap();
+        let second = projection_store.scope_tree(&ItemId::root()).unwrap();
         let second_root = second.get(&ItemId::root()).unwrap();
         let second_edge_total: f64 = second_root.local_ranking.edges.values().sum();
         assert_eq!(second_edge_total, first_edge_total);
@@ -400,7 +334,7 @@ mod tests {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
             let entity_store = EntityStore::from_db(&db).unwrap();
             let projection_store = ProjectionStore::from_db(&db).unwrap();
-            super::load_projected_tree(&log, &entity_store, &projection_store)
+            super::catch_up_projection(&log, &entity_store, &projection_store)
                 .await
                 .unwrap();
         }
@@ -415,13 +349,9 @@ mod tests {
             second.projection_store.last_applied_event_count().unwrap(),
             2
         );
-        assert_eq!(second.tree.read().await.nodes.len(), 1);
-
-        second
-            .hydrate_scope(&ItemId::parse("reddit.com/r/rust").unwrap())
-            .await
+        let tree = second
+            .scope_tree(&ItemId::parse("reddit.com/r/rust").unwrap())
             .unwrap();
-        let tree = second.tree.read().await;
         assert!(tree
             .get(&ItemId::parse("reddit.com/r/rust").unwrap())
             .is_some());
@@ -449,7 +379,7 @@ mod tests {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
             let entity_store = EntityStore::from_db(&db).unwrap();
             let projection_store = ProjectionStore::from_db(&db).unwrap();
-            super::load_projected_tree(&log, &entity_store, &projection_store)
+            super::catch_up_projection(&log, &entity_store, &projection_store)
                 .await
                 .unwrap();
         }
@@ -460,13 +390,12 @@ mod tests {
             port: 0,
         };
         let second = AppState::new(cfg).await;
-        assert_eq!(second.tree.read().await.nodes.len(), 1);
         second
             .record_vote(&ItemId::root(), "alpha", "gamma", 3, 1)
             .await
             .unwrap();
 
-        let tree = second.tree.read().await;
+        let tree = second.scope_tree(&ItemId::root()).unwrap();
         let root = tree.get(&ItemId::root()).unwrap();
         assert!(root.children.contains(&ItemId::parse("beta").unwrap()));
         assert!(root.children.contains(&ItemId::parse("gamma").unwrap()));

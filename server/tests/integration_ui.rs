@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use axum::Router;
-use sorter2_server::{create_app, create_app_state, path_types::ItemId, state::AppConfig, ui_action::UI_RPC_FIELD};
+use sorter2_server::{
+    create_app, create_app_state, path_types::ItemId, state::AppConfig, ui_action::UI_RPC_FIELD,
+};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 
@@ -118,7 +120,7 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
         port: 0,
     };
     let state = create_app_state(cfg).await;
-    let tree = state.tree.read().await;
+    let tree = state.scope_tree(&ItemId::root()).unwrap();
     let root = tree.get(&ItemId::root()).expect("root node after replay");
     let ranked = sorter2_server::ranking::ranked_items(&root.local_ranking);
     assert_eq!(ranked.len(), 2);

@@ -131,6 +131,12 @@ impl ProjectionStore {
         Ok(())
     }
 
+    pub fn scope_tree(&self, id: &ItemId) -> Result<GlobalTree, ProjectionStoreError> {
+        let mut tree = GlobalTree::new();
+        self.hydrate_scope(&mut tree, id)?;
+        Ok(tree)
+    }
+
     pub fn persist_event(
         &self,
         tree: &GlobalTree,
@@ -279,5 +285,28 @@ mod tests {
         let root = hydrated.get(&ItemId::root()).unwrap();
         assert!(root.children.contains(&ItemId::parse("alpha").unwrap()));
         assert!(hydrated.get(&ItemId::parse("alpha").unwrap()).is_some());
+    }
+
+    #[test]
+    fn scope_tree_is_request_local() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ProjectionStore::open(tmp.path()).unwrap();
+        let parent = ItemId::root();
+        let vote = VoteData::from_recorded(1, "alpha", "beta", 2, 1).unwrap();
+        let mut tree = GlobalTree::new();
+        tree.apply_vote(&parent, vote);
+        let event = Event::VoteRecorded {
+            ts: 1,
+            a: "alpha".into(),
+            b: "beta".into(),
+            ratio_left: 2,
+            ratio_right: 1,
+            scope: String::new(),
+        };
+        store.persist_event(&tree, 1, &event).unwrap();
+
+        let scoped = store.scope_tree(&ItemId::root()).unwrap();
+        assert_eq!(scoped.get(&ItemId::root()).unwrap().children.len(), 2);
+        assert_eq!(store.load_tree().unwrap().nodes.len(), 3);
     }
 }

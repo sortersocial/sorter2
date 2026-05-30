@@ -313,8 +313,9 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
     state.views.increment(path.clone());
     let views = state.views.get_views(&path);
 
-    let _ = state.hydrate_scope(&item).await;
-    let tree = state.tree.read().await;
+    let tree = state
+        .scope_tree(&item)
+        .unwrap_or_else(|_| GlobalTree::new());
     let empty_node = NodeState::default();
     let node = tree.get(&item).unwrap_or(&empty_node);
 
