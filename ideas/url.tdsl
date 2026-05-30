@@ -1,0 +1,4 @@
+ets zoom in on the data model. i want to import reddit data using the reddit api. i also want to import, eventually, every object on the internet.
+i want to be able to paste in a reddit url like
+https://old.reddit.com/r/AmItheAsshole/comments/1trnvdl/aita_for_cancelling_the_camping_trip_last_minute/
+and see the breadcrumbs (every segment of the url seperated by /) and click on each segment. as i click down, i want the children of that url to be visible and sorted. like the comments view of that one thread is visible with the full url, then i navigate to just r/amitheasshole, and i see every child of that node, whcih is all posts from that sub. then i nav to /r/ and i see all subs, sorted against eachother. etc. and to have this apply to every url on the intrenet eventually, but first work really well for reddit, with official reddit api support for importing data cleanly.
