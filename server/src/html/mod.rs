@@ -11,8 +11,7 @@ use serde::Deserialize;
 
 use crate::{
     form_template::template_json_compact,
-    parser_action::ParserAction,
-    parser_render::parser_panel,
+    parser_render::navigate_panel,
     ranking::{top_bottom, RankedItem},
     reducer::GroupState,
     state::{normalize_scope, AppState},
@@ -336,10 +335,9 @@ pub async fn home(
     let empty = GroupState::new();
     let group = groups.get(&scope).unwrap_or(&empty);
 
-    let empty_action = ParserAction::suggest(String::new(), None);
     let body = html! {
         h1 { "sorter2" }
-        (parser_panel("", &empty_action))
+        (navigate_panel("", None))
         (vote_panel(&scope))
         (ranking_panel(&scope, group))
     };

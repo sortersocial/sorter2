@@ -22,7 +22,7 @@ pub enum HtmlUiAction {
         #[serde(default)]
         scope: String,
     },
-    /// Parse address-bar query via Reddit transition graph; morph `#parser-panel`.
+    /// Parse pasted Reddit URL/path; redirect to subreddit ranking on success.
     ParseQuery {
         query: String,
     },

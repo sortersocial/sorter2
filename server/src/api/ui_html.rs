@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use crate::{
     html::{js_string_literal, ranking_panel, JsBuilder},
     parser::parse_reddit_url,
-    parser_render::parser_panel_morph,
+    parser_render::navigate_panel,
     state::AppState,
     ui_action::{parse_html_ui_from_form, HtmlUiAction},
 };
@@ -57,18 +57,23 @@ pub async fn post_ui_html(
                 .morph_selector("#ranking-panel", panel)
                 .into_response()
         }
-        HtmlUiAction::ParseQuery { query } => {
-            let action = parse_reddit_url(&query);
-            let panel = parser_panel_morph(&query, &action);
-            let mut js = JsBuilder::new().morph_selector("#parser-panel", panel);
-            if let Some(comp) = action.primary_completion() {
-                js = js.raw(&format!(
-                    "var __pi=document.getElementById('parser-input'); if(__pi){{__pi.dataset.completion={};}}",
-                    js_string_literal(comp)
-                ));
+        HtmlUiAction::ParseQuery { query } => match parse_reddit_url(&query) {
+            Ok(subreddit) => {
+                let dest = format!("/?sub={subreddit}");
+                JsBuilder::new()
+                    .raw(&format!(
+                        "window.location.href={};",
+                        js_string_literal(&dest)
+                    ))
+                    .into_response()
             }
-            js.into_response()
-        }
+            Err(message) => {
+                let panel = navigate_panel(&query, Some(&message));
+                JsBuilder::new()
+                    .morph_selector("#parser-panel", panel)
+                    .into_response()
+            }
+        },
     }
 }
 

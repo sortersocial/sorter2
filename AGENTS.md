@@ -11,7 +11,6 @@ Single Rust web app **`sorter2-server`**: pairwise voting, rank-centrality ranki
 - **Rust 1.88+** is required (some transitive crates need a recent Cargo). The image may ship older `/usr/local/cargo` (1.83); use **rustup** and `rustup default 1.88.0` before building.
 - **System packages** for builds: `pkg-config`, `libssl-dev` (for `reqwest` / OpenSSL in integration tests and release builds).
 - **Clojure CLI 1.12.0.1530** (optional but used in CI): install from https://clojure.org/guides/install_clojure — needed for `./scripts/clj-test.sh` / Kaocha tests.
-- **Playwright browser** for the spel browser test (`test/parser_race.clj`): install once with `clojure -M -e "(com.microsoft.playwright.CLI/main (into-array String [\"install\" \"chromium\" \"--with-deps\"]))"`. The browser binary is cached under `~/.cache/ms-playwright`.
 
 ### Commands (see also `TEST.sh`)
 

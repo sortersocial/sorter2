@@ -71,11 +71,11 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
 }
 
 #[tokio::test]
-async fn post_ui_parse_query_morphs_parser_panel() {
+async fn post_ui_parse_query_redirects_to_subreddit() {
     let (addr, _tmp) = start_test_server().await;
     let rpc = serde_json::json!({
         "action": "parse_query",
-        "query": "r"
+        "query": "r/rust"
     })
     .to_string();
     let mut form = HashMap::new();
@@ -92,7 +92,6 @@ async fn post_ui_parse_query_morphs_parser_panel() {
         .await
         .unwrap();
 
-    assert!(body.contains("Idiomorph.morph"));
-    assert!(body.contains("parser-panel"));
-    assert!(body.contains("r/"));
+    assert!(body.contains("window.location.href"));
+    assert!(body.contains("/?sub=rust"));
 }
