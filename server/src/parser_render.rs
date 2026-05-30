@@ -142,6 +142,12 @@ fn render_action(action: &ParserAction) -> Markup {
                         span class="muted small" { " (partial — tab or pick a match)" }
                     }
                 }
+                p {
+                    a class="parser-rank-link btn-link"
+                        href=(format!("/?sub={subreddit}")) {
+                        "Rank r/" (subreddit) " →"
+                    }
+                }
                 (render_db_subs(subreddit, prefix))
             }
         },

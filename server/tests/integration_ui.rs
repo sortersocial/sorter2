@@ -63,8 +63,9 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
         port: 0,
     };
     let state = create_app_state(cfg).await;
-    let group = state.group.read().await;
-    let ranked = sorter2_server::ranking::ranked_items(&group);
+    let groups = state.groups.read().await;
+    let group = groups.get("").expect("default scope group after replay");
+    let ranked = sorter2_server::ranking::ranked_items(group);
     assert_eq!(ranked.len(), 2);
     assert_eq!(ranked[0].item.as_str(), "alpha");
 }

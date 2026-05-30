@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -5,10 +6,26 @@ use tokio::sync::RwLock;
 use crate::{
     event_log::EventLog,
     events::Event,
-    reducer::{GroupState, VoteData},
-    settlement::SettlementClient,
+    reducer::VoteData,
+    settlement::{GroupMap, SettlementClient},
     views::ViewStore,
 };
+
+/// Normalize a raw ranking subject into a scope key: strip an optional `r/`
+/// prefix, keep only `[a-z0-9_]`, lowercase, and cap the length. Empty string
+/// is the default/global scope.
+pub fn normalize_scope(raw: &str) -> String {
+    let s = raw.trim();
+    let s = s
+        .strip_prefix("r/")
+        .or_else(|| s.strip_prefix("R/"))
+        .unwrap_or(s);
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .flat_map(|c| c.to_lowercase())
+        .take(64)
+        .collect()
+}
 
 #[derive(Clone)]
 pub struct AppConfig {
@@ -39,7 +56,7 @@ pub struct AppState {
     pub cfg: Arc<AppConfig>,
     pub event_log: Arc<EventLog>,
     pub views: ViewStore,
-    pub group: Arc<RwLock<GroupState>>,
+    pub groups: Arc<RwLock<GroupMap>>,
     settlement: SettlementClient,
 }
 
@@ -49,7 +66,7 @@ impl AppState {
         let views_path = format!("{}/views.json", cfg.data_dir);
         let views = ViewStore::new(&views_path);
 
-        let mut group = GroupState::new();
+        let mut groups: GroupMap = HashMap::new();
         if let Ok((events, _)) = event_log.load_all().await {
             for ev in events {
                 match ev {
@@ -59,11 +76,12 @@ impl AppState {
                         b,
                         ratio_left,
                         ratio_right,
+                        scope,
                     } => {
                         if let Some(vote) =
                             VoteData::from_recorded(ts, &a, &b, ratio_left, ratio_right)
                         {
-                            group.apply_vote(vote);
+                            groups.entry(scope).or_default().apply_vote(vote);
                         }
                     }
                     Event::ViewRecorded { .. } => {}
@@ -71,20 +89,21 @@ impl AppState {
             }
         }
 
-        let group = Arc::new(RwLock::new(group));
-        let settlement = SettlementClient::spawn(group.clone(), event_log.clone());
+        let groups = Arc::new(RwLock::new(groups));
+        let settlement = SettlementClient::spawn(groups.clone(), event_log.clone());
 
         Self {
             cfg: Arc::new(cfg),
             event_log,
             views,
-            group,
+            groups,
             settlement,
         }
     }
 
     pub async fn record_vote(
         &self,
+        scope: &str,
         a: &str,
         b: &str,
         ratio_left: i32,
@@ -94,14 +113,29 @@ impl AppState {
         let vote = VoteData::from_recorded(ts, a, b, ratio_left, ratio_right)
             .ok_or_else(|| "invalid vote: need two distinct non-empty items".to_string())?;
 
+        let scope = normalize_scope(scope);
         let event = Event::VoteRecorded {
             ts,
             a: vote.a.as_str().to_string(),
             b: vote.b.as_str().to_string(),
             ratio_left: vote.ratio_left,
             ratio_right: vote.ratio_right,
+            scope: scope.clone(),
         };
 
-        self.settlement.record_vote(vote, event).await
+        self.settlement.record_vote(scope, vote, event).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_scope;
+
+    #[test]
+    fn normalize_scope_strips_prefix_and_lowercases() {
+        assert_eq!(normalize_scope("r/AmITheAsshole"), "amitheasshole");
+        assert_eq!(normalize_scope("  rust  "), "rust");
+        assert_eq!(normalize_scope("r/web_dev!!"), "web_dev");
+        assert_eq!(normalize_scope(""), "");
     }
 }

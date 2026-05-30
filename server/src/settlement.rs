@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, RwLock};
@@ -8,7 +9,11 @@ use crate::{
     reducer::{GroupState, VoteData},
 };
 
+/// Per-scope ranking state, keyed by scope (e.g. subreddit; "" is the default scope).
+pub type GroupMap = HashMap<String, GroupState>;
+
 pub struct SettlementCommand {
+    pub scope: String,
     pub vote: VoteData,
     pub event: Event,
     pub reply: oneshot::Sender<Result<(), String>>,
@@ -20,16 +25,22 @@ pub struct SettlementClient {
 }
 
 impl SettlementClient {
-    pub fn spawn(group: Arc<RwLock<GroupState>>, event_log: Arc<EventLog>) -> Self {
+    pub fn spawn(groups: Arc<RwLock<GroupMap>>, event_log: Arc<EventLog>) -> Self {
         let (tx, rx) = mpsc::channel(64);
-        tokio::spawn(settlement_worker(rx, group, event_log));
+        tokio::spawn(settlement_worker(rx, groups, event_log));
         Self { tx }
     }
 
-    pub async fn record_vote(&self, vote: VoteData, event: Event) -> Result<(), String> {
+    pub async fn record_vote(
+        &self,
+        scope: String,
+        vote: VoteData,
+        event: Event,
+    ) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(SettlementCommand {
+                scope,
                 vote,
                 event,
                 reply,
@@ -43,7 +54,7 @@ impl SettlementClient {
 
 async fn settlement_worker(
     mut rx: mpsc::Receiver<SettlementCommand>,
-    group: Arc<RwLock<GroupState>>,
+    groups: Arc<RwLock<GroupMap>>,
     event_log: Arc<EventLog>,
 ) {
     while let Some(first) = rx.recv().await {
@@ -68,9 +79,11 @@ async fn settlement_worker(
         }
 
         {
-            let mut w = group.write().await;
+            let mut w = groups.write().await;
             for cmd in &batch {
-                w.apply_vote(cmd.vote.clone());
+                w.entry(cmd.scope.clone())
+                    .or_default()
+                    .apply_vote(cmd.vote.clone());
             }
         }
 

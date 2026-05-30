@@ -40,15 +40,19 @@ pub async fn post_ui_html(
             b,
             ratio_left,
             ratio_right,
+            scope,
         } => {
             if let Err(e) = state
-                .record_vote(&a, &b, ratio_left, ratio_right)
+                .record_vote(&scope, &a, &b, ratio_left, ratio_right)
                 .await
             {
                 return ui_js_warn(&e).into_response();
             }
-            let group = state.group.read().await;
-            let panel = ranking_panel(&group);
+            let scope = crate::state::normalize_scope(&scope);
+            let groups = state.groups.read().await;
+            let empty = crate::reducer::GroupState::new();
+            let group = groups.get(&scope).unwrap_or(&empty);
+            let panel = ranking_panel(&scope, group);
             JsBuilder::new()
                 .morph_selector("#ranking-panel", panel)
                 .into_response()
@@ -101,6 +105,7 @@ mod tests {
                 b: "y".into(),
                 ratio_left: 3,
                 ratio_right: 1,
+                scope: String::new(),
             }
         );
     }

@@ -89,6 +89,19 @@ pub fn ranked_items(group: &GroupState) -> Vec<RankedItem> {
     items
 }
 
+/// Highest- and lowest-ranked items for a group. Returns up to `k` items from
+/// each end with no overlap. If the group has `2*k` items or fewer, `top` holds
+/// the full ranking and `bottom` is empty (so nothing is shown twice).
+pub fn top_bottom(group: &GroupState, k: usize) -> (Vec<RankedItem>, Vec<RankedItem>) {
+    let items = ranked_items(group);
+    if k == 0 || items.len() <= 2 * k {
+        return (items, Vec::new());
+    }
+    let top = items[..k].to_vec();
+    let bottom = items[items.len() - k..].to_vec();
+    (top, bottom)
+}
+
 pub fn compute_scores_from_edges(
     n: usize,
     edges: impl Iterator<Item = ((usize, usize), f64)>,
@@ -297,6 +310,33 @@ mod tests {
             "zebra",
             "zebra won both votes and should rank #1"
         );
+    }
+
+    #[test]
+    fn top_bottom_splits_ends_without_overlap() {
+        let mut g = mk_group();
+        // Chain a > b > c > d > e > f so ranks are well separated.
+        for (hi, lo) in [("a", "b"), ("b", "c"), ("c", "d"), ("d", "e"), ("e", "f")] {
+            g.apply_vote(vote(1, hi, lo, 2, 1));
+        }
+        let (top, bottom) = top_bottom(&g, 2);
+        assert_eq!(top.len(), 2);
+        assert_eq!(bottom.len(), 2);
+        // No overlap between the two ends.
+        for t in &top {
+            assert!(bottom.iter().all(|b| b.item != t.item));
+        }
+        // Best item ranks above the worst item.
+        assert!(top[0].score >= bottom[bottom.len() - 1].score);
+    }
+
+    #[test]
+    fn top_bottom_small_group_has_empty_bottom() {
+        let mut g = mk_group();
+        g.apply_vote(vote(1, "a", "b", 2, 1));
+        let (top, bottom) = top_bottom(&g, 5);
+        assert_eq!(top.len(), 2);
+        assert!(bottom.is_empty());
     }
 
     #[test]

@@ -12,12 +12,15 @@ pub const UI_RPC_FIELD: &str = "__rpc__";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum HtmlUiAction {
-    /// Record a pairwise vote and morph `#ranking-panel`.
+    /// Record a pairwise vote within `scope` and morph `#ranking-panel`.
     RecordVote {
         a: String,
         b: String,
         ratio_left: i32,
         ratio_right: i32,
+        /// Ranking subject (e.g. a subreddit). Empty string = default/global scope.
+        #[serde(default)]
+        scope: String,
     },
     /// Parse address-bar query via Reddit transition graph; morph `#parser-panel`.
     ParseQuery {
@@ -57,7 +60,8 @@ mod tests {
             "a": {"$form": "item_a"},
             "b": {"$form": "item_b"},
             "ratio_left": 2,
-            "ratio_right": 1
+            "ratio_right": 1,
+            "scope": {"$form": "scope"}
         });
         let mut form = HashMap::new();
         form.insert(
@@ -66,6 +70,7 @@ mod tests {
         );
         form.insert("item_a".into(), "alpha".into());
         form.insert("item_b".into(), "beta".into());
+        form.insert("scope".into(), "amitheasshole".into());
         assert_eq!(
             parse_html_ui_from_form(&form).unwrap(),
             HtmlUiAction::RecordVote {
@@ -73,6 +78,33 @@ mod tests {
                 b: "beta".into(),
                 ratio_left: 2,
                 ratio_right: 1,
+                scope: "amitheasshole".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn record_vote_scope_defaults_when_absent() {
+        let template = serde_json::json!({
+            "action": "record_vote",
+            "a": "x",
+            "b": "y",
+            "ratio_left": 2,
+            "ratio_right": 1
+        });
+        let mut form = HashMap::new();
+        form.insert(
+            UI_RPC_FIELD.to_string(),
+            serde_json::to_string(&template).unwrap(),
+        );
+        assert_eq!(
+            parse_html_ui_from_form(&form).unwrap(),
+            HtmlUiAction::RecordVote {
+                a: "x".into(),
+                b: "y".into(),
+                ratio_left: 2,
+                ratio_right: 1,
+                scope: String::new(),
             }
         );
     }
