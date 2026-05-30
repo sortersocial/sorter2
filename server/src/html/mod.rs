@@ -65,6 +65,15 @@ impl JsBuilder {
         self
     }
 
+    pub(crate) fn morph_inner_selector(mut self, selector: &str, markup: Markup) -> Self {
+        let html = js_string_literal(&markup.into_string());
+        self.snippets.push(format!(
+            "var __el = document.querySelector({sel}); if (__el) {{ Idiomorph.morph(__el, {html}, {{ morphStyle: 'innerHTML' }}); }}",
+            sel = js_string_literal(selector),
+        ));
+        self
+    }
+
     pub(crate) fn raw(mut self, js: &str) -> Self {
         if !js.is_empty() {
             self.snippets.push(js.to_string());

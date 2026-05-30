@@ -26,6 +26,53 @@ async fn start_test_server() -> (SocketAddr, TempDir) {
 }
 
 #[tokio::test]
+async fn post_ui_vote_compare_morphs_edge_history() {
+    let (addr, _tmp) = start_test_server().await;
+    let parent = "reddit.com/r/rust";
+    let a = "reddit.com/r/rust/comments/aaa/announcing_rust_199";
+    let b = "reddit.com/r/rust/comments/bbb/what_are_you_working_on";
+
+    let rpc = serde_json::json!({
+        "action": "record_vote",
+        "a": a,
+        "b": b,
+        "ratio_left": {"$form:i32": "ratio_left"},
+        "ratio_right": {"$form:i32": "ratio_right"},
+        "scope": parent,
+        "vote_compare": true,
+    })
+    .to_string();
+    let mut form = HashMap::new();
+    form.insert(UI_RPC_FIELD.to_string(), rpc);
+    form.insert("ratio_left".into(), "70".into());
+    form.insert("ratio_right".into(), "30".into());
+
+    let client = reqwest::Client::new();
+    let body = client
+        .post(format!("http://{addr}/ui"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(
+        body.contains("vote-edge-history"),
+        "expected edge history morph, got: {body}"
+    );
+    assert!(
+        body.contains("70:30"),
+        "expected recorded ratio in morph, got: {body}"
+    );
+    assert!(
+        !body.contains("no votes on this pair yet"),
+        "should not show empty edge history after vote, got: {body}"
+    );
+}
+
+#[tokio::test]
 async fn post_ui_record_vote_morphs_ranking_and_persists() {
     let (addr, tmp) = start_test_server().await;
     let rpc = serde_json::json!({

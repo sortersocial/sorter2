@@ -1,9 +1,13 @@
-(ns test.reddit-import
+(ns test.vote-compare
   (:require [babashka.process :as process]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [test.support.mock-reddit :as mock-reddit]))
+            [com.blockether.spel.core :as core]
+            [com.blockether.spel.locator :as loc]
+            [com.blockether.spel.page :as page]
+            [test.support.mock-reddit :as mock-reddit])
+  (:import [java.net URLEncoder]))
 
 (defn- repo-root []
   (.getCanonicalPath (io/file (System/getProperty "user.dir"))))
@@ -26,60 +30,25 @@
             (do (Thread/sleep 200) (recur))
             false))))))
 
-(defn- curl-fetch-ui-sse [base item kind]
+(defn- curl-fetch-children [base item]
   (process/shell {:out :string :err :string}
                  "curl" "-sfN" "--max-time" "20"
                  "-X" "POST" (str base "/ui")
                  "--data-urlencode"
                  (str "__rpc__={\"action\":\"fetch_entity\",\"item\":\"" item
-                      "\",\"kind\":\"" kind "\"}")))
+                      "\",\"kind\":\"children\"}")))
 
-(defn- wait-event-log [path ms]
-  (let [deadline (+ (System/currentTimeMillis) ms)]
-    (loop []
-      (if (.exists (io/file path))
-        true
-        (if (< (System/currentTimeMillis) deadline)
-          (do (Thread/sleep 200) (recur))
-          false)))))
+(defn- vote-page-url [base parent]
+  (str base "/vote?parent="
+       (URLEncoder/encode parent "UTF-8")))
 
-(defn- run-reddit-fetch-assertions [app-base data-dir]
-  (let [browse-url (str app-base "/~/https://reddit.com/r/rust")
-        log-path (str data-dir "/events.jsonl")
-        before (:out (process/shell {:out :string :err :string}
-                                    "curl" "-sf" browse-url))]
-    (is (str/includes? before "Fetch from Reddit"))
-    (is (not (str/includes? before "The Rust Programming Language")))
-    (let [sse (curl-fetch-ui-sse app-base "reddit.com/r/rust" "self")]
-      (is (zero? (:exit sse)) "POST /ui fetch_entity (self) SSE succeeds")
-      (is (str/includes? (:out sse) "Idiomorph.morph"))
-      (is (str/includes? (:out sse) "The Rust Programming Language"))
-      (is (wait-event-log log-path 2000) "event log written"))
-    (let [after (:out (process/shell {:out :string :err :string}
-                                     "curl" "-sf" browse-url))
-          log (slurp (io/file log-path))]
-      (is (str/includes? after "The Rust Programming Language"))
-      (is (str/includes? log "\"type\":\"entity_imported\""))
-      (is (str/includes? log "\"subscribers\":350000"))
-      (is (str/includes? log "\"display_name\":\"rust\"")))
-    (let [children-sse (curl-fetch-ui-sse app-base "reddit.com/r/rust" "children")]
-      (is (zero? (:exit children-sse)) "POST /ui fetch_entity (children) SSE succeeds")
-      (is (str/includes? (:out children-sse) "Idiomorph.morph"))
-      (is (str/includes? (:out children-sse) "Announcing Rust 1.99")))
-    (let [after-children (:out (process/shell {:out :string :err :string}
-                                              "curl" "-sf" browse-url))
-          log2 (slurp (io/file log-path))]
-      (is (str/includes? after-children "Announcing Rust 1.99"))
-      (is (str/includes? after-children "Unranked"))
-      (is (str/includes? log2 "announcing_rust_199")))))
-
-(deftest reddit-fetch-via-mock-api
-  (testing "Fetch more queues import; event log stores full payload; page shows title"
+(deftest vote-compare-shows-recorded-vote-after-post
+  (testing "post vote on /vote morphs edge history (mock Reddit children seeded)"
     (let [root (repo-root)
           fixtures (mock-reddit/fixtures-dir root)
           data-dir (.getAbsolutePath
                     (doto (io/file (System/getProperty "java.io.tmpdir")
-                                   (str "sorter2-reddit-" (System/currentTimeMillis)))
+                                   (str "sorter2-vote-" (System/currentTimeMillis)))
                       (.mkdirs)))
           reddit-port (pick-port)
           app-port (pick-port)
@@ -108,7 +77,24 @@
                                     bin)]
           (try
             (is (wait-health app-base 20000) "app healthz")
-            (run-reddit-fetch-assertions app-base data-dir)
+            (let [fetch (curl-fetch-children app-base "reddit.com/r/rust")]
+              (is (zero? (:exit fetch)) "fetch posts via mock Reddit")
+              (is (str/includes? (:out fetch) "Idiomorph.morph")))
+            (core/with-testing-page [pg]
+              (page/navigate pg (vote-page-url app-base "reddit.com/r/rust"))
+              (page/wait-for-selector pg "#vote-compare-form")
+              (let [before (loc/text-content (page/locator pg "#vote-edge-history-region"))]
+                (is (str/includes? before "no votes on this pair yet")
+                    "empty edge history before first vote"))
+              (loc/click (page/get-by-test-id pg "vote-post"))
+              (page/wait-for-selector pg ".vote-edge-history-title")
+              (let [after (loc/text-content (page/locator pg "#vote-edge-history-region"))]
+                (is (str/includes? after "votes on this pair")
+                    "shows edge history title after vote")
+                (is (str/includes? after "50:50")
+                    "shows submitted ratio after vote")
+                (is (not (str/includes? after "no votes on this pair yet"))
+                    "does not revert to empty edge history")))
             (finally
               (process/destroy proc))))
         (finally

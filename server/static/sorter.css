@@ -289,11 +289,27 @@ h1 {
 }
 
 .vote-compare-nav {
+  margin: 1rem 0 0.5rem;
+}
+
+.vote-compare-actions {
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 1rem;
-  margin: 1rem 0;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.vote-compare-actions .btn-secondary {
+  margin-top: 0;
+  display: inline-block;
+  text-decoration: none;
+  line-height: 1.4;
+}
+
+.vote-compare-actions .vote-compare-next.is-disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .vote-compare-next {

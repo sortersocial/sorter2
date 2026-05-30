@@ -567,7 +567,7 @@ fn parse_children(_parent: &ItemId, payload: &Value) -> Vec<(ItemId, Value)> {
             _ => continue,
         };
         let path = format!("reddit.com{}", permalink.trim_end_matches('/'));
-        if let Some(id) = ItemId::parse(&path) {
+        if let Some(id) = ItemId::from_storage(&path) {
             out.push((id, child.clone()));
         }
     }

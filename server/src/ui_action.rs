@@ -31,9 +31,9 @@ pub enum HtmlUiAction {
         /// Parent node [`ItemId`] string; empty = tree root.
         #[serde(default)]
         scope: String,
-        /// After vote, navigate here (vote compare page).
+        /// Posted from `/vote` compare UI — morph edge history in place.
         #[serde(default)]
-        next: String,
+        vote_compare: bool,
     },
     /// Parse pasted Reddit URL/path; redirect to subreddit ranking on success.
     ParseQuery {
@@ -98,7 +98,7 @@ mod tests {
                 ratio_left: 60,
                 ratio_right: 40,
                 scope: "parent".into(),
-                next: String::new(),
+                vote_compare: false,
             }
         );
     }
@@ -129,7 +129,7 @@ mod tests {
                 ratio_left: 2,
                 ratio_right: 1,
                 scope: "amitheasshole".into(),
-                next: String::new(),
+                vote_compare: false,
             }
         );
     }
@@ -156,7 +156,7 @@ mod tests {
                 ratio_left: 2,
                 ratio_right: 1,
                 scope: String::new(),
-                next: String::new(),
+                vote_compare: false,
             }
         );
     }

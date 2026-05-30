@@ -28,8 +28,8 @@ impl VoteData {
         ratio_left: i32,
         ratio_right: i32,
     ) -> Option<Self> {
-        let a = ItemId::parse(a)?;
-        let b = ItemId::parse(b)?;
+        let a = ItemId::from_storage(a)?;
+        let b = ItemId::from_storage(b)?;
         if a == b {
             return None;
         }
@@ -85,8 +85,8 @@ impl GroupState {
     }
 
     pub fn apply_vote(&mut self, mut vote: VoteData) {
-        vote.a = ItemId::parse(vote.a.as_str()).unwrap_or_else(|| vote.a.clone());
-        vote.b = ItemId::parse(vote.b.as_str()).unwrap_or_else(|| vote.b.clone());
+        vote.a = ItemId::from_storage(vote.a.as_str()).unwrap_or(vote.a.clone());
+        vote.b = ItemId::from_storage(vote.b.as_str()).unwrap_or(vote.b.clone());
         if vote.ratio_left < 0 {
             vote.ratio_left = 0;
         }

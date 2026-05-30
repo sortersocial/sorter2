@@ -104,11 +104,10 @@
       if (f.getAttribute('data-navigate') === 'full') return;
       e.preventDefault();
       await postUiForm(f);
-      if (f.id === 'vote-form' || f.id === 'vote-compare-form') {
+      if (f.id === 'vote-form') {
         f.reset();
-        var slider = f.querySelector('#vote-preference-slider');
-        if (slider) slider.value = '50';
-        initVoteSlider();
+        var firstField = f.querySelector('input[type="text"]');
+        if (firstField) firstField.focus();
       }
     });
   }

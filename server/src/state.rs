@@ -18,7 +18,7 @@ pub fn parse_item_param(raw: &str) -> ItemId {
     if s.is_empty() {
         return ItemId::root();
     }
-    ItemId::from_url(s).or_else(|| ItemId::parse(s)).unwrap_or_else(|| ItemId::opaque(s))
+    ItemId::from_storage(s).unwrap_or_else(|| ItemId::opaque(s))
 }
 
 /// Legacy: normalize raw ranking subject into a scope key for old event replay.

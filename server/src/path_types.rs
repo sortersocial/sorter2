@@ -40,6 +40,22 @@ impl ItemId {
         Self::canonicalize(raw_url).map(Self)
     }
 
+    /// Normalize strings from forms, events, and Reddit imports into the same
+    /// stored id shape (e.g. drop post title slug after comment id).
+    pub fn from_storage(s: &str) -> Option<Self> {
+        let t = s.trim();
+        if t.is_empty() {
+            return None;
+        }
+        if t.contains("://") || t.starts_with("r/") {
+            return Self::from_url(t).or_else(|| Self::parse(t));
+        }
+        if t.starts_with("reddit.com/") && t.contains("/comments/") {
+            return Self::from_url(t).or_else(|| Self::parse(t));
+        }
+        Self::parse(t).or_else(|| Self::from_url(t))
+    }
+
     /// Map legacy scope keys (`""`, `"rust"`) to fractal parent nodes.
     pub fn from_legacy_scope(raw: &str) -> Self {
         let s = raw.trim();
@@ -322,6 +338,12 @@ mod tests {
     fn from_browse_tail_parses_full_url() {
         let id = ItemId::from_browse_tail("https://reddit.com/r/AmITheAsshole");
         assert_eq!(id.as_str(), "reddit.com/r/amitheasshole");
+    }
+
+    #[test]
+    fn from_storage_strips_post_title_slug() {
+        let id = ItemId::from_storage("reddit.com/r/rust/comments/aaa/announcing_rust_199").unwrap();
+        assert_eq!(id.as_str(), "reddit.com/r/rust/comments/aaa");
     }
 
     #[test]
