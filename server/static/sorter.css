@@ -104,7 +104,7 @@ code {
   padding: 0.5rem;
   border: 1px solid var(--border);
   background: var(--bg);
-  color: var(--fg);
+  color: var(--accent);
   font-size: 1rem;
   font-family: inherit;
   resize: vertical;
@@ -120,7 +120,8 @@ code {
 }
 
 .breadcrumbs {
-  font-size: 0.875rem;
+  font-size: 1rem;
+  margin-top: 1rem;
   margin-bottom: 1rem;
   color: var(--muted);
 }

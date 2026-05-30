@@ -138,7 +138,7 @@ fn segment_label(seg: &str) -> &str {
 pub fn breadcrumb_path(item: &ItemId) -> Markup {
     html! {
         nav class="breadcrumbs" aria-label="Breadcrumb" {
-            a href="/" { "Internet" }
+            a href="/" { "~" }
             @for path in item.breadcrumb_paths() {
                 @let seg = path.segments().last().map_or("", |v| *v);
                 span class="separator" { " / " }
@@ -198,12 +198,6 @@ pub fn ranking_panel(item: &ItemId, group: &GroupState) -> Markup {
     let (top, bottom) = top_bottom(group, 8);
     html! {
         section id="ranking-panel" class="demo-panel" {
-            h2 {
-                "Ranking"
-                @if !item.is_root() {
-                    " — " span class="scope-name" { (item.as_str()) }
-                }
-            }
             @if total == 0 {
                 p class="muted" {
                     @if item.is_root() {
