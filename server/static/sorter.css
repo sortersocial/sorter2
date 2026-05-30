@@ -1,0 +1,168 @@
+:root {
+  --bg: #0f1115;
+  --fg: #e8eaed;
+  --muted: #9aa0a6;
+  --accent: #7cacf8;
+  --panel: #1a1d24;
+  --border: #2a2f3a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.5;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 0.875rem;
+}
+
+.view-meta {
+  position: fixed;
+  top: 0.5rem;
+  right: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.demo-panel {
+  max-width: 40rem;
+  margin: 4rem auto 2rem;
+  padding: 2rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.demo-panel h1 {
+  margin-top: 0;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #0f1115;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+code {
+  font-size: 0.85em;
+  background: var(--bg);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+}
+
+.vote-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.vote-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.vote-fields input {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.rank-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.rank-list li {
+  margin-bottom: 0.35rem;
+}
+
+.rank-num {
+  color: var(--muted);
+}
+
+#parser-input {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 1rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+#parser-form .btn-primary {
+  margin-top: 0.5rem;
+}
+
+.breadcrumbs {
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+  color: var(--muted);
+}
+
+.breadcrumbs a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.breadcrumbs a:hover {
+  text-decoration: underline;
+}
+
+.breadcrumbs .separator {
+  color: var(--muted);
+}
+
+.rank-list a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.rank-list a:hover {
+  text-decoration: underline;
+}
+
+.entity-card h2 {
+  margin-top: 0;
+}
+
+.scope-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.rank-heading {
+  margin: 0.75rem 0 0.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rank-gap {
+  text-align: center;
+  margin: 0.25rem 0;
+}
