@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     entity_store::EntityStore, event_log::EventLog, events::Event, projection_apply,
-    projection_store::ProjectionStore,
+    projection_store::ProjectionStore, views::ViewStore,
 };
 
 pub struct JournalCommand {
@@ -22,6 +22,7 @@ impl JournalClient {
         event_log: Arc<EventLog>,
         entity_store: EntityStore,
         projection_store: ProjectionStore,
+        view_store: ViewStore,
     ) -> Self {
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(journal_worker(
@@ -29,6 +30,7 @@ impl JournalClient {
             event_log,
             entity_store,
             projection_store,
+            view_store,
         ));
         Self { tx }
     }
@@ -48,6 +50,7 @@ async fn journal_worker(
     event_log: Arc<EventLog>,
     entity_store: EntityStore,
     projection_store: ProjectionStore,
+    view_store: ViewStore,
 ) {
     while let Some(first) = rx.recv().await {
         let mut batch = vec![first];
@@ -71,9 +74,12 @@ async fn journal_worker(
         }
 
         for cmd in &batch {
-            if let Err(e) =
-                projection_apply::apply_next_event(&projection_store, &entity_store, &cmd.event)
-            {
+            if let Err(e) = projection_apply::apply_next_event(
+                &projection_store,
+                &entity_store,
+                &view_store,
+                &cmd.event,
+            ) {
                 tracing::warn!(err = %e, "projection update failed after vote append");
             }
         }
