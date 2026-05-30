@@ -190,6 +190,7 @@ async fn vote_page_renders_live_ranking_sidebar() {
     assert!(html.contains("--rank-bg: oklch("));
     assert!(html.contains("--rank-fg: #"));
     assert!(html.contains("data-rank-item=\"alpha\""));
+    assert!(html.contains("is-compared"));
 }
 
 #[tokio::test]

@@ -6,11 +6,12 @@ use axum::{
 };
 use maud::{html, Markup};
 use serde::Deserialize;
+use std::collections::HashSet;
 
 use crate::{
     fetch::html::entity_section,
     form_template::template_json_compact,
-    html::{ranking_panel, scope_theme_style, JsBuilder},
+    html::{ranking_panel_with_highlights, scope_theme_style, JsBuilder},
     pair::{children_of, resolve_pair, suggest_next_pair_in_pool},
     path_types::ItemId,
     reducer::{GlobalTree, GroupState, NodeState, VoteData},
@@ -147,14 +148,15 @@ fn vote_compare_actions(parent: &ItemId, next: Option<&(ItemId, ItemId)>) -> Mar
     }
 }
 
-fn vote_ranking_sidebar(tree: &GlobalTree, parent: &ItemId) -> Markup {
+fn vote_ranking_sidebar(tree: &GlobalTree, parent: &ItemId, left: &ItemId, right: &ItemId) -> Markup {
     let empty = NodeState::default();
     let node = tree.get(parent).unwrap_or(&empty);
+    let highlighted: HashSet<ItemId> = [left.clone(), right.clone()].into_iter().collect();
     html! {
         aside id="vote-ranking-panel" class="vote-ranking-panel demo-panel" aria-live="polite" {
             h2 { "live ranking" }
             p class="muted small" { "updates as comparisons land" }
-            (ranking_panel(parent, node, tree))
+            (ranking_panel_with_highlights(parent, node, tree, &highlighted))
         }
     }
 }
@@ -176,7 +178,7 @@ pub(crate) fn vote_recorded_morph(
     let edge_history = vote_edge_history(tree, &group, left, right);
     let next_pair = suggest_next(&group, left, right, &pool);
     let actions = vote_compare_actions(parent, next_pair.as_ref());
-    let sidebar = vote_ranking_sidebar(tree, parent);
+    let sidebar = vote_ranking_sidebar(tree, parent, left, right);
     JsBuilder::new()
         .morph_inner_selector("#vote-edge-history-region", edge_history)
         .morph_selector("#vote-compare-actions", actions)
@@ -282,7 +284,7 @@ pub async fn vote_page(
                     (edge_history)
                 }
             }
-            (vote_ranking_sidebar(&tree, &parent))
+            (vote_ranking_sidebar(&tree, &parent, &left, &right))
         }
     };
 

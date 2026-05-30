@@ -293,6 +293,7 @@ fn rank_list(
     start_rank: usize,
     total_ranked: usize,
     ordinal_offset: usize,
+    highlighted: &HashSet<ItemId>,
     tree: &GlobalTree,
 ) -> Markup {
     html! {
@@ -302,7 +303,8 @@ fn rank_list(
                 @for (i, r) in items.iter().enumerate() {
                     @let href = item_href(&r.item);
                     @let style = rank_row_style(parent, ordinal_offset + i, total_ranked);
-                    li class=(if crate::render::reddit::is_reddit_post(&r.item) { "rank-row reddit-post-row" } else { "rank-row" })
+                    @let class = rank_row_class(&r.item, highlighted);
+                    li class=(class)
                         data-rank-item=(r.item.as_str())
                         style=(style) {
                         span class="rank-num" { (start_rank + i) ". " }
@@ -324,6 +326,18 @@ fn rank_list(
     }
 }
 
+fn rank_row_class(item: &ItemId, highlighted: &HashSet<ItemId>) -> String {
+    let mut class = if crate::render::reddit::is_reddit_post(item) {
+        "rank-row reddit-post-row".to_string()
+    } else {
+        "rank-row".to_string()
+    };
+    if highlighted.contains(item) {
+        class.push_str(" is-compared");
+    }
+    class
+}
+
 fn display_label(id: &ItemId) -> String {
     id.segments().last().map_or("Internet", |v| *v).to_string()
 }
@@ -336,14 +350,20 @@ fn child_label(tree: &GlobalTree, id: &ItemId) -> String {
 }
 
 /// Plain (unscored) list of children that have no votes yet.
-fn unranked_list(label: &str, items: &[ItemId], tree: &GlobalTree) -> Markup {
+fn unranked_list(
+    label: &str,
+    items: &[ItemId],
+    highlighted: &HashSet<ItemId>,
+    tree: &GlobalTree,
+) -> Markup {
     html! {
         @if !items.is_empty() {
             h3 class="rank-heading muted small" { (label) }
             ul class="rank-list unranked" {
                 @for it in items {
                     @let href = item_href(it);
-                    li class=(if crate::render::reddit::is_reddit_post(it) { "rank-row reddit-post-row" } else { "rank-row" })
+                    @let class = rank_row_class(it, highlighted);
+                    li class=(class)
                         data-rank-item=(it.as_str()) {
                         @if let Some(row) = crate::render::reddit::child_row_markup(tree, it, &href) {
                             (row)
@@ -360,6 +380,15 @@ fn unranked_list(label: &str, items: &[ItemId], tree: &GlobalTree) -> Markup {
 }
 
 pub fn ranking_panel(item: &ItemId, node: &NodeState, tree: &GlobalTree) -> Markup {
+    ranking_panel_with_highlights(item, node, tree, &HashSet::new())
+}
+
+pub fn ranking_panel_with_highlights(
+    item: &ItemId,
+    node: &NodeState,
+    tree: &GlobalTree,
+    highlighted: &HashSet<ItemId>,
+) -> Markup {
     let group = &node.local_ranking;
     let n = group.idx_to_item.len();
     let (comps, _isolates) =
@@ -407,10 +436,10 @@ pub fn ranking_panel(item: &ItemId, node: &NodeState, tree: &GlobalTree) -> Mark
             } @else {
                 @for (gi, ranked) in ranked_groups.iter().enumerate() {
                     @let label = if multi { format!("Ranking group {}", gi + 1) } else { "Ranking".to_string() };
-                    (rank_list(item, &label, ranked, 1, total_ranked, ordinal_offset, tree))
+                    (rank_list(item, &label, ranked, 1, total_ranked, ordinal_offset, highlighted, tree))
                     @let _ = { ordinal_offset += ranked.len(); };
                 }
-                (unranked_list("Unranked", &unranked, tree))
+                (unranked_list("Unranked", &unranked, highlighted, tree))
             }
         }
     }
