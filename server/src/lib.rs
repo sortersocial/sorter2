@@ -1,6 +1,7 @@
 pub mod api;
 pub mod entity_store;
 pub mod event_log;
+pub mod event_reducer;
 pub mod events;
 pub mod fetch;
 pub mod form_template;
@@ -9,6 +10,7 @@ pub mod journal;
 pub mod pair;
 pub mod parser;
 pub mod path_types;
+pub mod projection_apply;
 pub mod projection_store;
 pub mod ranking;
 pub mod reddit;

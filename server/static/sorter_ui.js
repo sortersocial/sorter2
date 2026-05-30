@@ -57,6 +57,44 @@
     return form.classList && form.classList.contains('fetch-entity-form');
   }
 
+  function rankRowPositions(root) {
+    var positions = {};
+    if (!root) return positions;
+    root.querySelectorAll('[data-rank-item]').forEach(function (row) {
+      positions[row.getAttribute('data-rank-item')] = row.getBoundingClientRect();
+    });
+    return positions;
+  }
+
+  window.sorter2MorphWithFlip = function (selector, html) {
+    var root = document.querySelector(selector);
+    if (!root) return;
+    var before = rankRowPositions(root);
+    Idiomorph.morph(root, html);
+    var afterRoot = document.querySelector(selector);
+    if (!afterRoot) return;
+    afterRoot.querySelectorAll('[data-rank-item]').forEach(function (row) {
+      var key = row.getAttribute('data-rank-item');
+      var oldBox = before[key];
+      if (!oldBox) {
+        row.classList.add('rank-row-enter');
+        requestAnimationFrame(function () {
+          row.classList.remove('rank-row-enter');
+        });
+        return;
+      }
+      var newBox = row.getBoundingClientRect();
+      var dy = oldBox.top - newBox.top;
+      if (Math.abs(dy) < 1) return;
+      row.style.transform = 'translateY(' + dy + 'px)';
+      row.style.transition = 'transform 0s';
+      requestAnimationFrame(function () {
+        row.style.transition = 'transform 260ms ease';
+        row.style.transform = '';
+      });
+    });
+  };
+
   function postUiForm(form) {
     var btn = form.querySelector('button[type="submit"]');
     if (isFetchForm(form) && btn) {
@@ -86,10 +124,28 @@
     if (!slider) return;
     var leftInput = document.getElementById('vote-ratio-left');
     var rightInput = document.getElementById('vote-ratio-right');
+    var ratioDisplay = document.getElementById('vote-ratio-display');
+    function gcd(a, b) {
+      a = Math.abs(a);
+      b = Math.abs(b);
+      while (b) {
+        var t = b;
+        b = a % b;
+        a = t;
+      }
+      return a || 1;
+    }
     function update() {
       var v = parseInt(slider.value, 10);
-      if (leftInput) leftInput.value = String(v);
-      if (rightInput) rightInput.value = String(100 - v);
+      if (!Number.isFinite(v)) v = 50;
+      var left = Math.max(1, 100 - v);
+      var right = Math.max(1, v);
+      var divisor = gcd(left, right);
+      left = left / divisor;
+      right = right / divisor;
+      if (leftInput) leftInput.value = String(left);
+      if (rightInput) rightInput.value = String(right);
+      if (ratioDisplay) ratioDisplay.textContent = left + ':' + right;
     }
     slider.addEventListener('input', update);
     update();

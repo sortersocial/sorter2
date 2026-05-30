@@ -73,9 +73,8 @@ pub fn fetch_entity_stream(
         }
 
         // Optimistic "Fetching…" morph of the entity section.
-        let _ = state.hydrate_scope(&id).await;
         let fetching_js = {
-            let tree = state.tree.read().await;
+            let tree = state.scope_tree(&id).unwrap_or_else(|_| crate::reducer::GlobalTree::new());
             let empty = NodeState::default();
             let node = tree.get(&id).unwrap_or(&empty);
             let sel = html::entity_section_selector(&id);
@@ -103,8 +102,7 @@ pub fn fetch_entity_stream(
             | FetchJobResult::NotFound
             | FetchJobResult::SkippedCached
             |             FetchJobResult::SkippedDuplicate => {
-                let _ = state.hydrate_scope(&id).await;
-                let tree = state.tree.read().await;
+                let tree = state.scope_tree(&id).unwrap_or_else(|_| crate::reducer::GlobalTree::new());
                 let empty = NodeState::default();
                 let node = tree.get(&id).unwrap_or(&empty);
                 let sel = html::entity_section_selector(&id);
@@ -116,8 +114,7 @@ pub fn fetch_entity_stream(
                 yield Ok(js_event(b.build()));
             }
             FetchJobResult::RateLimited { reset_secs } => {
-                let _ = state.hydrate_scope(&id).await;
-                let tree = state.tree.read().await;
+                let tree = state.scope_tree(&id).unwrap_or_else(|_| crate::reducer::GlobalTree::new());
                 let empty = NodeState::default();
                 let node = tree.get(&id).unwrap_or(&empty);
                 let sel = html::entity_section_selector(&id);
@@ -128,8 +125,7 @@ pub fn fetch_entity_stream(
                 yield Ok(js_event(js));
             }
             FetchJobResult::Failed(msg) => {
-                let _ = state.hydrate_scope(&id).await;
-                let tree = state.tree.read().await;
+                let tree = state.scope_tree(&id).unwrap_or_else(|_| crate::reducer::GlobalTree::new());
                 let empty = NodeState::default();
                 let node = tree.get(&id).unwrap_or(&empty);
                 let sel = html::entity_section_selector(&id);

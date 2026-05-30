@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::{
     fetch::html::entity_section,
     form_template::template_json_compact,
-    html::JsBuilder,
+    html::{ranking_panel, JsBuilder},
     pair::{children_of, resolve_pair, suggest_next_pair_in_pool},
     path_types::ItemId,
     reducer::{GlobalTree, GroupState, NodeState, VoteData},
@@ -147,6 +147,18 @@ fn vote_compare_actions(parent: &ItemId, next: Option<&(ItemId, ItemId)>) -> Mar
     }
 }
 
+fn vote_ranking_sidebar(tree: &GlobalTree, parent: &ItemId) -> Markup {
+    let empty = NodeState::default();
+    let node = tree.get(parent).unwrap_or(&empty);
+    html! {
+        aside id="vote-ranking-panel" class="vote-ranking-panel demo-panel" aria-live="polite" {
+            h2 { "live ranking" }
+            p class="muted small" { "updates as comparisons land" }
+            (ranking_panel(parent, node, tree))
+        }
+    }
+}
+
 /// After recording a vote on the compare page: refresh edge history and next-pair link.
 pub(crate) fn vote_recorded_morph(
     tree: &GlobalTree,
@@ -164,9 +176,11 @@ pub(crate) fn vote_recorded_morph(
     let edge_history = vote_edge_history(tree, &group, left, right);
     let next_pair = suggest_next(&group, left, right, &pool);
     let actions = vote_compare_actions(parent, next_pair.as_ref());
+    let sidebar = vote_ranking_sidebar(tree, parent);
     JsBuilder::new()
         .morph_inner_selector("#vote-edge-history-region", edge_history)
         .morph_selector("#vote-compare-actions", actions)
+        .morph_selector_flip("#vote-ranking-panel", sidebar)
 }
 
 fn vote_compare_item_card(tree: &GlobalTree, item: &ItemId, side_class: &str) -> Markup {
@@ -194,8 +208,7 @@ pub async fn vote_page(
     let left_param = q.left.as_deref().map(parse_item_param);
     let right_param = q.right.as_deref().map(parse_item_param);
 
-    let _ = state.hydrate_scope(&parent).await;
-    let tree = state.tree.read().await;
+    let tree = state.scope_tree(&parent).unwrap_or_else(|_| GlobalTree::new());
     let empty = NodeState::default();
     let parent_node = tree.get(&parent).unwrap_or(&empty);
 
@@ -235,38 +248,43 @@ pub async fn vote_page(
     );
 
     let body = html! {
-        section class="vote-compare-shell" {
-            h1 { "compare" }
-            (breadcrumb_path(&parent))
-            p class="muted vote-compare-scope" {
-                "ranking children of "
-                a href=(item_href(&parent)) { (child_title(&tree, &parent)) }
-            }
-            div class="vote-compare-pair" {
-                (vote_compare_item_card(&tree, &left, "vote-compare-left"))
-                span class="vote-compare-vs" { "vs" }
-                (vote_compare_item_card(&tree, &right, "vote-compare-right"))
-            }
-            (vote_back_nav(&parent))
-            form id="vote-compare-form" method="POST" action="/ui" {
-                input type="hidden" name=(UI_RPC_FIELD) value=(rpc_json);
-                input type="hidden" name="ratio_left" id="vote-ratio-left" value="50";
-                input type="hidden" name="ratio_right" id="vote-ratio-right" value="50";
-                label class="vote-compare-slider-label" {
-                    span id="vote-slider-left-label" { (child_title(&tree, &left)) }
-                    input type="range" id="vote-preference-slider" min="0" max="100" value="50"
-                        aria-valuemin="0" aria-valuemax="100";
-                    span id="vote-slider-right-label" { (child_title(&tree, &right)) }
+        div class="vote-page-grid" {
+            section class="vote-compare-shell" {
+                h1 { "compare" }
+                (breadcrumb_path(&parent))
+                p class="muted vote-compare-scope" {
+                    "ranking children of "
+                    a href=(item_href(&parent)) { (child_title(&tree, &parent)) }
                 }
-                (vote_compare_actions(&parent, next_pair.as_ref()))
+                div class="vote-compare-pair" {
+                    (vote_compare_item_card(&tree, &left, "vote-compare-left"))
+                    span class="vote-compare-vs" { "vs" }
+                    (vote_compare_item_card(&tree, &right, "vote-compare-right"))
+                }
+                (vote_back_nav(&parent))
+                form id="vote-compare-form" method="POST" action="/ui" {
+                    input type="hidden" name=(UI_RPC_FIELD) value=(rpc_json);
+                    input type="hidden" name="ratio_left" id="vote-ratio-left" value="1";
+                    input type="hidden" name="ratio_right" id="vote-ratio-right" value="1";
+                    div class="vote-ratio-readout" {
+                        span class="muted small" { "ratio " }
+                        strong id="vote-ratio-display" { "1:1" }
+                    }
+                    label class="vote-compare-slider-label" {
+                        span id="vote-slider-left-label" { (child_title(&tree, &left)) }
+                        input type="range" id="vote-preference-slider" min="0" max="100" value="50"
+                            aria-valuemin="0" aria-valuemax="100";
+                        span id="vote-slider-right-label" { (child_title(&tree, &right)) }
+                    }
+                    (vote_compare_actions(&parent, next_pair.as_ref()))
+                }
+                div id="vote-edge-history-region" {
+                    (edge_history)
+                }
             }
-            div id="vote-edge-history-region" {
-                (edge_history)
-            }
+            (vote_ranking_sidebar(&tree, &parent))
         }
     };
-
-    drop(tree);
 
     let path = format!("/vote?parent={}", urlencoding::encode(parent.as_str()));
     state.views.increment(path.clone());

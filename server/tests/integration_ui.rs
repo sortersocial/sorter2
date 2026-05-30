@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use axum::Router;
-use sorter2_server::{create_app, create_app_state, path_types::ItemId, state::AppConfig, ui_action::UI_RPC_FIELD};
+use sorter2_server::{
+    create_app, create_app_state, path_types::ItemId, state::AppConfig, ui_action::UI_RPC_FIELD,
+};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 
@@ -63,6 +65,14 @@ async fn post_ui_vote_compare_morphs_edge_history() {
         "expected edge history morph, got: {body}"
     );
     assert!(
+        body.contains("vote-ranking-panel"),
+        "expected ranking sidebar morph, got: {body}"
+    );
+    assert!(
+        body.contains("sorter2MorphWithFlip"),
+        "expected animated ranking morph, got: {body}"
+    );
+    assert!(
         body.contains("70:30"),
         "expected recorded ratio in morph, got: {body}"
     );
@@ -118,7 +128,7 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
         port: 0,
     };
     let state = create_app_state(cfg).await;
-    let tree = state.tree.read().await;
+    let tree = state.scope_tree(&ItemId::root()).unwrap();
     let root = tree.get(&ItemId::root()).expect("root node after replay");
     let ranked = sorter2_server::ranking::ranked_items(&root.local_ranking);
     assert_eq!(ranked.len(), 2);
@@ -139,6 +149,42 @@ async fn browse_url_renders_subreddit_page() {
         .unwrap();
     assert!(html.contains("ranking-panel"));
     assert!(html.contains("/~/https://reddit.com/r/rust"));
+}
+
+#[tokio::test]
+async fn vote_page_renders_live_ranking_sidebar() {
+    let (addr, _tmp) = start_test_server().await;
+    let client = reqwest::Client::new();
+    let seed_rpc = serde_json::json!({
+        "action": "record_vote",
+        "a": "alpha",
+        "b": "beta",
+        "ratio_left": 2,
+        "ratio_right": 1
+    })
+    .to_string();
+    let mut form = HashMap::new();
+    form.insert(UI_RPC_FIELD.to_string(), seed_rpc);
+    client
+        .post(format!("http://{addr}/ui"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+
+    let html = client
+        .get(format!("http://{addr}/vote?parent="))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains("vote-ranking-panel"));
+    assert!(html.contains("live ranking"));
+    assert!(html.contains("vote-ratio-display"));
+    assert!(html.contains(">1:1<"));
+    assert!(html.contains("data-rank-item=\"alpha\""));
 }
 
 #[tokio::test]

@@ -65,6 +65,15 @@ impl JsBuilder {
         self
     }
 
+    pub(crate) fn morph_selector_flip(mut self, selector: &str, markup: Markup) -> Self {
+        let html = js_string_literal(&markup.into_string());
+        self.snippets.push(format!(
+            "if (window.sorter2MorphWithFlip) {{ window.sorter2MorphWithFlip({sel}, {html}); }} else {{ var __el = document.querySelector({sel}); if (__el) {{ Idiomorph.morph(__el, {html}); }} }}",
+            sel = js_string_literal(selector),
+        ));
+        self
+    }
+
     pub(crate) fn morph_inner_selector(mut self, selector: &str, markup: Markup) -> Self {
         let html = js_string_literal(&markup.into_string());
         self.snippets.push(format!(
@@ -171,7 +180,8 @@ fn rank_list(label: &str, items: &[RankedItem], start_rank: usize, tree: &Global
             ol class="rank-list" {
                 @for (i, r) in items.iter().enumerate() {
                     @let href = item_href(&r.item);
-                    li class=(if crate::render::reddit::is_reddit_post(&r.item) { "reddit-post-row" } else { "" }) {
+                    li class=(if crate::render::reddit::is_reddit_post(&r.item) { "rank-row reddit-post-row" } else { "rank-row" })
+                        data-rank-item=(r.item.as_str()) {
                         span class="rank-num" { (start_rank + i) ". " }
                         @if let Some(row) = crate::render::reddit::child_row_markup(tree, &r.item, &href) {
                             (row)
@@ -210,7 +220,8 @@ fn unranked_list(label: &str, items: &[ItemId], tree: &GlobalTree) -> Markup {
             ul class="rank-list unranked" {
                 @for it in items {
                     @let href = item_href(it);
-                    li class=(if crate::render::reddit::is_reddit_post(it) { "reddit-post-row" } else { "" }) {
+                    li class=(if crate::render::reddit::is_reddit_post(it) { "rank-row reddit-post-row" } else { "rank-row" })
+                        data-rank-item=(it.as_str()) {
                         @if let Some(row) = crate::render::reddit::child_row_markup(tree, it, &href) {
                             (row)
                         } @else {
@@ -313,8 +324,9 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
     state.views.increment(path.clone());
     let views = state.views.get_views(&path);
 
-    let _ = state.hydrate_scope(&item).await;
-    let tree = state.tree.read().await;
+    let tree = state
+        .scope_tree(&item)
+        .unwrap_or_else(|_| GlobalTree::new());
     let empty_node = NodeState::default();
     let node = tree.get(&item).unwrap_or(&empty_node);
 
@@ -347,4 +359,17 @@ pub async fn home(State(state): State<AppState>, uri: Uri) -> impl IntoResponse 
 pub async fn browse(State(state): State<AppState>, uri: Uri) -> impl IntoResponse {
     let item = ItemId::from_browse_uri(uri.path()).unwrap_or(ItemId::root());
     item_page(state, uri, item).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SORTER_UI_JS;
+
+    #[test]
+    fn vote_slider_left_position_favors_left_item() {
+        assert!(SORTER_UI_JS.contains("Math.max(1, 100 - v)"));
+        assert!(SORTER_UI_JS.contains("Math.max(1, v)"));
+        assert!(SORTER_UI_JS.contains("var divisor = gcd(left, right)"));
+        assert!(SORTER_UI_JS.contains("ratioDisplay.textContent = left + ':' + right"));
+    }
 }

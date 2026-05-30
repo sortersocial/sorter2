@@ -7,17 +7,12 @@ use std::time::{Duration, Instant};
 use reqwest::{header, Client, StatusCode};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     entity_store::EntityStore, event_log::EventLog, events::Event, fetch::now_ms,
-    path_types::ItemId, projection_store::ProjectionStore, reducer::GlobalTree,
+    path_types::ItemId, projection_apply, projection_store::ProjectionStore, reducer::GlobalTree,
 };
-
-/// Bootstrap blank nodes along a URL path so breadcrumbs and voting work before fetch.
-pub fn ensure_partial_tree(tree: &mut GlobalTree, id: &ItemId) {
-    tree.ensure_path(id);
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchJobResult {
@@ -77,7 +72,6 @@ struct OAuthToken {
 
 impl RedditBroker {
     pub fn spawn(
-        tree: Arc<RwLock<GlobalTree>>,
         event_log: Arc<EventLog>,
         entity_store: EntityStore,
         projection_store: ProjectionStore,
@@ -107,7 +101,6 @@ impl RedditBroker {
 
         tokio::spawn(reddit_worker(
             rx,
-            tree,
             event_log,
             entity_store,
             projection_store,
@@ -229,7 +222,6 @@ fn notify(done: Option<oneshot::Sender<FetchJobResult>>, result: FetchJobResult)
 
 async fn reddit_worker(
     mut rx: mpsc::Receiver<RedditCommand>,
-    tree: Arc<RwLock<GlobalTree>>,
     event_log: Arc<EventLog>,
     entity_store: EntityStore,
     projection_store: ProjectionStore,
@@ -323,25 +315,11 @@ async fn reddit_worker(
                         write_err = Some(e.to_string());
                         break;
                     }
+                    if let Err(e) =
+                        projection_apply::apply_next_event(&projection_store, &entity_store, &event)
                     {
-                        let mut tree = tree.write().await;
-                        if kind == FetchKind::Children {
-                            let view = entity_view_from_payload(&child_id, &child_payload);
-                            if let Err(e) = entity_store.put(&child_id, &child_payload) {
-                                write_err = Some(e.to_string());
-                                break;
-                            }
-                            tree.apply_entity_under_parent(&fetch_id, &child_id, view);
-                        } else if let Err(e) =
-                            apply_entity_import(&mut tree, &entity_store, &child_id, child_payload)
-                        {
-                            write_err = Some(e);
-                            break;
-                        }
-                        if let Err(e) = projection_store.persist_next_event(&tree, &event) {
-                            write_err = Some(e.to_string());
-                            break;
-                        }
+                        write_err = Some(e.to_string());
+                        break;
                     }
                     written += 1;
                 }
