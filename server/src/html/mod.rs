@@ -232,7 +232,8 @@ pub fn input_panel(query: &str, error: Option<&str>) -> Markup {
     html! {
         section id="parser-panel" class="demo-panel" {
             form method="post" action="/ui" id="parser-form" {
-                textarea
+                input
+                    type="text"
                     name="query"
                     id="parser-input"
                     rows="3"

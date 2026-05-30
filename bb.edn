@@ -9,11 +9,10 @@
    :task (do
            (deref (p/process ["mkdir" "-p" "dev-data"] {:inherit true}))
            (deref (p/process ["cargo" "watch"
-                              "-x" "run -p server"
+                              "-x" "run -p sorter2-server"
                               "-w" "server/"]
                              {:inherit true
                               :env (merge (into {} (System/getenv))
-                                          {"SLUG_DATA_DIR" "dev-data"
-                                           "SLUG_KEYS"     "dev:dev"
-                                           "PORT"          "8080"
-                                           "RUST_LOG"      "info"})})))}}}
+                                          {"SORTER2_DATA_DIR" "dev-data"
+                                           "PORT"             "8080"
+                                           "RUST_LOG"         "info"})})))}}}

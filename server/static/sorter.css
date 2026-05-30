@@ -34,27 +34,18 @@ body {
   font-size: 0.75rem;
 }
 
-.demo-panel {
-  max-width: 40rem;
-  margin: 4rem auto 2rem;
-  padding: 2rem;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.demo-panel h1 {
-  margin-top: 0;
-}
-
 .btn-primary {
   background: var(--accent);
   color: #0f1115;
-  border: none;
+  border-style: outset;
+  border-width: 3px;
   padding: 0.5rem 1rem;
-  border-radius: 4px;
   font-size: 1rem;
   cursor: pointer;
+}
+
+.btn-primary:active {
+  border-style: inset;
 }
 
 .btn-primary:hover {
@@ -103,11 +94,15 @@ code {
   color: var(--muted);
 }
 
+#parser-panel {
+  display: flex;
+  flex-direction: column;
+}
+
 #parser-input {
-  width: 100%;
+  width: 90%;
   padding: 0.5rem;
   border: 1px solid var(--border);
-  border-radius: 4px;
   background: var(--bg);
   color: var(--fg);
   font-size: 1rem;
@@ -115,7 +110,12 @@ code {
   resize: vertical;
 }
 
+#parser-input:focus-visible {
+  outline: 0;
+}
+
 #parser-form .btn-primary {
+  width: 10%;
   margin-top: 0.5rem;
 }
 
