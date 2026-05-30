@@ -124,10 +124,28 @@
     if (!slider) return;
     var leftInput = document.getElementById('vote-ratio-left');
     var rightInput = document.getElementById('vote-ratio-right');
+    var ratioDisplay = document.getElementById('vote-ratio-display');
+    function gcd(a, b) {
+      a = Math.abs(a);
+      b = Math.abs(b);
+      while (b) {
+        var t = b;
+        b = a % b;
+        a = t;
+      }
+      return a || 1;
+    }
     function update() {
       var v = parseInt(slider.value, 10);
-      if (leftInput) leftInput.value = String(v);
-      if (rightInput) rightInput.value = String(100 - v);
+      if (!Number.isFinite(v)) v = 50;
+      var left = Math.max(1, 100 - v);
+      var right = Math.max(1, v);
+      var divisor = gcd(left, right);
+      left = left / divisor;
+      right = right / divisor;
+      if (leftInput) leftInput.value = String(left);
+      if (rightInput) rightInput.value = String(right);
+      if (ratioDisplay) ratioDisplay.textContent = left + ':' + right;
     }
     slider.addEventListener('input', update);
     update();

@@ -328,6 +328,16 @@ h1 {
   cursor: default;
 }
 
+.vote-ratio-readout {
+  margin: 1rem 0 0.25rem;
+  text-align: center;
+}
+
+.vote-ratio-readout strong {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
 .vote-compare-next {
   color: var(--accent);
   text-decoration: none;

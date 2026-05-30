@@ -182,6 +182,8 @@ async fn vote_page_renders_live_ranking_sidebar() {
         .unwrap();
     assert!(html.contains("vote-ranking-panel"));
     assert!(html.contains("live ranking"));
+    assert!(html.contains("vote-ratio-display"));
+    assert!(html.contains(">1:1<"));
     assert!(html.contains("data-rank-item=\"alpha\""));
 }
 

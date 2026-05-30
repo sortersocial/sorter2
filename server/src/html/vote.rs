@@ -264,8 +264,12 @@ pub async fn vote_page(
                 (vote_back_nav(&parent))
                 form id="vote-compare-form" method="POST" action="/ui" {
                     input type="hidden" name=(UI_RPC_FIELD) value=(rpc_json);
-                    input type="hidden" name="ratio_left" id="vote-ratio-left" value="50";
-                    input type="hidden" name="ratio_right" id="vote-ratio-right" value="50";
+                    input type="hidden" name="ratio_left" id="vote-ratio-left" value="1";
+                    input type="hidden" name="ratio_right" id="vote-ratio-right" value="1";
+                    div class="vote-ratio-readout" {
+                        span class="muted small" { "ratio " }
+                        strong id="vote-ratio-display" { "1:1" }
+                    }
                     label class="vote-compare-slider-label" {
                         span id="vote-slider-left-label" { (child_title(&tree, &left)) }
                         input type="range" id="vote-preference-slider" min="0" max="100" value="50"

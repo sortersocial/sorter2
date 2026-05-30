@@ -360,3 +360,16 @@ pub async fn browse(State(state): State<AppState>, uri: Uri) -> impl IntoRespons
     let item = ItemId::from_browse_uri(uri.path()).unwrap_or(ItemId::root());
     item_page(state, uri, item).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SORTER_UI_JS;
+
+    #[test]
+    fn vote_slider_left_position_favors_left_item() {
+        assert!(SORTER_UI_JS.contains("Math.max(1, 100 - v)"));
+        assert!(SORTER_UI_JS.contains("Math.max(1, v)"));
+        assert!(SORTER_UI_JS.contains("var divisor = gcd(left, right)"));
+        assert!(SORTER_UI_JS.contains("ratioDisplay.textContent = left + ':' + right"));
+    }
+}
