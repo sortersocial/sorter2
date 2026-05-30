@@ -369,6 +369,48 @@ mod tests {
         assert_eq!(comp1, vec!["c", "d"]);
     }
 
+    /// A random spanning tree over 26 items needs only n−1 = 25 pairwise votes.
+    /// When each vote uses the "perfect" ratio (strength left : strength right =
+    /// (idx_left+1) : (idx_right+1)), rank centrality recovers the true order.
+    /// See `rank-eric.py` (Eric's demo of Negahban–Oh–Shah rank centrality).
+    #[test]
+    fn twenty_five_random_votes_perfect_ratios_sort_alphabet() {
+        use rand::seq::SliceRandom;
+
+        const N: usize = 26;
+        let letters: Vec<char> = (0..N).map(|i| char::from(b'a' + i as u8)).collect();
+
+        let mut rng = rand::thread_rng();
+        let mut perm: Vec<usize> = (0..N).collect();
+        perm.shuffle(&mut rng);
+
+        let mut g = mk_group();
+        for k in 1..N {
+            let i = *perm[..k].choose(&mut rng).unwrap();
+            let j = perm[k];
+            let (a, b) = (letters[i], letters[j]);
+            g.apply_vote(vote(
+                k as i64,
+                &a.to_string(),
+                &b.to_string(),
+                (i + 1) as i32,
+                (j + 1) as i32,
+            ));
+        }
+
+        let ranked = ranked_items(&g);
+        assert_eq!(ranked.len(), N);
+        for (rank, item) in ranked.iter().enumerate() {
+            let expected = char::from(b'a' + (N - 1 - rank) as u8);
+            assert_eq!(
+                item.item.as_str(),
+                expected.to_string(),
+                "rank {rank}: expected '{expected}', got '{}'",
+                item.item.as_str()
+            );
+        }
+    }
+
     #[test]
     fn subset_ranking_ranks_within_component_only() {
         let mut g = mk_group();
