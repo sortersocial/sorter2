@@ -107,10 +107,20 @@ code {
 
 .rank-list li {
   margin-bottom: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 7px;
+}
+
+.rank-list .rank-row {
+  background: var(--rank-bg, transparent);
+  border-color: var(--rank-border, transparent);
+  color: var(--rank-fg, var(--fg));
 }
 
 .rank-num {
-  color: var(--muted);
+  color: inherit;
+  opacity: 0.72;
 }
 
 #parser-panel {
@@ -159,7 +169,7 @@ code {
 }
 
 .rank-list a {
-  color: var(--accent);
+  color: inherit;
   text-decoration: none;
 }
 
