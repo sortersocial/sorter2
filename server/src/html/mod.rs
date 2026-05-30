@@ -153,6 +153,22 @@ impl JsBuilder {
     }
 }
 
+/// Short content hash of the bundled static assets, used as a `?v=` cache
+/// buster so CSS/JS changes take effect immediately instead of being masked by
+/// the `max-age` on `/static`.
+fn asset_version() -> &'static str {
+    use std::sync::OnceLock;
+    static V: OnceLock<String> = OnceLock::new();
+    V.get_or_init(|| {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        THEME_DEFAULT_CSS.hash(&mut h);
+        THEME_RETRO_CSS.hash(&mut h);
+        SORTER_UI_JS.hash(&mut h);
+        format!("{:x}", h.finish())
+    })
+}
+
 pub fn now_ms() -> i64 {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -161,7 +177,9 @@ pub fn now_ms() -> i64 {
 }
 
 fn layout(title: &str, body: Markup, views: u64, theme: &str, theme_next: &str) -> Markup {
-    let css_href = format!("/static/theme_{theme}.css");
+    let ver = asset_version();
+    let css_href = format!("/static/theme_{theme}.css?v={ver}");
+    let js_src = format!("/static/sorter_ui.js?v={ver}");
     html! {
         (DOCTYPE)
         html {
@@ -193,7 +211,7 @@ fn layout(title: &str, body: Markup, views: u64, theme: &str, theme_next: &str) 
                         }
                     }
                 }
-                script src="/static/sorter_ui.js" {}
+                script src=(js_src) {}
             }
         }
     }

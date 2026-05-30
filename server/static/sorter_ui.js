@@ -61,6 +61,11 @@
       if (f.getAttribute('data-navigate') === 'full') return;
       e.preventDefault();
       await postUiForm(f);
+      if (f.id === 'vote-form') {
+        f.reset();
+        var firstField = f.querySelector('input[type="text"]');
+        if (firstField) firstField.focus();
+      }
     });
 
     document.addEventListener('input', function (e) {
