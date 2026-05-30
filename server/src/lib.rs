@@ -1,6 +1,7 @@
 pub mod api;
 pub mod event_log;
 pub mod events;
+pub mod fetch;
 pub mod form_template;
 pub mod html;
 pub mod parser;

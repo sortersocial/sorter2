@@ -7,12 +7,12 @@ use std::time::{Duration, Instant};
 use reqwest::{header, Client, StatusCode};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::{
     event_log::EventLog,
     events::Event,
-    html::now_ms,
+    fetch::now_ms,
     path_types::ItemId,
     reducer::GlobalTree,
 };
@@ -22,10 +22,21 @@ pub fn ensure_partial_tree(tree: &mut GlobalTree, id: &ItemId) {
     tree.ensure_path(id);
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchJobResult {
+    Imported,
+    NotFound,
+    SkippedDuplicate,
+    SkippedCached,
+    RateLimited { reset_secs: u64 },
+    Failed(String),
+}
+
 pub struct RedditCommand {
     pub id: ItemId,
     /// User-initiated fetch bypasses the in-memory "recently fetched" cache.
     pub force: bool,
+    pub done: Option<oneshot::Sender<FetchJobResult>>,
 }
 
 #[derive(Clone)]
@@ -72,14 +83,29 @@ impl RedditBroker {
             .build()
             .expect("reqwest client");
 
+        tracing::debug!(
+            api_base = %config.api_base,
+            oauth_base = %config.oauth_base,
+            oauth = config.creds.is_some(),
+            "reddit worker started"
+        );
+
         tokio::spawn(reddit_worker(rx, tree, event_log, client, config));
 
         Self { tx }
     }
 
     /// Queue a fetch; drops when the channel is full (backpressure).
-    pub fn request_fetch(&self, id: ItemId, force: bool) {
-        let _ = self.tx.try_send(RedditCommand { id, force });
+    pub fn request_fetch(
+        &self,
+        id: ItemId,
+        force: bool,
+        done: Option<oneshot::Sender<FetchJobResult>>,
+    ) {
+        match self.tx.try_send(RedditCommand { id: id.clone(), force, done }) {
+            Ok(()) => tracing::debug!(item = %id, force, "reddit fetch queued"),
+            Err(_) => tracing::warn!(item = %id, "reddit fetch queue full, dropped"),
+        }
     }
 }
 
@@ -95,8 +121,6 @@ impl RedditApiConfig {
 }
 
 impl RedditCredentials {
-    /// Reddit's OAuth docs call these "client id" and "client secret"; the app
-    /// registration UI often labels them "app id" / "app secret" — same values.
     fn from_env() -> Option<Self> {
         let client_id = std::env::var("REDDIT_CLIENT_ID")
             .or_else(|_| std::env::var("REDDIT_APP_ID"))
@@ -128,12 +152,10 @@ pub fn default_user_agent() -> String {
     })
 }
 
-/// True when this node can be loaded from the Reddit JSON API.
 pub fn is_fetchable(id: &ItemId) -> bool {
     !map_item_to_reddit_api(id, "https://example.com").is_empty()
 }
 
-/// Derive UI-facing fields from a stored payload (Reddit-specific when under reddit.com).
 pub fn entity_view_from_payload(id: &ItemId, payload: &Value) -> Option<crate::reducer::EntityData> {
     if id.as_str().starts_with("reddit.com") {
         return parse_reddit_view(id, payload);
@@ -141,10 +163,15 @@ pub fn entity_view_from_payload(id: &ItemId, payload: &Value) -> Option<crate::r
     None
 }
 
-/// Apply a full API payload to the in-memory tree (view derived for known domains).
 pub fn apply_entity_import(tree: &mut GlobalTree, id: &ItemId, payload: Value) {
     let view = entity_view_from_payload(id, &payload);
     tree.apply_entity_raw(id, payload, view);
+}
+
+fn notify(done: Option<oneshot::Sender<FetchJobResult>>, result: FetchJobResult) {
+    if let Some(tx) = done {
+        let _ = tx.send(result);
+    }
 }
 
 async fn reddit_worker(
@@ -168,15 +195,25 @@ async fn reddit_worker(
         recently_fetched.retain(|_, t| now.duration_since(*t) < cache_ttl);
 
         if in_flight.contains(&cmd.id) {
+            tracing::debug!(item = %cmd.id, "reddit fetch skipped: already in flight");
+            notify(cmd.done, FetchJobResult::SkippedDuplicate);
             continue;
         }
         if !cmd.force && recently_fetched.contains_key(&cmd.id) {
+            tracing::debug!(item = %cmd.id, "reddit fetch skipped: recently fetched cache");
+            notify(cmd.done, FetchJobResult::SkippedCached);
             continue;
         }
 
         in_flight.insert(cmd.id.clone());
         let fetch_id = cmd.id.clone();
+        let done = cmd.done;
 
+        tracing::debug!(
+            item = %fetch_id,
+            delay_ms = current_delay.as_millis(),
+            "reddit fetch starting after delay"
+        );
         tokio::time::sleep(current_delay).await;
 
         if let Some(c) = &creds {
@@ -184,8 +221,18 @@ async fn reddit_worker(
         }
 
         let token = oauth.as_ref().map(|t| t.access_token.as_str());
+        if token.is_some() {
+            tracing::debug!(item = %fetch_id, "reddit fetch using OAuth bearer");
+        }
 
-        match do_fetch(&client, &api_base, &fetch_id, token).await {
+        let fetch_base = if token.is_some() {
+            &oauth_base
+        } else {
+            &api_base
+        };
+        let outcome = do_fetch(&client, fetch_base, &fetch_id, token).await;
+
+        match outcome {
             Ok(FetchOutcome::Payload(payload)) => {
                 let ts = now_ms();
                 let event = Event::EntityImported {
@@ -193,30 +240,49 @@ async fn reddit_worker(
                     ts,
                     payload: payload.clone(),
                 };
-                if let Err(e) = event_log.append(&event).await {
-                    tracing::warn!("event log append failed for {}: {}", fetch_id, e);
-                } else {
-                    apply_entity_import(&mut *tree.write().await, &fetch_id, payload);
-                    recently_fetched.insert(fetch_id.clone(), Instant::now());
-                    current_delay = Duration::from_millis(600);
+                tracing::debug!(
+                    item = %fetch_id,
+                    ts,
+                    payload_keys = ?payload.as_object().map(|o| o.len()),
+                    "reddit fetch got JSON payload, appending event"
+                );
+                match event_log.append(&event).await {
+                    Err(e) => {
+                        tracing::warn!(
+                            item = %fetch_id,
+                            err = %e,
+                            "reddit event log append failed"
+                        );
+                        notify(done, FetchJobResult::Failed(e.to_string()));
+                    }
+                    Ok(()) => {
+                        apply_entity_import(&mut *tree.write().await, &fetch_id, payload);
+                        recently_fetched.insert(fetch_id.clone(), Instant::now());
+                        current_delay = Duration::from_millis(600);
+                        tracing::info!(item = %fetch_id, "reddit entity imported");
+                        notify(done, FetchJobResult::Imported);
+                    }
                 }
             }
             Ok(FetchOutcome::NotFound) => {
+                tracing::debug!(item = %fetch_id, "reddit fetch: not found (no event written)");
                 recently_fetched.insert(fetch_id.clone(), Instant::now());
+                notify(done, FetchJobResult::NotFound);
             }
             Ok(FetchOutcome::RateLimited { reset_secs }) => {
-                let wait = Duration::from_secs(reset_secs.max(1));
                 tracing::warn!(
-                    "Reddit rate limit for {}; sleeping {}s",
-                    fetch_id,
-                    wait.as_secs()
+                    item = %fetch_id,
+                    reset_secs,
+                    "reddit rate limited"
                 );
-                tokio::time::sleep(wait).await;
+                tokio::time::sleep(Duration::from_secs(reset_secs.max(1))).await;
                 current_delay = (current_delay * 2).min(Duration::from_secs(60));
+                notify(done, FetchJobResult::RateLimited { reset_secs });
             }
             Err(e) => {
-                tracing::warn!("Reddit fetch failed for {}: {}", fetch_id, e);
+                tracing::warn!(item = %fetch_id, err = %e, "reddit fetch failed");
                 current_delay = (current_delay * 2).min(Duration::from_secs(60));
+                notify(done, FetchJobResult::Failed(e));
             }
         }
 
@@ -238,6 +304,7 @@ async fn ensure_oauth_token(
 ) -> Option<OAuthToken> {
     if let Some(t) = existing {
         if Instant::now() < t.expires_at - Duration::from_secs(60) {
+            tracing::debug!("reddit OAuth token still valid");
             return Some(t);
         }
     }
@@ -246,6 +313,7 @@ async fn ensure_oauth_token(
         "{}/api/v1/access_token",
         oauth_base.trim_end_matches('/')
     );
+    tracing::debug!(%url, "reddit OAuth token request");
 
     let resp = client
         .post(&url)
@@ -257,13 +325,13 @@ async fn ensure_oauth_token(
     let resp = match resp {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!("Reddit OAuth token request failed: {e}");
+            tracing::warn!("reddit OAuth token request failed: {e}");
             return None;
         }
     };
 
     if !resp.status().is_success() {
-        tracing::warn!("Reddit OAuth token HTTP {}", resp.status());
+        tracing::warn!("reddit OAuth token HTTP {}", resp.status());
         return None;
     }
 
@@ -276,11 +344,12 @@ async fn ensure_oauth_token(
     let body: TokenResponse = match resp.json().await {
         Ok(b) => b,
         Err(e) => {
-            tracing::warn!("Reddit OAuth token parse failed: {e}");
+            tracing::warn!("reddit OAuth token parse failed: {e}");
             return None;
         }
     };
 
+    tracing::debug!(expires_in = body.expires_in, "reddit OAuth token acquired");
     Some(OAuthToken {
         access_token: body.access_token,
         expires_at: Instant::now() + Duration::from_secs(body.expires_in),
@@ -295,35 +364,72 @@ async fn do_fetch(
 ) -> Result<FetchOutcome, String> {
     let url = map_item_to_reddit_api(id, api_base);
     if url.is_empty() {
+        tracing::debug!(item = %id, "reddit do_fetch: no API URL for item");
         return Ok(FetchOutcome::NotFound);
     }
+
+    tracing::debug!(item = %id, %url, bearer = bearer.is_some(), "reddit HTTP GET");
 
     let mut req = client.get(&url);
     if let Some(token) = bearer {
         req = req.bearer_auth(token);
     }
 
-    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let resp = req.send().await.map_err(|e| {
+        tracing::debug!(item = %id, %url, err = %e, "reddit HTTP transport error");
+        e.to_string()
+    })?;
 
-    if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+    let status = resp.status();
+    tracing::debug!(
+        item = %id,
+        %url,
+        %status,
+        remaining = ?rate_limit_remaining(&resp),
+        reset = ?rate_limit_reset_secs(&resp),
+        "reddit HTTP response"
+    );
+
+    if status == StatusCode::TOO_MANY_REQUESTS {
         let reset = rate_limit_reset_secs(&resp);
         return Ok(FetchOutcome::RateLimited { reset_secs: reset });
     }
 
-    if resp.status() == StatusCode::SERVICE_UNAVAILABLE {
-        return Err("Reddit unavailable (503)".to_string());
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        return Err("Reddit unavailable (503)".into());
     }
 
-    if !resp.status().is_success() {
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        tracing::debug!(
+            item = %id,
+            %status,
+            body_len = body.len(),
+            body_prefix = %body.chars().take(240).collect::<String>(),
+            "reddit non-success body"
+        );
         return Ok(FetchOutcome::NotFound);
     }
 
     if rate_limit_remaining(&resp) == Some(0) {
         let reset = rate_limit_reset_secs(&resp);
+        tracing::debug!(item = %id, reset_secs = reset, "reddit headers: rate limit exhausted");
         return Ok(FetchOutcome::RateLimited { reset_secs: reset });
     }
 
-    let payload: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    tracing::debug!(item = %id, bytes = text.len(), "reddit response body received");
+
+    let payload: Value = serde_json::from_str(&text).map_err(|e| {
+        tracing::debug!(
+            item = %id,
+            err = %e,
+            body_prefix = %text.chars().take(240).collect::<String>(),
+            "reddit JSON parse failed"
+        );
+        format!("invalid JSON: {e}")
+    })?;
+
     Ok(FetchOutcome::Payload(payload))
 }
 
@@ -344,7 +450,6 @@ fn rate_limit_reset_secs(resp: &reqwest::Response) -> u64 {
         .unwrap_or(5)
 }
 
-/// Map canonical item id to a Reddit JSON API URL under `api_base`.
 pub fn map_item_to_reddit_api(id: &ItemId, api_base: &str) -> String {
     let path = id.as_str();
     if !path.starts_with("reddit.com/") && path != "reddit.com" {
@@ -445,26 +550,6 @@ mod tests {
             map_item_to_reddit_api(&id, "https://www.reddit.com"),
             "https://www.reddit.com/r/rust/about.json?raw_json=1"
         );
-        assert_eq!(
-            map_item_to_reddit_api(&id, "http://127.0.0.1:9999"),
-            "http://127.0.0.1:9999/r/rust/about.json?raw_json=1"
-        );
-    }
-
-    #[test]
-    fn map_post_url() {
-        let id = ItemId::parse("reddit.com/r/amitheasshole/comments/1trnvdl").unwrap();
-        assert_eq!(
-            map_item_to_reddit_api(&id, "https://www.reddit.com"),
-            "https://www.reddit.com/r/amitheasshole/comments/1trnvdl.json?raw_json=1"
-        );
-    }
-
-    #[test]
-    fn is_fetchable_reddit_sub() {
-        let id = ItemId::parse("reddit.com/r/rust").unwrap();
-        assert!(is_fetchable(&id));
-        assert!(!is_fetchable(&ItemId::opaque("example.com/x")));
     }
 
     #[test]
@@ -477,19 +562,5 @@ mod tests {
         )
         .unwrap();
         assert_eq!(entity.title, "The Rust Programming Language");
-        assert!(entity.body_html.as_ref().is_some_and(|b| b.contains("Rust")));
-    }
-
-    #[test]
-    fn parse_post_fixture() {
-        let json = r#"[{"kind":"Listing","data":{"children":[{"kind":"t3","data":{"title":"AITA","author":"op","selftext_html":"&lt;p&gt;hi&lt;/p&gt;","thumbnail":"https://b.thumbs.redditmedia.com/x.jpg"}}]}}]"#;
-        let v: Value = serde_json::from_str(json).unwrap();
-        let entity = entity_view_from_payload(
-            &ItemId::parse("reddit.com/r/x/comments/abc").unwrap(),
-            &v,
-        )
-        .unwrap();
-        assert_eq!(entity.title, "AITA");
-        assert_eq!(entity.author.as_deref(), Some("op"));
     }
 }

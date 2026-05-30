@@ -26,7 +26,7 @@ pub enum HtmlUiAction {
     ParseQuery {
         query: String,
     },
-    /// Fetch upstream entity data for the current page (explicit user action only).
+    /// Import entity data; `POST /ui` responds with `text/event-stream` (not JS).
     FetchEntity {
         item: String,
     },

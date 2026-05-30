@@ -44,10 +44,12 @@
             (do (Thread/sleep 200) (recur))
             false))))))
 
-(defn- curl-post-ui [base rpc-json]
+(defn- curl-fetch-ui-sse [base item]
   (process/shell {:out :string :err :string}
-                 "curl" "-sf" "-X" "POST" (str base "/ui")
-                 "--data-urlencode" (str "__rpc__=" rpc-json)))
+                 "curl" "-sfN" "--max-time" "20"
+                 "-X" "POST" (str base "/ui")
+                 "--data-urlencode"
+                 (str "__rpc__={\"action\":\"fetch_entity\",\"item\":\"" item "\"}")))
 
 (defn- wait-event-log [path ms]
   (let [deadline (+ (System/currentTimeMillis) ms)]
@@ -98,11 +100,12 @@
                                               "curl" "-sf" browse-url))]
               (is (str/includes? before "Fetch from Reddit"))
               (is (not (str/includes? before "The Rust Programming Language")))
-              (let [rpc "{\"action\":\"fetch_entity\",\"item\":\"reddit.com/r/rust\"}"
-                    post (curl-post-ui app-base rpc)
-                    log-path (str data-dir "/events.jsonl")]
-                (is (zero? (:exit post)) "fetch_entity POST succeeds")
-                (is (wait-event-log log-path 10000) "event log written")
+              (let [log-path (str data-dir "/events.jsonl")
+                    sse (curl-fetch-ui-sse app-base "reddit.com/r/rust")]
+                (is (zero? (:exit sse)) "POST /ui fetch_entity SSE succeeds")
+                (is (str/includes? (:out sse) "event: complete"))
+                (is (str/includes? (:out sse) "The Rust Programming Language"))
+                (is (wait-event-log log-path 2000) "event log written")
                 (let [after (:out (process/shell {:out :string :err :string}
                                                  "curl" "-sf" browse-url))
                       log (slurp (io/file log-path))]

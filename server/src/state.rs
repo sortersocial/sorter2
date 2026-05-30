@@ -143,9 +143,9 @@ impl AppState {
         Ok(())
     }
 
-    /// User-initiated Reddit/API import (via "Fetch more" — never on paste or navigate).
-    pub fn queue_entity_fetch(&self, id: ItemId) {
-        self.reddit.request_fetch(id, true);
+    /// User-initiated Reddit/API import (SSE / fetch module only).
+    pub fn queue_entity_fetch(&self, id: ItemId, done: Option<tokio::sync::oneshot::Sender<crate::reddit::FetchJobResult>>) {
+        self.reddit.request_fetch(id, true, done);
     }
 
     pub async fn record_vote(
