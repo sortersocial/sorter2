@@ -113,6 +113,16 @@ pub struct Batch {
 }
 
 impl Batch {
+    /// Add a raw key/value put to this batch.
+    pub fn put(&mut self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
+        self.inner.put(key, value);
+    }
+
+    /// Add a raw key delete to this batch.
+    pub fn delete(&mut self, key: impl AsRef<[u8]>) {
+        self.inner.delete(key);
+    }
+
     /// Commit all operations in this batch atomically
     pub fn commit(self) -> Result<()> {
         self.db.rocks().write(self.inner)?;

@@ -10,12 +10,8 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::{
-    entity_store::EntityStore,
-    event_log::EventLog,
-    events::Event,
-    fetch::now_ms,
-    path_types::ItemId,
-    reducer::GlobalTree,
+    entity_store::EntityStore, event_log::EventLog, events::Event, fetch::now_ms,
+    path_types::ItemId, projection_store::ProjectionStore, reducer::GlobalTree,
 };
 
 /// Bootstrap blank nodes along a URL path so breadcrumbs and voting work before fetch.
@@ -30,7 +26,9 @@ pub enum FetchJobResult {
     NotFound,
     SkippedDuplicate,
     SkippedCached,
-    RateLimited { reset_secs: u64 },
+    RateLimited {
+        reset_secs: u64,
+    },
     Failed(String),
 }
 
@@ -82,6 +80,7 @@ impl RedditBroker {
         tree: Arc<RwLock<GlobalTree>>,
         event_log: Arc<EventLog>,
         entity_store: EntityStore,
+        projection_store: ProjectionStore,
         config: RedditApiConfig,
     ) -> Self {
         let (tx, rx) = mpsc::channel(100);
@@ -106,7 +105,15 @@ impl RedditBroker {
             "reddit worker started"
         );
 
-        tokio::spawn(reddit_worker(rx, tree, event_log, entity_store, client, config));
+        tokio::spawn(reddit_worker(
+            rx,
+            tree,
+            event_log,
+            entity_store,
+            projection_store,
+            client,
+            config,
+        ));
 
         Self { tx }
     }
@@ -119,7 +126,12 @@ impl RedditBroker {
         force: bool,
         done: Option<oneshot::Sender<FetchJobResult>>,
     ) {
-        match self.tx.try_send(RedditCommand { id: id.clone(), kind, force, done }) {
+        match self.tx.try_send(RedditCommand {
+            id: id.clone(),
+            kind,
+            force,
+            done,
+        }) {
             Ok(()) => tracing::debug!(item = %id, ?kind, force, "reddit fetch queued"),
             Err(_) => tracing::warn!(item = %id, "reddit fetch queue full, dropped"),
         }
@@ -173,9 +185,8 @@ pub fn reddit_oauth_api_base() -> String {
 }
 
 pub fn default_user_agent() -> String {
-    std::env::var("REDDIT_USER_AGENT").unwrap_or_else(|_| {
-        "web:sorter2.social:v0.0.1 (by /u/sorter2)".to_string()
-    })
+    std::env::var("REDDIT_USER_AGENT")
+        .unwrap_or_else(|_| "web:sorter2.social:v0.0.1 (by /u/sorter2)".to_string())
 }
 
 /// Can the node's own entity be imported (subreddit `about` or a post)?
@@ -188,7 +199,10 @@ pub fn is_children_fetchable(id: &ItemId) -> bool {
     !map_children_url(id, "https://example.com").is_empty()
 }
 
-pub fn entity_view_from_payload(id: &ItemId, payload: &Value) -> Option<crate::reducer::EntityData> {
+pub fn entity_view_from_payload(
+    id: &ItemId,
+    payload: &Value,
+) -> Option<crate::reducer::EntityData> {
     if id.as_str().starts_with("reddit.com") {
         return parse_reddit_view(id, payload);
     }
@@ -218,6 +232,7 @@ async fn reddit_worker(
     tree: Arc<RwLock<GlobalTree>>,
     event_log: Arc<EventLog>,
     entity_store: EntityStore,
+    projection_store: ProjectionStore,
     client: Client,
     config: RedditApiConfig,
 ) {
@@ -323,6 +338,10 @@ async fn reddit_worker(
                             write_err = Some(e);
                             break;
                         }
+                        if let Err(e) = projection_store.persist_next_event(&tree, &event) {
+                            write_err = Some(e.to_string());
+                            break;
+                        }
                     }
                     written += 1;
                 }
@@ -382,10 +401,7 @@ async fn ensure_oauth_token(
         }
     }
 
-    let url = format!(
-        "{}/api/v1/access_token",
-        oauth_base.trim_end_matches('/')
-    );
+    let url = format!("{}/api/v1/access_token", oauth_base.trim_end_matches('/'));
     tracing::debug!(%url, "reddit OAuth token request");
 
     let resp = client
@@ -728,11 +744,8 @@ mod tests {
     fn parse_subreddit_fixture() {
         let json = include_str!("../../test/fixtures/reddit/r_rust_about.json");
         let v: Value = serde_json::from_str(json).unwrap();
-        let entity = entity_view_from_payload(
-            &ItemId::parse("reddit.com/r/rust").unwrap(),
-            &v,
-        )
-        .unwrap();
+        let entity =
+            entity_view_from_payload(&ItemId::parse("reddit.com/r/rust").unwrap(), &v).unwrap();
         assert_eq!(entity.title, "The Rust Programming Language");
     }
 

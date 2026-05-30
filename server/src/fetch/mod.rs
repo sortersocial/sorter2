@@ -73,6 +73,7 @@ pub fn fetch_entity_stream(
         }
 
         // Optimistic "Fetching…" morph of the entity section.
+        let _ = state.hydrate_scope(&id).await;
         let fetching_js = {
             let tree = state.tree.read().await;
             let empty = NodeState::default();
@@ -102,6 +103,7 @@ pub fn fetch_entity_stream(
             | FetchJobResult::NotFound
             | FetchJobResult::SkippedCached
             |             FetchJobResult::SkippedDuplicate => {
+                let _ = state.hydrate_scope(&id).await;
                 let tree = state.tree.read().await;
                 let empty = NodeState::default();
                 let node = tree.get(&id).unwrap_or(&empty);
@@ -114,6 +116,7 @@ pub fn fetch_entity_stream(
                 yield Ok(js_event(b.build()));
             }
             FetchJobResult::RateLimited { reset_secs } => {
+                let _ = state.hydrate_scope(&id).await;
                 let tree = state.tree.read().await;
                 let empty = NodeState::default();
                 let node = tree.get(&id).unwrap_or(&empty);
@@ -125,6 +128,7 @@ pub fn fetch_entity_stream(
                 yield Ok(js_event(js));
             }
             FetchJobResult::Failed(msg) => {
+                let _ = state.hydrate_scope(&id).await;
                 let tree = state.tree.read().await;
                 let empty = NodeState::default();
                 let node = tree.get(&id).unwrap_or(&empty);

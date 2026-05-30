@@ -1,4 +1,4 @@
-use crate::{Db, Result, DurableError, DurableCollection};
+use crate::{Batch, Db, Result, DurableError, DurableCollection};
 use rocksdb::{IteratorMode, WriteBatch, Direction};
 use serde::{Serialize, Deserialize};
 use std::marker::PhantomData;
@@ -82,6 +82,27 @@ where
         self.db.rocks().write(batch)?;
         self.db.rocks().flush_wal(true)?;
         
+        Ok(())
+    }
+
+    /// Add a key-value put to an existing batch.
+    ///
+    /// The caller is responsible for committing the batch. This updates the map
+    /// length metadata in the same batch when the key is new.
+    pub fn put_in_batch(&self, batch: &mut Batch, key: &K, value: &V) -> Result<()> {
+        let key_bytes = bincode::serialize(key)?;
+        let value_bytes = bincode::serialize(value)?;
+        let db_key = self.entry_key(&key_bytes);
+
+        let is_new = self.db.rocks().get_pinned(&db_key)?.is_none();
+        batch.put(&db_key, &value_bytes);
+
+        if is_new {
+            let new_len = self.len()? + 1;
+            let len_key = self.meta_key("len");
+            batch.put(&len_key, (new_len as u64).to_le_bytes());
+        }
+
         Ok(())
     }
     

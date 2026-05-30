@@ -11,6 +11,7 @@ use crate::events::Event;
 pub struct ReplayStats {
     pub applied: usize,
     pub bad_lines: usize,
+    pub skipped: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -19,6 +20,8 @@ pub enum EventLogError {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("apply error: {0}")]
+    Apply(String),
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +57,7 @@ impl EventLog {
         line.push('\n');
         f.write_all(line.as_bytes()).await?;
         f.flush().await?;
+        f.sync_data().await?;
         Ok(())
     }
 
@@ -61,6 +65,19 @@ impl EventLog {
     pub async fn replay<F>(&self, mut apply: F) -> Result<ReplayStats, EventLogError>
     where
         F: FnMut(Event) -> Result<(), EventLogError>,
+    {
+        self.replay_from(0, |_, ev| apply(ev)).await
+    }
+
+    /// Stream valid events after `skip_valid_events`, passing each event's
+    /// one-based valid-event count to the callback.
+    pub async fn replay_from<F>(
+        &self,
+        skip_valid_events: u64,
+        mut apply: F,
+    ) -> Result<ReplayStats, EventLogError>
+    where
+        F: FnMut(u64, Event) -> Result<(), EventLogError>,
     {
         let mut stats = ReplayStats::default();
         if !fs::try_exists(&self.path).await? {
@@ -70,16 +87,24 @@ impl EventLog {
         let f = fs::File::open(&self.path).await?;
         let mut reader = BufReader::new(f).lines();
 
+        let mut valid_events = 0_u64;
         while let Some(line) = reader.next_line().await? {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
             match serde_json::from_str::<Event>(trimmed) {
-                Ok(ev) => match apply(ev) {
-                    Ok(()) => stats.applied += 1,
-                    Err(e) => return Err(e),
-                },
+                Ok(ev) => {
+                    valid_events += 1;
+                    if valid_events <= skip_valid_events {
+                        stats.skipped += 1;
+                        continue;
+                    }
+                    match apply(valid_events, ev) {
+                        Ok(()) => stats.applied += 1,
+                        Err(e) => return Err(e),
+                    }
+                }
                 Err(_) => stats.bad_lines += 1,
             }
         }
