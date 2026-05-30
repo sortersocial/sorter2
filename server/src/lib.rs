@@ -1,4 +1,5 @@
 pub mod api;
+pub mod entity_store;
 pub mod event_log;
 pub mod events;
 pub mod fetch;

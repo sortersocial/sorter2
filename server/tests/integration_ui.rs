@@ -104,9 +104,17 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
     let log = std::fs::read_to_string(tmp.path().join("events.jsonl")).unwrap();
     assert!(log.contains("vote_recorded"));
 
+    // Replay in a fresh data dir (RocksDB locks entity_db while the server runs).
+    let replay_tmp = TempDir::new().unwrap();
+    std::fs::copy(
+        tmp.path().join("events.jsonl"),
+        replay_tmp.path().join("events.jsonl"),
+    )
+    .unwrap();
+    let replay_data = replay_tmp.path().to_string_lossy().into_owned();
     let cfg = AppConfig {
-        data_dir: tmp.path().to_string_lossy().into_owned(),
-        event_log_path: tmp.path().join("events.jsonl").to_string_lossy().into_owned(),
+        data_dir: replay_data.clone(),
+        event_log_path: format!("{replay_data}/events.jsonl"),
         port: 0,
     };
     let state = create_app_state(cfg).await;

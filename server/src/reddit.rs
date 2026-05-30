@@ -10,6 +10,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::{
+    entity_store::EntityStore,
     event_log::EventLog,
     events::Event,
     fetch::now_ms,
@@ -80,6 +81,7 @@ impl RedditBroker {
     pub fn spawn(
         tree: Arc<RwLock<GlobalTree>>,
         event_log: Arc<EventLog>,
+        entity_store: EntityStore,
         config: RedditApiConfig,
     ) -> Self {
         let (tx, rx) = mpsc::channel(100);
@@ -104,7 +106,7 @@ impl RedditBroker {
             "reddit worker started"
         );
 
-        tokio::spawn(reddit_worker(rx, tree, event_log, client, config));
+        tokio::spawn(reddit_worker(rx, tree, event_log, entity_store, client, config));
 
         Self { tx }
     }
@@ -193,9 +195,16 @@ pub fn entity_view_from_payload(id: &ItemId, payload: &Value) -> Option<crate::r
     None
 }
 
-pub fn apply_entity_import(tree: &mut GlobalTree, id: &ItemId, payload: Value) {
+pub fn apply_entity_import(
+    tree: &mut GlobalTree,
+    store: &EntityStore,
+    id: &ItemId,
+    payload: Value,
+) -> Result<(), String> {
     let view = entity_view_from_payload(id, &payload);
-    tree.apply_entity_raw(id, payload, view);
+    store.put(id, &payload).map_err(|e| e.to_string())?;
+    tree.apply_entity(id, view);
+    Ok(())
 }
 
 fn notify(done: Option<oneshot::Sender<FetchJobResult>>, result: FetchJobResult) {
@@ -208,6 +217,7 @@ async fn reddit_worker(
     mut rx: mpsc::Receiver<RedditCommand>,
     tree: Arc<RwLock<GlobalTree>>,
     event_log: Arc<EventLog>,
+    entity_store: EntityStore,
     client: Client,
     config: RedditApiConfig,
 ) {
@@ -302,14 +312,16 @@ async fn reddit_worker(
                         let mut tree = tree.write().await;
                         if kind == FetchKind::Children {
                             let view = entity_view_from_payload(&child_id, &child_payload);
-                            tree.apply_entity_under_parent(
-                                &fetch_id,
-                                &child_id,
-                                child_payload,
-                                view,
-                            );
-                        } else {
-                            apply_entity_import(&mut tree, &child_id, child_payload);
+                            if let Err(e) = entity_store.put(&child_id, &child_payload) {
+                                write_err = Some(e.to_string());
+                                break;
+                            }
+                            tree.apply_entity_under_parent(&fetch_id, &child_id, view);
+                        } else if let Err(e) =
+                            apply_entity_import(&mut tree, &entity_store, &child_id, child_payload)
+                        {
+                            write_err = Some(e);
+                            break;
                         }
                     }
                     written += 1;

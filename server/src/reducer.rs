@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::path_types::ItemId;
 
@@ -134,9 +133,8 @@ pub struct EntityData {
 #[derive(Debug, Clone, Default)]
 pub struct NodeState {
     pub id: ItemId,
-    /// Full imported API JSON (persisted in the event log).
-    pub entity_raw: Option<Value>,
-    /// Domain-specific view derived from `entity_raw` (e.g. Reddit title/author).
+    /// Domain-specific view derived from imported payload (e.g. Reddit title/author).
+    /// Raw JSON lives in [`crate::entity_store::EntityStore`].
     pub data: Option<EntityData>,
     pub children: HashSet<ItemId>,
     pub local_ranking: GroupState,
@@ -206,28 +204,25 @@ impl GlobalTree {
         }
     }
 
-    pub fn apply_entity_raw(&mut self, id: &ItemId, payload: Value, view: Option<EntityData>) {
+    pub fn apply_entity(&mut self, id: &ItemId, view: Option<EntityData>) {
         self.ensure_path(id);
         if let Some(node) = self.nodes.get_mut(id) {
-            node.entity_raw = Some(payload);
             node.data = view;
         }
     }
 
-    /// Import entity data for `id` and attach it as a direct child of `parent`
+    /// Import entity view for `id` and attach it as a direct child of `parent`
     /// without running [`Self::ensure_path`] on `id` (avoids Reddit `/comments/`
     /// parent rules pulling intermediate path segments into the subreddit).
     pub fn apply_entity_under_parent(
         &mut self,
         parent: &ItemId,
         id: &ItemId,
-        payload: Value,
         view: Option<EntityData>,
     ) {
         self.ensure_path(parent);
         self.ensure_node(id);
         if let Some(node) = self.nodes.get_mut(id) {
-            node.entity_raw = Some(payload);
             node.data = view;
         }
         if let Some(p) = self.nodes.get_mut(parent) {

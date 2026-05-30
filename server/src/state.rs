@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::{
+    entity_store::EntityStore,
     event_log::EventLog,
     events::Event,
     journal::JournalClient,
@@ -43,6 +44,42 @@ fn parent_from_event_scope(scope: &str) -> ItemId {
     }
 }
 
+fn apply_event(
+    ev: Event,
+    tree: &mut GlobalTree,
+    entity_store: &EntityStore,
+) -> Result<(), crate::event_log::EventLogError> {
+    match ev {
+        Event::VoteRecorded {
+            ts,
+            a,
+            b,
+            ratio_left,
+            ratio_right,
+            scope,
+        } => {
+            if let Some(vote) = VoteData::from_recorded(ts, &a, &b, ratio_left, ratio_right) {
+                let parent = parent_from_event_scope(&scope);
+                tree.apply_vote(&parent, vote);
+            }
+        }
+        Event::ViewRecorded { .. } => {}
+        Event::NodeEnsured { id } => {
+            if let Some(parsed) = ItemId::parse(&id).or_else(|| ItemId::from_url(&id)) {
+                tree.ensure_path(&parsed);
+            }
+        }
+        Event::EntityImported { id, payload, .. } => {
+            if let Some(parsed) = ItemId::parse(&id).or_else(|| ItemId::from_url(&id)) {
+                if let Err(e) = apply_entity_import(tree, entity_store, &parsed, payload) {
+                    tracing::warn!(item = %id, err = %e, "entity replay failed");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct AppConfig {
     pub data_dir: String,
@@ -71,6 +108,7 @@ impl AppConfig {
 pub struct AppState {
     pub cfg: Arc<AppConfig>,
     pub event_log: Arc<EventLog>,
+    pub entity_store: EntityStore,
     pub views: ViewStore,
     pub tree: Arc<RwLock<GlobalTree>>,
     journal: JournalClient,
@@ -82,48 +120,31 @@ impl AppState {
         let event_log = Arc::new(EventLog::new(cfg.event_log_path.clone()));
         let views_path = format!("{}/views.json", cfg.data_dir);
         let views = ViewStore::new(&views_path);
+        let entity_db_path = format!("{}/entity_db", cfg.data_dir);
+        let entity_store =
+            EntityStore::open(std::path::Path::new(&entity_db_path)).expect("entity store");
 
         let mut tree = GlobalTree::new();
-        if let Ok((events, _)) = event_log.load_all().await {
-            for ev in events {
-                match ev {
-                    Event::VoteRecorded {
-                        ts,
-                        a,
-                        b,
-                        ratio_left,
-                        ratio_right,
-                        scope,
-                    } => {
-                        if let Some(vote) =
-                            VoteData::from_recorded(ts, &a, &b, ratio_left, ratio_right)
-                        {
-                            let parent = parent_from_event_scope(&scope);
-                            tree.apply_vote(&parent, vote);
-                        }
-                    }
-                    Event::ViewRecorded { .. } => {}
-                    Event::NodeEnsured { id } => {
-                        if let Some(parsed) = ItemId::parse(&id).or_else(|| ItemId::from_url(&id)) {
-                            tree.ensure_path(&parsed);
-                        }
-                    }
-                    Event::EntityImported { id, payload, .. } => {
-                        if let Some(parsed) = ItemId::parse(&id).or_else(|| ItemId::from_url(&id)) {
-                            apply_entity_import(&mut tree, &parsed, payload);
-                        }
-                    }
-                }
-            }
+        if let Err(e) = event_log
+            .replay(|ev| apply_event(ev, &mut tree, &entity_store))
+            .await
+        {
+            tracing::warn!(err = %e, "event log replay failed");
         }
 
         let tree = Arc::new(RwLock::new(tree));
         let journal = JournalClient::spawn(tree.clone(), event_log.clone());
-        let reddit = RedditBroker::spawn(tree.clone(), event_log.clone(), RedditApiConfig::from_env());
+        let reddit = RedditBroker::spawn(
+            tree.clone(),
+            event_log.clone(),
+            entity_store.clone(),
+            RedditApiConfig::from_env(),
+        );
 
         Self {
             cfg: Arc::new(cfg),
             event_log,
+            entity_store,
             views,
             tree,
             journal,
@@ -184,10 +205,10 @@ impl AppState {
 mod tests {
     use super::{normalize_scope, parse_item_param};
     use crate::{
+        entity_store::EntityStore,
         event_log::EventLog,
         events::Event,
         path_types::ItemId,
-        reddit::apply_entity_import,
         reducer::GlobalTree,
     };
     use serde_json::json;
@@ -197,6 +218,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let log_path = tmp.path().join("events.jsonl");
         let log = EventLog::new(log_path.to_string_lossy().into_owned());
+        let entity_store = EntityStore::open(&tmp.path().join("entity_db")).unwrap();
         let payload = json!({"kind":"t5","data":{"title":"Rust","display_name":"rust"}});
         log.append(&Event::EntityImported {
             id: "reddit.com/r/rust".into(),
@@ -207,19 +229,16 @@ mod tests {
         .unwrap();
 
         let mut tree = GlobalTree::new();
-        let (events, _) = log.load_all().await.unwrap();
-        for ev in events {
-            if let Event::EntityImported { id, payload, .. } = ev {
-                let parsed = ItemId::parse(&id).unwrap();
-                apply_entity_import(&mut tree, &parsed, payload);
-            }
-        }
+        log.replay(|ev| super::apply_event(ev, &mut tree, &entity_store))
+            .await
+            .unwrap();
         let node = tree.get(&ItemId::parse("reddit.com/r/rust").unwrap()).unwrap();
         assert_eq!(node.data.as_ref().unwrap().title, "Rust");
-        assert_eq!(
-            node.entity_raw.as_ref().unwrap()["data"]["display_name"],
-            "rust"
-        );
+        let stored = entity_store
+            .get(&ItemId::parse("reddit.com/r/rust").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored["data"]["display_name"], "rust");
     }
 
     #[test]
