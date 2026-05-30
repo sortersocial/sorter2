@@ -5,6 +5,8 @@
   },
   "install": "./scripts/cursor-env-install.sh",
   "env": {
-    "CXX": "g++"
+    "CC": "gcc",
+    "CXX": "g++",
+    "RUSTFLAGS": "-C linker=g++"
   }
 }

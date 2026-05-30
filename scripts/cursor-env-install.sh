@@ -7,6 +7,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOCAL_BIN="${HOME}/.local/bin"
 export PATH="${LOCAL_BIN}:${PATH}"
 export CXX="${CXX:-g++}"
+export CC="${CC:-gcc}"
+export RUSTFLAGS="${RUSTFLAGS:--C linker=g++}"
 
 mkdir -p "${LOCAL_BIN}"
 
@@ -14,7 +16,9 @@ profile_snippet="${HOME}/.config/cursor/sorter2-env.sh"
 mkdir -p "$(dirname "${profile_snippet}")"
 cat >"${profile_snippet}" <<'EOF'
 export PATH="${HOME}/.local/bin:${PATH}"
+export CC="${CC:-gcc}"
 export CXX="${CXX:-g++}"
+export RUSTFLAGS="${RUSTFLAGS:--C linker=g++}"
 EOF
 for rc in "${HOME}/.bashrc" "${HOME}/.profile"; do
   if [[ -f "${rc}" ]] && ! grep -qF 'sorter2-env.sh' "${rc}" 2>/dev/null; then
@@ -96,7 +100,8 @@ cd "${ROOT}"
 clojure -P -M
 clojure -M -e "(com.microsoft.playwright.CLI/main (into-array String [\"install\" \"chromium\" \"--with-deps\"]))"
 
-# Warm RocksDB build so agents fail fast if C++ toolchain is wrong.
-CXX="${CXX}" cargo build -p durable --quiet
+# Warm RocksDB + release server link (Clojure tests use release binary).
+cargo build -p durable --quiet
+cargo build --release --package sorter2-server --quiet
 
 echo "cursor-env-install: ok (bb=$(bb --version 2>/dev/null || echo missing), CXX=${CXX})"
