@@ -6,6 +6,7 @@ use crate::{
     event_log::EventLog,
     events::Event,
     path_types::ItemId,
+    projection_store::ProjectionStore,
     reducer::{GlobalTree, VoteData},
 };
 
@@ -22,9 +23,13 @@ pub struct JournalClient {
 }
 
 impl JournalClient {
-    pub fn spawn(tree: Arc<RwLock<GlobalTree>>, event_log: Arc<EventLog>) -> Self {
+    pub fn spawn(
+        tree: Arc<RwLock<GlobalTree>>,
+        event_log: Arc<EventLog>,
+        projection_store: ProjectionStore,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(64);
-        tokio::spawn(journal_worker(rx, tree, event_log));
+        tokio::spawn(journal_worker(rx, tree, event_log, projection_store));
         Self { tx }
     }
 
@@ -44,8 +49,7 @@ impl JournalClient {
             })
             .await
             .map_err(|_| "journal worker stopped".to_string())?;
-        rx.await
-            .map_err(|_| "journal worker stopped".to_string())?
+        rx.await.map_err(|_| "journal worker stopped".to_string())?
     }
 }
 
@@ -53,6 +57,7 @@ async fn journal_worker(
     mut rx: mpsc::Receiver<JournalCommand>,
     tree: Arc<RwLock<GlobalTree>>,
     event_log: Arc<EventLog>,
+    projection_store: ProjectionStore,
 ) {
     while let Some(first) = rx.recv().await {
         let mut batch = vec![first];
@@ -79,6 +84,11 @@ async fn journal_worker(
             let mut w = tree.write().await;
             for cmd in &batch {
                 w.apply_vote(&cmd.parent, cmd.vote.clone());
+            }
+            for cmd in &batch {
+                if let Err(e) = projection_store.persist_next_event(&w, &cmd.event) {
+                    tracing::warn!(err = %e, "projection update failed after vote append");
+                }
             }
         }
 

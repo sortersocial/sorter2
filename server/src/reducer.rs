@@ -46,7 +46,7 @@ impl VoteData {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GroupState {
     pub item_to_idx: HashMap<ItemId, usize>,
     pub idx_to_item: Vec<ItemId>,
@@ -130,7 +130,7 @@ pub struct EntityData {
 }
 
 /// One node in the fractal tree: entity + ranked children.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeState {
     pub id: ItemId,
     /// Domain-specific view derived from imported payload (e.g. Reddit title/author).
@@ -251,9 +251,13 @@ mod from_recorded_tests {
         let id = ItemId::parse("reddit.com/r/rust").unwrap();
         tree.ensure_path(&id);
         let root = tree.get(&ItemId::root()).unwrap();
-        assert!(root.children.contains(&ItemId::parse("reddit.com").unwrap()));
+        assert!(root
+            .children
+            .contains(&ItemId::parse("reddit.com").unwrap()));
         let reddit = tree.get(&ItemId::parse("reddit.com").unwrap()).unwrap();
-        assert!(reddit.children.contains(&ItemId::parse("reddit.com/r").unwrap()));
+        assert!(reddit
+            .children
+            .contains(&ItemId::parse("reddit.com/r").unwrap()));
         let sub = tree.get(&id).unwrap();
         assert_eq!(sub.id, id);
     }

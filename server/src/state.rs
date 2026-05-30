@@ -8,6 +8,7 @@ use crate::{
     events::Event,
     journal::JournalClient,
     path_types::ItemId,
+    projection_store::ProjectionStore,
     reddit::{apply_entity_import, RedditApiConfig, RedditBroker},
     reducer::{GlobalTree, VoteData},
     views::ViewStore,
@@ -80,6 +81,30 @@ fn apply_event(
     Ok(())
 }
 
+async fn load_projected_tree(
+    event_log: &EventLog,
+    entity_store: &EntityStore,
+    projection_store: &ProjectionStore,
+) -> Result<GlobalTree, crate::event_log::EventLogError> {
+    let cursor = projection_store
+        .last_applied_event_count()
+        .map_err(|e| crate::event_log::EventLogError::Apply(e.to_string()))?;
+    let mut tree = projection_store
+        .load_tree()
+        .map_err(|e| crate::event_log::EventLogError::Apply(e.to_string()))?;
+
+    event_log
+        .replay_from(cursor, |event_count, ev| {
+            apply_event(ev.clone(), &mut tree, entity_store)?;
+            projection_store
+                .persist_event(&tree, event_count, &ev)
+                .map_err(|e| crate::event_log::EventLogError::Apply(e.to_string()))
+        })
+        .await?;
+
+    Ok(tree)
+}
+
 #[derive(Clone)]
 pub struct AppConfig {
     pub data_dir: String,
@@ -109,6 +134,7 @@ pub struct AppState {
     pub cfg: Arc<AppConfig>,
     pub event_log: Arc<EventLog>,
     pub entity_store: EntityStore,
+    pub projection_store: ProjectionStore,
     pub views: ViewStore,
     pub tree: Arc<RwLock<GlobalTree>>,
     journal: JournalClient,
@@ -120,24 +146,27 @@ impl AppState {
         let event_log = Arc::new(EventLog::new(cfg.event_log_path.clone()));
         let views_path = format!("{}/views.json", cfg.data_dir);
         let views = ViewStore::new(&views_path);
-        let entity_db_path = format!("{}/entity_db", cfg.data_dir);
-        let entity_store =
-            EntityStore::open(std::path::Path::new(&entity_db_path)).expect("entity store");
+        let store_path = format!("{}/store", cfg.data_dir);
+        let db = durable::Db::open(std::path::Path::new(&store_path)).expect("store db");
+        let entity_store = EntityStore::from_db(&db).expect("entity store");
+        let projection_store = ProjectionStore::from_db(&db).expect("projection store");
 
-        let mut tree = GlobalTree::new();
-        if let Err(e) = event_log
-            .replay(|ev| apply_event(ev, &mut tree, &entity_store))
-            .await
-        {
-            tracing::warn!(err = %e, "event log replay failed");
-        }
+        let tree = match load_projected_tree(&event_log, &entity_store, &projection_store).await {
+            Ok(tree) => tree,
+            Err(e) => {
+                tracing::warn!(err = %e, "event log replay failed");
+                GlobalTree::new()
+            }
+        };
 
         let tree = Arc::new(RwLock::new(tree));
-        let journal = JournalClient::spawn(tree.clone(), event_log.clone());
+        let journal =
+            JournalClient::spawn(tree.clone(), event_log.clone(), projection_store.clone());
         let reddit = RedditBroker::spawn(
             tree.clone(),
             event_log.clone(),
             entity_store.clone(),
+            projection_store.clone(),
             RedditApiConfig::from_env(),
         );
 
@@ -145,6 +174,7 @@ impl AppState {
             cfg: Arc::new(cfg),
             event_log,
             entity_store,
+            projection_store,
             views,
             tree,
             journal,
@@ -156,10 +186,16 @@ impl AppState {
         let event = Event::NodeEnsured {
             id: id.as_str().to_string(),
         };
-        self.event_log.append(&event).await.map_err(|e| e.to_string())?;
+        self.event_log
+            .append(&event)
+            .await
+            .map_err(|e| e.to_string())?;
         {
             let mut w = self.tree.write().await;
             w.ensure_path(id);
+            self.projection_store
+                .persist_next_event(&w, &event)
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -195,9 +231,7 @@ impl AppState {
             scope: parent.as_str().to_string(),
         };
 
-        self.journal
-            .record_vote(parent.clone(), vote, event)
-            .await
+        self.journal.record_vote(parent.clone(), vote, event).await
     }
 }
 
@@ -205,11 +239,8 @@ impl AppState {
 mod tests {
     use super::{normalize_scope, parse_item_param};
     use crate::{
-        entity_store::EntityStore,
-        event_log::EventLog,
-        events::Event,
-        path_types::ItemId,
-        reducer::GlobalTree,
+        entity_store::EntityStore, event_log::EventLog, events::Event, path_types::ItemId,
+        projection_store::ProjectionStore, reducer::GlobalTree,
     };
     use serde_json::json;
 
@@ -232,13 +263,52 @@ mod tests {
         log.replay(|ev| super::apply_event(ev, &mut tree, &entity_store))
             .await
             .unwrap();
-        let node = tree.get(&ItemId::parse("reddit.com/r/rust").unwrap()).unwrap();
+        let node = tree
+            .get(&ItemId::parse("reddit.com/r/rust").unwrap())
+            .unwrap();
         assert_eq!(node.data.as_ref().unwrap().title, "Rust");
         let stored = entity_store
             .get(&ItemId::parse("reddit.com/r/rust").unwrap())
             .unwrap()
             .unwrap();
         assert_eq!(stored["data"]["display_name"], "rust");
+    }
+
+    #[tokio::test]
+    async fn projected_replay_cursor_prevents_double_applying_votes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("events.jsonl");
+        let log = EventLog::new(log_path.to_string_lossy().into_owned());
+        log.append(&Event::VoteRecorded {
+            ts: 1,
+            a: "alpha".into(),
+            b: "beta".into(),
+            ratio_left: 2,
+            ratio_right: 1,
+            scope: String::new(),
+        })
+        .await
+        .unwrap();
+
+        let db = durable::Db::open(tmp.path().join("store")).unwrap();
+        let entity_store = EntityStore::from_db(&db).unwrap();
+        let projection_store = ProjectionStore::from_db(&db).unwrap();
+
+        let first = super::load_projected_tree(&log, &entity_store, &projection_store)
+            .await
+            .unwrap();
+        assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
+        let first_root = first.get(&ItemId::root()).unwrap();
+        let first_edge_total: f64 = first_root.local_ranking.edges.values().sum();
+        assert_eq!(first_edge_total, 3.0);
+
+        let second = super::load_projected_tree(&log, &entity_store, &projection_store)
+            .await
+            .unwrap();
+        assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
+        let second_root = second.get(&ItemId::root()).unwrap();
+        let second_edge_total: f64 = second_root.local_ranking.edges.values().sum();
+        assert_eq!(second_edge_total, first_edge_total);
     }
 
     #[test]
