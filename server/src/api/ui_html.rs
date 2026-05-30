@@ -58,7 +58,7 @@ pub async fn post_ui_html(
             let tree = state.tree.read().await;
             let empty = crate::reducer::NodeState::default();
             let node = tree.get(&parent).unwrap_or(&empty);
-            let panel = ranking_panel(&parent, node);
+            let panel = ranking_panel(&parent, node, &tree);
             JsBuilder::new()
                 .morph_selector("#ranking-panel", panel)
                 .into_response()

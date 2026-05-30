@@ -49,7 +49,7 @@
           (is (wait-health base 15000) "server responds to /healthz")
           (let [home (:out (process/shell {:out :string :err :string}
                                          "curl" "-sf" (str base "/")))]
-            (is (str/includes? home "vote-panel"))
+            (is (str/includes? home "entity-section"))
             (is (str/includes? home "ranking-panel"))
             (is (str/includes? home "parser-panel"))
             (is (str/includes? home "__rpc__")))

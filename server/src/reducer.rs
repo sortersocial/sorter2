@@ -209,14 +209,24 @@ impl GlobalTree {
         }
     }
 
-    /// Directly attach `child` under `parent`, bypassing path-based nesting.
-    /// Used for imported listings (e.g. a subreddit's posts) so they show up
-    /// as children of the subreddit rather than a deep `…/comments/<id>` path.
-    pub fn link_child(&mut self, parent: &ItemId, child: &ItemId) {
+    /// Import entity data for `id` and attach it as a direct child of `parent`
+    /// without running [`Self::ensure_path`] on `id` (avoids Reddit `/comments/`
+    /// parent rules pulling intermediate path segments into the subreddit).
+    pub fn apply_entity_under_parent(
+        &mut self,
+        parent: &ItemId,
+        id: &ItemId,
+        payload: Value,
+        view: Option<EntityData>,
+    ) {
         self.ensure_path(parent);
-        self.ensure_path(child);
+        self.ensure_node(id);
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.entity_raw = Some(payload);
+            node.data = view;
+        }
         if let Some(p) = self.nodes.get_mut(parent) {
-            p.children.insert(child.clone());
+            p.children.insert(id.clone());
         }
     }
 }

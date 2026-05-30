@@ -67,6 +67,36 @@
           (do (Thread/sleep 200) (recur))
           false)))))
 
+(defn- run-reddit-fetch-assertions [app-base data-dir]
+  (let [browse-url (str app-base "/~/https://reddit.com/r/rust")
+        log-path (str data-dir "/events.jsonl")
+        before (:out (process/shell {:out :string :err :string}
+                                    "curl" "-sf" browse-url))]
+    (is (str/includes? before "Fetch from Reddit"))
+    (is (not (str/includes? before "The Rust Programming Language")))
+    (let [sse (curl-fetch-ui-sse app-base "reddit.com/r/rust" "self")]
+      (is (zero? (:exit sse)) "POST /ui fetch_entity (self) SSE succeeds")
+      (is (str/includes? (:out sse) "Idiomorph.morph"))
+      (is (str/includes? (:out sse) "The Rust Programming Language"))
+      (is (wait-event-log log-path 2000) "event log written"))
+    (let [after (:out (process/shell {:out :string :err :string}
+                                     "curl" "-sf" browse-url))
+          log (slurp (io/file log-path))]
+      (is (str/includes? after "The Rust Programming Language"))
+      (is (str/includes? log "\"type\":\"entity_imported\""))
+      (is (str/includes? log "\"subscribers\":350000"))
+      (is (str/includes? log "\"display_name\":\"rust\"")))
+    (let [children-sse (curl-fetch-ui-sse app-base "reddit.com/r/rust" "children")]
+      (is (zero? (:exit children-sse)) "POST /ui fetch_entity (children) SSE succeeds")
+      (is (str/includes? (:out children-sse) "Idiomorph.morph"))
+      (is (str/includes? (:out children-sse) "Announcing Rust 1.99")))
+    (let [after-children (:out (process/shell {:out :string :err :string}
+                                              "curl" "-sf" browse-url))
+          log2 (slurp (io/file log-path))]
+      (is (str/includes? after-children "Announcing Rust 1.99"))
+      (is (str/includes? after-children "Unranked"))
+      (is (str/includes? log2 "announcing_rust_199")))))
+
 (deftest reddit-fetch-via-mock-api
   (testing "Fetch more queues import; event log stores full payload; page shows title"
     (let [root (repo-root)
@@ -102,24 +132,7 @@
                                     bin)]
           (try
             (is (wait-health app-base 20000) "app healthz")
-            (let [browse-url (str app-base "/~/https://reddit.com/r/rust")
-                  before (:out (process/shell {:out :string :err :string}
-                                              "curl" "-sf" browse-url))]
-              (is (str/includes? before "Fetch from Reddit"))
-              (is (not (str/includes? before "The Rust Programming Language")))
-              (let [log-path (str data-dir "/events.jsonl")
-                    sse (curl-fetch-ui-sse app-base "reddit.com/r/rust")]
-                (is (zero? (:exit sse)) "POST /ui fetch_entity SSE succeeds")
-                (is (str/includes? (:out sse) "event: complete"))
-                (is (str/includes? (:out sse) "The Rust Programming Language"))
-                (is (wait-event-log log-path 2000) "event log written")
-                (let [after (:out (process/shell {:out :string :err :string}
-                                                 "curl" "-sf" browse-url))
-                      log (slurp (io/file log-path))]
-                  (is (str/includes? after "The Rust Programming Language"))
-                  (is (str/includes? log "\"type\":\"entity_imported\""))
-                  (is (str/includes? log "\"subscribers\":350000"))
-                  (is (str/includes? log "\"display_name\":\"rust\"")))))
+            (run-reddit-fetch-assertions app-base data-dir)
             (finally
               (process/destroy proc))))
         (finally

@@ -15,7 +15,7 @@ use crate::{
     ranking::{
         connected_components_from_voted_pairs, ranked_items_subset, RankedItem, MAX_ITERS, TOL,
     },
-    reducer::NodeState,
+    reducer::{GlobalTree, NodeState},
     state::AppState,
     ui_action::UI_RPC_FIELD,
 };
@@ -182,8 +182,15 @@ fn display_label(id: &ItemId) -> String {
         .to_string()
 }
 
+fn child_label(tree: &GlobalTree, id: &ItemId) -> String {
+    tree.get(id)
+        .and_then(|n| n.data.as_ref())
+        .map(|d| d.title.clone())
+        .unwrap_or_else(|| display_label(id))
+}
+
 /// Plain (unscored) list of children that have no votes yet.
-fn unranked_list(label: &str, items: &[ItemId]) -> Markup {
+fn unranked_list(label: &str, items: &[ItemId], tree: &GlobalTree) -> Markup {
     html! {
         @if !items.is_empty() {
             h3 class="rank-heading muted small" { (label) }
@@ -191,7 +198,7 @@ fn unranked_list(label: &str, items: &[ItemId]) -> Markup {
                 @for it in items {
                     li {
                         a href=(item_href(it)) {
-                            strong { (display_label(it)) }
+                            strong { (child_label(tree, it)) }
                         }
                     }
                 }
@@ -200,7 +207,7 @@ fn unranked_list(label: &str, items: &[ItemId]) -> Markup {
     }
 }
 
-pub fn ranking_panel(item: &ItemId, node: &NodeState) -> Markup {
+pub fn ranking_panel(item: &ItemId, node: &NodeState, tree: &GlobalTree) -> Markup {
     let group = &node.local_ranking;
     let n = group.idx_to_item.len();
     let (comps, _isolates) =
@@ -248,7 +255,7 @@ pub fn ranking_panel(item: &ItemId, node: &NodeState) -> Markup {
                     @let label = if multi { format!("Ranking group {}", gi + 1) } else { "Ranking".to_string() };
                     (rank_list(&label, ranked, 1))
                 }
-                (unranked_list("Unranked", &unranked))
+                (unranked_list("Unranked", &unranked, tree))
             }
         }
     }
@@ -297,7 +304,7 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
         (input_panel("", None))
         (breadcrumb_path(&item))
         (entity_section(&item, node, false))
-        (ranking_panel(&item, node))
+        (ranking_panel(&item, node, &tree))
     };
     layout("sorter2", body, views)
 }

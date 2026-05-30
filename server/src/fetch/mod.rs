@@ -107,7 +107,7 @@ pub fn fetch_entity_stream(
                 let mut b = JsBuilder::new()
                     .morph_selector("#entity-section", html::entity_section(&id, node, false));
                 if kind == FetchKind::Children {
-                    b = b.morph_selector("#ranking-panel", ranking_panel(&id, node));
+                    b = b.morph_selector("#ranking-panel", ranking_panel(&id, node, &tree));
                 }
                 yield Ok(js_event(b.build()));
             }

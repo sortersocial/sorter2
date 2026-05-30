@@ -300,9 +300,16 @@ async fn reddit_worker(
                     }
                     {
                         let mut tree = tree.write().await;
-                        apply_entity_import(&mut tree, &child_id, child_payload);
                         if kind == FetchKind::Children {
-                            tree.link_child(&fetch_id, &child_id);
+                            let view = entity_view_from_payload(&child_id, &child_payload);
+                            tree.apply_entity_under_parent(
+                                &fetch_id,
+                                &child_id,
+                                child_payload,
+                                view,
+                            );
+                        } else {
+                            apply_entity_import(&mut tree, &child_id, child_payload);
                         }
                     }
                     written += 1;
