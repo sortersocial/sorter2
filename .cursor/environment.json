@@ -1,0 +1,10 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "install": "./scripts/cursor-env-install.sh",
+  "env": {
+    "CXX": "g++"
+  }
+}
