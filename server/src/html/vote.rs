@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::{
     fetch::html::entity_section,
     form_template::template_json_compact,
-    html::{ranking_panel, JsBuilder},
+    html::{ranking_panel, scope_theme_style, JsBuilder},
     pair::{children_of, resolve_pair, suggest_next_pair_in_pool},
     path_types::ItemId,
     reducer::{GlobalTree, GroupState, NodeState, VoteData},
@@ -248,7 +248,7 @@ pub async fn vote_page(
     );
 
     let body = html! {
-        div class="vote-page-grid" {
+        div class="scope-theme vote-page-grid" style=(scope_theme_style(&parent)) {
             section class="vote-compare-shell" {
                 h1 { "compare" }
                 (breadcrumb_path(&parent))

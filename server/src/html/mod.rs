@@ -173,15 +173,138 @@ pub fn breadcrumb_path(item: &ItemId) -> Markup {
     }
 }
 
-fn rank_list(label: &str, items: &[RankedItem], start_rank: usize, tree: &GlobalTree) -> Markup {
+fn stable_hash(s: &str) -> u64 {
+    let mut h = 0xcbf29ce484222325_u64;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+fn srgb_channel(v: f64) -> f64 {
+    if v <= 0.0031308 {
+        12.92 * v
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+fn linear_channel(v: f64) -> f64 {
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn oklch_to_srgb(l: f64, c: f64, h_deg: f64) -> (f64, f64, f64) {
+    let h = h_deg.to_radians();
+    let a = c * h.cos();
+    let b = c * h.sin();
+    let l_ = l + 0.3963377774 * a + 0.2158037573 * b;
+    let m_ = l - 0.1055613458 * a - 0.0638541728 * b;
+    let s_ = l - 0.0894841775 * a - 1.2914855480 * b;
+    let l3 = l_ * l_ * l_;
+    let m3 = m_ * m_ * m_;
+    let s3 = s_ * s_ * s_;
+    let r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
+    let g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
+    let b = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3;
+    (
+        srgb_channel(r).clamp(0.0, 1.0),
+        srgb_channel(g).clamp(0.0, 1.0),
+        srgb_channel(b).clamp(0.0, 1.0),
+    )
+}
+
+fn relative_luminance((r, g, b): (f64, f64, f64)) -> f64 {
+    0.2126 * linear_channel(r) + 0.7152 * linear_channel(g) + 0.0722 * linear_channel(b)
+}
+
+fn scope_base_hue(parent: &ItemId) -> f64 {
+    let seed = format!("theme-seed-v1:{}", parent.as_str());
+    (stable_hash(&seed) % 360) as f64
+}
+
+fn contrast_text_for_oklch(lightness: f64, chroma: f64, hue: f64) -> &'static str {
+    let luminance = relative_luminance(oklch_to_srgb(lightness, chroma, hue));
+    let contrast_black = (luminance + 0.05) / 0.05;
+    let contrast_white = 1.05 / (luminance + 0.05);
+    if contrast_black >= contrast_white {
+        "#071014"
+    } else {
+        "#f8fbff"
+    }
+}
+
+pub fn scope_theme_style(parent: &ItemId) -> String {
+    let win_hue = scope_base_hue(parent);
+    let lose_hue = (win_hue + 118.0) % 360.0;
+    let accent_l = 0.76;
+    let accent_c = 0.145;
+    let bg_l = 0.13;
+    let bg_c = 0.050;
+    let accent_fg = contrast_text_for_oklch(accent_l, accent_c, win_hue);
+    let fg = contrast_text_for_oklch(bg_l, bg_c, lose_hue);
+    format!(
+        "--accent: oklch({:.1}% {:.3} {:.1}); --accent-fg: {}; --bg: oklch({:.1}% {:.3} {:.1}); --panel: oklch(18.0% 0.055 {:.1}); --border: oklch(34.0% 0.065 {:.1}); --fg: {}; --muted: oklch(78.0% 0.040 {:.1});",
+        accent_l * 100.0,
+        accent_c,
+        win_hue,
+        accent_fg,
+        bg_l * 100.0,
+        bg_c,
+        lose_hue,
+        lose_hue,
+        lose_hue,
+        fg,
+        lose_hue
+    )
+}
+
+fn rank_row_style(parent: &ItemId, ordinal: usize, total: usize) -> String {
+    let t = if total <= 1 {
+        0.0
+    } else {
+        ordinal as f64 / (total - 1) as f64
+    };
+    let base_hue = scope_base_hue(parent);
+    let hue = (base_hue + 118.0 * t) % 360.0;
+    let lightness = 0.74 - 0.34 * t;
+    let chroma = 0.115 + 0.035 * (1.0 - (2.0 * t - 1.0).abs());
+    let fg = contrast_text_for_oklch(lightness, chroma, hue);
+    format!(
+        "--rank-bg: oklch({:.1}% {:.3} {:.1}); --rank-fg: {}; --rank-border: oklch({:.1}% {:.3} {:.1});",
+        lightness * 100.0,
+        chroma,
+        hue,
+        fg,
+        (lightness + 0.08).min(0.88) * 100.0,
+        (chroma * 0.7).min(0.13),
+        hue
+    )
+}
+
+fn rank_list(
+    parent: &ItemId,
+    label: &str,
+    items: &[RankedItem],
+    start_rank: usize,
+    total_ranked: usize,
+    ordinal_offset: usize,
+    tree: &GlobalTree,
+) -> Markup {
     html! {
         @if !items.is_empty() {
             h3 class="rank-heading muted small" { (label) }
             ol class="rank-list" {
                 @for (i, r) in items.iter().enumerate() {
                     @let href = item_href(&r.item);
+                    @let style = rank_row_style(parent, ordinal_offset + i, total_ranked);
                     li class=(if crate::render::reddit::is_reddit_post(&r.item) { "rank-row reddit-post-row" } else { "rank-row" })
-                        data-rank-item=(r.item.as_str()) {
+                        data-rank-item=(r.item.as_str())
+                        style=(style) {
                         span class="rank-num" { (start_rank + i) ". " }
                         @if let Some(row) = crate::render::reddit::child_row_markup(tree, &r.item, &href) {
                             (row)
@@ -268,6 +391,8 @@ pub fn ranking_panel(item: &ItemId, node: &NodeState, tree: &GlobalTree) -> Mark
 
     let has_ranked = !ranked_groups.is_empty();
     let multi = ranked_groups.len() > 1;
+    let total_ranked: usize = ranked_groups.iter().map(|g| g.len()).sum();
+    let mut ordinal_offset = 0usize;
 
     html! {
         section id="ranking-panel" class="demo-panel" {
@@ -282,7 +407,8 @@ pub fn ranking_panel(item: &ItemId, node: &NodeState, tree: &GlobalTree) -> Mark
             } @else {
                 @for (gi, ranked) in ranked_groups.iter().enumerate() {
                     @let label = if multi { format!("Ranking group {}", gi + 1) } else { "Ranking".to_string() };
-                    (rank_list(&label, ranked, 1, tree))
+                    (rank_list(item, &label, ranked, 1, total_ranked, ordinal_offset, tree))
+                    @let _ = { ordinal_offset += ranked.len(); };
                 }
                 (unranked_list("Unranked", &unranked, tree))
             }
@@ -338,16 +464,18 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
     };
 
     let body = html! {
-        h1 { "sorter" }
-        (input_panel("", None))
-        (breadcrumb_path(&item))
-        (entity_section(&item, node, false))
-        @if let Some(href) = vote_link {
-            p class="vote-cta" {
-                a class="btn-primary" href=(href) data-testid="vote-children" { "Vote on children" }
+        div class="scope-theme" style=(scope_theme_style(&item)) {
+            h1 { "sorter" }
+            (input_panel("", None))
+            (breadcrumb_path(&item))
+            (entity_section(&item, node, false))
+            @if let Some(href) = vote_link {
+                p class="vote-cta" {
+                    a class="btn-primary" href=(href) data-testid="vote-children" { "Vote on children" }
+                }
             }
+            (ranking_panel(&item, node, &tree))
         }
-        (ranking_panel(&item, node, &tree))
     };
     layout("sorter2", body, views)
 }
