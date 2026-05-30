@@ -10,6 +10,7 @@ use crate::{
     form_template::template_json_compact,
     path_types::ItemId,
     ranking::{top_bottom, RankedItem},
+    reddit::is_fetchable,
     reducer::{GroupState, NodeState},
     state::AppState,
     ui_action::UI_RPC_FIELD,
@@ -151,7 +152,7 @@ pub fn breadcrumb_path(item: &ItemId) -> Markup {
 fn entity_panel(node: &NodeState) -> Markup {
     html! {
         @if let Some(data) = &node.data {
-            section id="entity-panel" class="demo-panel entity-card" {
+            div id="entity-panel" class="entity-card" {
                 h2 { (data.title) }
                 @if let Some(author) = &data.author {
                     p class="muted small" { "by " (author) }
@@ -160,6 +161,42 @@ fn entity_panel(node: &NodeState) -> Markup {
                     div class="entity-body" { (maud::PreEscaped(body)) }
                 }
             }
+        }
+    }
+}
+
+/// Reddit/API import control — only shown on fetchable pages; never auto-fires.
+pub fn fetch_entity_panel(item: &ItemId, has_data: bool, fetching: bool) -> Markup {
+    if !is_fetchable(item) {
+        return html! {};
+    }
+    let label = if fetching {
+        "Fetching…"
+    } else if has_data {
+        "Fetch more"
+    } else {
+        "Fetch from Reddit"
+    };
+    let rpc = template_json_compact(&serde_json::json!({
+        "action": "fetch_entity",
+        "item": item.as_str(),
+    }))
+    .expect("fetch_entity rpc template");
+    html! {
+        form method="post" action="/ui" id="fetch-entity-form" class="fetch-entity-form" {
+            input type="hidden" name=(UI_RPC_FIELD) value=(rpc);
+            button type="submit" class="btn-secondary" disabled=(fetching) { (label) }
+        }
+    }
+}
+
+/// Entity card + explicit fetch control (morphed as `#entity-section`).
+pub fn entity_section(item: &ItemId, node: &NodeState, fetching: bool) -> Markup {
+    let has_data = node.data.is_some();
+    html! {
+        section id="entity-section" class="demo-panel" {
+            (entity_panel(node))
+            (fetch_entity_panel(item, has_data, fetching))
         }
     }
 }
@@ -260,7 +297,7 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
         h1 { "sorter" }
         (input_panel("", None))
         (breadcrumb_path(&item))
-        (entity_panel(node))
+        (entity_section(&item, node, false))
         (ranking_panel(&item, group))
     };
     layout("sorter2", body, views)
@@ -272,16 +309,5 @@ pub async fn home(State(state): State<AppState>, uri: Uri) -> impl IntoResponse 
 
 pub async fn browse(State(state): State<AppState>, uri: Uri) -> impl IntoResponse {
     let item = ItemId::from_browse_uri(uri.path()).unwrap_or(ItemId::root());
-    if item.as_str().starts_with("reddit.com") {
-        let needs_fetch = {
-            let tree = state.tree.read().await;
-            tree.get(&item)
-                .map(|n| n.data.is_none())
-                .unwrap_or(true)
-        };
-        if needs_fetch {
-            state.reddit.request_fetch(item.clone());
-        }
-    }
     item_page(state, uri, item).await
 }

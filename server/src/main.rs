@@ -2,6 +2,10 @@ use sorter2_server::state::AppConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if std::env::var("SORTER2_SKIP_DOTENV").is_err() {
+        let _ = dotenvy::dotenv();
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

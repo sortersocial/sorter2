@@ -26,6 +26,10 @@ pub enum HtmlUiAction {
     ParseQuery {
         query: String,
     },
+    /// Fetch upstream entity data for the current page (explicit user action only).
+    FetchEntity {
+        item: String,
+    },
 }
 
 #[derive(Debug, Error)]

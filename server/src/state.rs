@@ -7,7 +7,7 @@ use crate::{
     events::Event,
     journal::JournalClient,
     path_types::ItemId,
-    reddit::{default_user_agent, RedditBroker},
+    reddit::{apply_entity_import, RedditApiConfig, RedditBroker},
     reducer::{GlobalTree, VoteData},
     views::ViewStore,
 };
@@ -108,13 +108,18 @@ impl AppState {
                             tree.ensure_path(&parsed);
                         }
                     }
+                    Event::EntityImported { id, payload, .. } => {
+                        if let Some(parsed) = ItemId::parse(&id).or_else(|| ItemId::from_url(&id)) {
+                            apply_entity_import(&mut tree, &parsed, payload);
+                        }
+                    }
                 }
             }
         }
 
         let tree = Arc::new(RwLock::new(tree));
         let journal = JournalClient::spawn(tree.clone(), event_log.clone());
-        let reddit = RedditBroker::spawn(tree.clone(), &default_user_agent());
+        let reddit = RedditBroker::spawn(tree.clone(), event_log.clone(), RedditApiConfig::from_env());
 
         Self {
             cfg: Arc::new(cfg),
@@ -135,8 +140,12 @@ impl AppState {
             let mut w = self.tree.write().await;
             w.ensure_path(id);
         }
-        self.reddit.request_fetch(id.clone());
         Ok(())
+    }
+
+    /// User-initiated Reddit/API import (via "Fetch more" — never on paste or navigate).
+    pub fn queue_entity_fetch(&self, id: ItemId) {
+        self.reddit.request_fetch(id, true);
     }
 
     pub async fn record_vote(
@@ -169,6 +178,44 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::{normalize_scope, parse_item_param};
+    use crate::{
+        event_log::EventLog,
+        events::Event,
+        path_types::ItemId,
+        reddit::apply_entity_import,
+        reducer::GlobalTree,
+    };
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn replay_entity_imported_restores_view() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("events.jsonl");
+        let log = EventLog::new(log_path.to_string_lossy().into_owned());
+        let payload = json!({"kind":"t5","data":{"title":"Rust","display_name":"rust"}});
+        log.append(&Event::EntityImported {
+            id: "reddit.com/r/rust".into(),
+            ts: 1,
+            payload: payload.clone(),
+        })
+        .await
+        .unwrap();
+
+        let mut tree = GlobalTree::new();
+        let (events, _) = log.load_all().await.unwrap();
+        for ev in events {
+            if let Event::EntityImported { id, payload, .. } = ev {
+                let parsed = ItemId::parse(&id).unwrap();
+                apply_entity_import(&mut tree, &parsed, payload);
+            }
+        }
+        let node = tree.get(&ItemId::parse("reddit.com/r/rust").unwrap()).unwrap();
+        assert_eq!(node.data.as_ref().unwrap().title, "Rust");
+        assert_eq!(
+            node.entity_raw.as_ref().unwrap()["data"]["display_name"],
+            "rust"
+        );
+    }
 
     #[test]
     fn normalize_scope_strips_prefix_and_lowercases() {

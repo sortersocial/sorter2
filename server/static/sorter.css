@@ -52,6 +52,25 @@ body {
   filter: brightness(1.1);
 }
 
+.btn-secondary {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.85rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  margin-top: 0.75rem;
+}
+
+.btn-secondary:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.fetch-entity-form {
+  margin-top: 0.5rem;
+}
+
 code {
   font-size: 0.85em;
   background: var(--bg);

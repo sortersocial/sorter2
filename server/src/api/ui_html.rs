@@ -6,7 +6,7 @@ use axum::{
 use std::collections::HashMap;
 
 use crate::{
-    html::{input_panel, js_string_literal, ranking_panel, JsBuilder},
+    html::{entity_section, input_panel, js_string_literal, ranking_panel, JsBuilder},
     parser::parse_reddit_url,
     path_types::ItemId,
     reddit::ensure_partial_tree,
@@ -86,6 +86,20 @@ pub async fn post_ui_html(
                     .morph_selector("#parser-panel", panel)
                     .into_response()
             }
+        },
+        HtmlUiAction::FetchEntity { item } => {
+            let id = parse_item_param(&item);
+            if id.is_root() {
+                return ui_js_warn("nothing to fetch for the root").into_response();
+            }
+            state.queue_entity_fetch(id.clone());
+            let tree = state.tree.read().await;
+            let empty = crate::reducer::NodeState::default();
+            let node = tree.get(&id).unwrap_or(&empty);
+            let panel = entity_section(&id, node, true);
+            JsBuilder::new()
+                .morph_selector("#entity-section", panel)
+                .into_response()
         },
     }
 }

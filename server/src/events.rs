@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -18,4 +19,10 @@ pub enum Event {
     },
     /// Register a node path in the fractal tree (no external fetch).
     NodeEnsured { id: String },
+    /// Full upstream API payload for a node (domain-specific view derived at replay/render time).
+    EntityImported {
+        id: String,
+        ts: i64,
+        payload: Value,
+    },
 }
