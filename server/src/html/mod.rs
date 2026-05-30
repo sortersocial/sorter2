@@ -13,7 +13,7 @@ use crate::{
     form_template::template_json_compact,
     parser_action::ParserAction,
     parser_render::parser_panel,
-    ranking::ranked_items_cached,
+    ranking::ranked_items,
     reducer::GroupState,
     state::AppState,
     ui_action::UI_RPC_FIELD,
@@ -200,7 +200,7 @@ fn layout(title: &str, body: Markup, views: u64, theme: &str, theme_next: &str) 
 }
 
 pub fn ranking_panel(group: &GroupState) -> Markup {
-    let items = ranked_items_cached(group);
+    let items = ranked_items(group);
     html! {
         section id="ranking-panel" class="demo-panel" {
             h2 { "Ranking" }

@@ -5,12 +5,8 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 use crate::{
     event_log::EventLog,
     events::Event,
-    ranking::compute_scores_from_edges,
     reducer::{GroupState, VoteData},
 };
-
-const MAX_ITERS: usize = 10_000;
-const TOL: f64 = 1e-8;
 
 pub struct SettlementCommand {
     pub vote: VoteData,
@@ -71,44 +67,15 @@ async fn settlement_worker(
             continue;
         }
 
-        let (edges, n) = {
+        {
             let mut w = group.write().await;
             for cmd in &batch {
                 w.apply_vote(cmd.vote.clone());
             }
-            (w.edges.clone(), w.idx_to_item.len())
-        };
-
-        let new_scores = compute_scores_from_edges(
-            n,
-            edges.iter().map(|(&k, &v)| (k, v)),
-            MAX_ITERS,
-            TOL,
-        );
-
-        {
-            let mut w = group.write().await;
-            w.cached_scores = new_scores;
-            w.dirty = false;
         }
 
         for cmd in batch {
             let _ = cmd.reply.send(Ok(()));
         }
     }
-}
-
-/// Compute ranking cache from current in-memory edges (startup replay only).
-pub fn warm_ranking_cache(group: &mut GroupState) {
-    if !group.dirty {
-        return;
-    }
-    let n = group.idx_to_item.len();
-    group.cached_scores = compute_scores_from_edges(
-        n,
-        group.edges.iter().map(|(&k, &v)| (k, v)),
-        MAX_ITERS,
-        TOL,
-    );
-    group.dirty = false;
 }

@@ -6,7 +6,7 @@ use crate::{
     event_log::EventLog,
     events::Event,
     reducer::{GroupState, VoteData},
-    settlement::{warm_ranking_cache, SettlementClient},
+    settlement::SettlementClient,
     views::ViewStore,
 };
 
@@ -70,8 +70,6 @@ impl AppState {
                 }
             }
         }
-
-        warm_ranking_cache(&mut group);
 
         let group = Arc::new(RwLock::new(group));
         let settlement = SettlementClient::spawn(group.clone(), event_log.clone());
