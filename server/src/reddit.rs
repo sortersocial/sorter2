@@ -75,6 +75,7 @@ impl RedditBroker {
         event_log: Arc<EventLog>,
         entity_store: EntityStore,
         projection_store: ProjectionStore,
+        view_store: crate::views::ViewStore,
         config: RedditApiConfig,
     ) -> Self {
         let (tx, rx) = mpsc::channel(100);
@@ -104,6 +105,7 @@ impl RedditBroker {
             event_log,
             entity_store,
             projection_store,
+            view_store,
             client,
             config,
         ));
@@ -225,6 +227,7 @@ async fn reddit_worker(
     event_log: Arc<EventLog>,
     entity_store: EntityStore,
     projection_store: ProjectionStore,
+    view_store: crate::views::ViewStore,
     client: Client,
     config: RedditApiConfig,
 ) {
@@ -315,9 +318,12 @@ async fn reddit_worker(
                         write_err = Some(e.to_string());
                         break;
                     }
-                    if let Err(e) =
-                        projection_apply::apply_next_event(&projection_store, &entity_store, &event)
-                    {
+                    if let Err(e) = projection_apply::apply_next_event(
+                        &projection_store,
+                        &entity_store,
+                        &view_store,
+                        &event,
+                    ) {
                         write_err = Some(e.to_string());
                         break;
                     }

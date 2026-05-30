@@ -4,7 +4,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
-    /// Page view recorded (path → counter in views.json).
+    /// Page view recorded (path → counter in durable `view_counts`).
     ViewRecorded { path: String, ts: i64 },
     /// Pairwise comparison vote (replayed into the parent node's [`crate::reducer::GroupState`] on boot).
     /// `scope` is the parent [`crate::path_types::ItemId`] string; empty string is the tree root.

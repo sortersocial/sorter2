@@ -40,6 +40,7 @@ async fn catch_up_projection(
     event_log: &EventLog,
     entity_store: &EntityStore,
     projection_store: &ProjectionStore,
+    view_store: &ViewStore,
 ) -> Result<(), crate::event_log::EventLogError> {
     let cursor = projection_store
         .last_applied_event_count()
@@ -47,7 +48,13 @@ async fn catch_up_projection(
 
     event_log
         .replay_from(cursor, |event_count, ev| {
-            projection_apply::apply_event(projection_store, entity_store, event_count, &ev)
+            projection_apply::apply_event(
+                projection_store,
+                entity_store,
+                view_store,
+                event_count,
+                &ev,
+            )
         })
         .await?;
 
@@ -92,14 +99,15 @@ pub struct AppState {
 impl AppState {
     pub async fn new(cfg: AppConfig) -> Self {
         let event_log = Arc::new(EventLog::new(cfg.event_log_path.clone()));
-        let views_path = format!("{}/views.json", cfg.data_dir);
-        let views = ViewStore::new(&views_path);
         let store_path = format!("{}/store", cfg.data_dir);
         let db = durable::Db::open(std::path::Path::new(&store_path)).expect("store db");
         let entity_store = EntityStore::from_db(&db).expect("entity store");
         let projection_store = ProjectionStore::from_db(&db).expect("projection store");
+        let views = ViewStore::from_db(&db).expect("view store");
 
-        if let Err(e) = catch_up_projection(&event_log, &entity_store, &projection_store).await {
+        if let Err(e) =
+            catch_up_projection(&event_log, &entity_store, &projection_store, &views).await
+        {
             tracing::warn!(err = %e, "event log replay failed");
         }
 
@@ -107,11 +115,13 @@ impl AppState {
             event_log.clone(),
             entity_store.clone(),
             projection_store.clone(),
+            views.clone(),
         );
         let reddit = RedditBroker::spawn(
             event_log.clone(),
             entity_store.clone(),
             projection_store.clone(),
+            views.clone(),
             RedditApiConfig::from_env(),
         );
 
@@ -134,8 +144,13 @@ impl AppState {
             .append(&event)
             .await
             .map_err(|e| e.to_string())?;
-        projection_apply::apply_next_event(&self.projection_store, &self.entity_store, &event)
-            .map_err(|e| e.to_string())?;
+        projection_apply::apply_next_event(
+            &self.projection_store,
+            &self.entity_store,
+            &self.views,
+            &event,
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -186,6 +201,7 @@ mod tests {
     use crate::{
         entity_store::EntityStore, event_log::EventLog, event_reducer, events::Event,
         path_types::ItemId, projection_store::ProjectionStore, reducer::GlobalTree,
+        views::ViewStore,
     };
     use serde_json::json;
 
@@ -220,6 +236,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn projected_replay_applies_view_recorded_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("events.jsonl");
+        let log = EventLog::new(log_path.to_string_lossy().into_owned());
+        log.append(&Event::ViewRecorded {
+            path: "/vote".into(),
+            ts: 1,
+        })
+        .await
+        .unwrap();
+        log.append(&Event::ViewRecorded {
+            path: "/vote".into(),
+            ts: 2,
+        })
+        .await
+        .unwrap();
+
+        let db = durable::Db::open(tmp.path().join("store")).unwrap();
+        let entity_store = EntityStore::from_db(&db).unwrap();
+        let projection_store = ProjectionStore::from_db(&db).unwrap();
+        let view_store = ViewStore::from_db(&db).unwrap();
+
+        super::catch_up_projection(&log, &entity_store, &projection_store, &view_store)
+            .await
+            .unwrap();
+
+        assert_eq!(view_store.get_views_count("/vote").unwrap(), 2);
+        assert_eq!(projection_store.last_applied_event_count().unwrap(), 2);
+    }
+
+    #[tokio::test]
     async fn projected_replay_cursor_prevents_double_applying_votes() {
         let tmp = tempfile::tempdir().unwrap();
         let log_path = tmp.path().join("events.jsonl");
@@ -238,8 +285,9 @@ mod tests {
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
         let entity_store = EntityStore::from_db(&db).unwrap();
         let projection_store = ProjectionStore::from_db(&db).unwrap();
+        let view_store = ViewStore::from_db(&db).unwrap();
 
-        super::catch_up_projection(&log, &entity_store, &projection_store)
+        super::catch_up_projection(&log, &entity_store, &projection_store, &view_store)
             .await
             .unwrap();
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
@@ -248,7 +296,7 @@ mod tests {
         let first_edge_total: f64 = first_root.local_ranking.edges.values().sum();
         assert_eq!(first_edge_total, 3.0);
 
-        super::catch_up_projection(&log, &entity_store, &projection_store)
+        super::catch_up_projection(&log, &entity_store, &projection_store, &view_store)
             .await
             .unwrap();
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
@@ -334,7 +382,8 @@ mod tests {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
             let entity_store = EntityStore::from_db(&db).unwrap();
             let projection_store = ProjectionStore::from_db(&db).unwrap();
-            super::catch_up_projection(&log, &entity_store, &projection_store)
+            let view_store = ViewStore::from_db(&db).unwrap();
+            super::catch_up_projection(&log, &entity_store, &projection_store, &view_store)
                 .await
                 .unwrap();
         }
@@ -379,7 +428,8 @@ mod tests {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
             let entity_store = EntityStore::from_db(&db).unwrap();
             let projection_store = ProjectionStore::from_db(&db).unwrap();
-            super::catch_up_projection(&log, &entity_store, &projection_store)
+            let view_store = ViewStore::from_db(&db).unwrap();
+            super::catch_up_projection(&log, &entity_store, &projection_store, &view_store)
                 .await
                 .unwrap();
         }

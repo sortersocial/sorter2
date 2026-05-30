@@ -224,9 +224,7 @@ fn affected_nodes(event: &Event) -> BTreeSet<ItemId> {
                 add_path_nodes(&mut ids, &id);
             }
         }
-        Event::ViewRecorded { .. } => {
-            ids.insert(ItemId::root());
-        }
+        Event::ViewRecorded { .. } => {}
     }
     ids
 }
