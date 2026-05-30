@@ -9,6 +9,10 @@ pub struct RankedItem {
     pub score: f64,
 }
 
+/// Power-iteration cap and convergence tolerance for rank centrality.
+pub const MAX_ITERS: usize = 10_000;
+pub const TOL: f64 = 1e-8;
+
 /// Compute connected components over the voted-pairs graph (treated as undirected).
 ///
 /// Returns:
@@ -59,55 +63,43 @@ pub fn connected_components_from_voted_pairs(
     (comps, isolates)
 }
 
-/// Compute rank centrality scores for a GroupState.
-/// This matches the approach in the earlier standalone prototype but avoids dependencies by doing
-/// an O(E) multiply per iteration.
-pub fn compute_group_ranking(group: &mut GroupState, max_iters: usize, tol: f64) {
-    if !group.dirty && !group.cached_scores.is_empty() {
-        return;
-    }
-
+/// Compute rank-centrality scores for the whole group and return items sorted
+/// by score (descending). Recomputed fresh from the edge set on every call —
+/// there is no score cache.
+pub fn ranked_items(group: &GroupState) -> Vec<RankedItem> {
     let n = group.idx_to_item.len();
-    if n == 0 {
-        group.cached_scores = vec![];
-        group.dirty = false;
-        return;
-    }
-    if n == 1 {
-        group.cached_scores = vec![1.0];
-        group.dirty = false;
-        return;
-    }
-
     let scores = compute_scores_from_edges(
         n,
         group.edges.iter().map(|(&k, &w)| (k, w)),
-        max_iters,
-        tol,
+        MAX_ITERS,
+        TOL,
     );
-    group.cached_scores = scores;
-    group.dirty = false;
-}
 
-pub fn ranked_items(group: &mut GroupState, max_iters: usize, tol: f64) -> Vec<RankedItem> {
-    compute_group_ranking(group, max_iters, tol);
-    ranked_items_cached(group)
-}
-
-/// Read cached scores without recomputing (HTTP fast path).
-pub fn ranked_items_cached(group: &GroupState) -> Vec<RankedItem> {
     let mut items: Vec<RankedItem> = group
         .idx_to_item
         .iter()
         .enumerate()
         .map(|(i, item)| RankedItem {
             item: item.clone(),
-            score: *group.cached_scores.get(i).unwrap_or(&0.0),
+            score: *scores.get(i).unwrap_or(&0.0),
         })
         .collect();
 
     items.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     items
+}
+
+/// Highest- and lowest-ranked items for a group. Returns up to `k` items from
+/// each end with no overlap. If the group has `2*k` items or fewer, `top` holds
+/// the full ranking and `bottom` is empty (so nothing is shown twice).
+pub fn top_bottom(group: &GroupState, k: usize) -> (Vec<RankedItem>, Vec<RankedItem>) {
+    let items = ranked_items(group);
+    if k == 0 || items.len() <= 2 * k {
+        return (items, Vec::new());
+    }
+    let top = items[..k].to_vec();
+    let bottom = items[items.len() - k..].to_vec();
+    (top, bottom)
 }
 
 pub fn compute_scores_from_edges(
@@ -257,12 +249,8 @@ pub fn ranked_items_subset(group: &GroupState, idxs: &[usize], max_iters: usize,
     items
 }
 
-pub fn group_summary_scores(
-    group: &mut GroupState,
-    max_iters: usize,
-    tol: f64,
-) -> HashMap<ItemId, f64> {
-    ranked_items(group, max_iters, tol)
+pub fn group_summary_scores(group: &GroupState) -> HashMap<ItemId, f64> {
+    ranked_items(group)
         .into_iter()
         .map(|r| (r.item, r.score))
         .collect()
@@ -325,22 +313,30 @@ mod tests {
     }
 
     #[test]
-    fn group_ranking_cache_dirty_flow() {
+    fn top_bottom_splits_ends_without_overlap() {
         let mut g = mk_group();
-        assert!(g.dirty);
+        // Chain a > b > c > d > e > f so ranks are well separated.
+        for (hi, lo) in [("a", "b"), ("b", "c"), ("c", "d"), ("d", "e"), ("e", "f")] {
+            g.apply_vote(vote(1, hi, lo, 2, 1));
+        }
+        let (top, bottom) = top_bottom(&g, 2);
+        assert_eq!(top.len(), 2);
+        assert_eq!(bottom.len(), 2);
+        // No overlap between the two ends.
+        for t in &top {
+            assert!(bottom.iter().all(|b| b.item != t.item));
+        }
+        // Best item ranks above the worst item.
+        assert!(top[0].score >= bottom[bottom.len() - 1].score);
+    }
 
-        g.apply_vote(vote(1, "a", "b", 3, 1));
-        assert!(g.dirty);
-        assert!(g.cached_scores.is_empty());
-
-        compute_group_ranking(&mut g, 10000, 1e-8);
-        assert!(!g.dirty);
-        assert_eq!(g.cached_scores.len(), g.idx_to_item.len());
-
-        // Recomputing when not dirty should be a no-op.
-        let before = g.cached_scores.clone();
-        compute_group_ranking(&mut g, 10000, 1e-8);
-        assert_eq!(before, g.cached_scores);
+    #[test]
+    fn top_bottom_small_group_has_empty_bottom() {
+        let mut g = mk_group();
+        g.apply_vote(vote(1, "a", "b", 2, 1));
+        let (top, bottom) = top_bottom(&g, 5);
+        assert_eq!(top.len(), 2);
+        assert!(bottom.is_empty());
     }
 
     #[test]

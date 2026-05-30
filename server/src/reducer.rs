@@ -52,8 +52,6 @@ pub struct GroupState {
     pub idx_to_item: Vec<ItemId>,
     pub edges: HashMap<(usize, usize), f64>,
     pub voted_pairs: HashSet<(usize, usize)>,
-    pub dirty: bool,
-    pub cached_scores: Vec<f64>,
     pub recent_votes: VecDeque<VoteData>,
 }
 
@@ -64,8 +62,6 @@ impl GroupState {
             idx_to_item: Vec::new(),
             edges: HashMap::new(),
             voted_pairs: HashSet::new(),
-            dirty: true,
-            cached_scores: Vec::new(),
             recent_votes: VecDeque::with_capacity(200),
         }
     }
@@ -77,7 +73,6 @@ impl GroupState {
         let idx = self.idx_to_item.len();
         self.idx_to_item.push(item.clone());
         self.item_to_idx.insert(item.clone(), idx);
-        self.dirty = true;
         idx
     }
 
@@ -86,7 +81,6 @@ impl GroupState {
             return;
         }
         *self.edges.entry((src, dst)).or_insert(0.0) += w;
-        self.dirty = true;
     }
 
     pub fn apply_vote(&mut self, mut vote: VoteData) {

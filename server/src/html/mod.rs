@@ -13,9 +13,9 @@ use crate::{
     form_template::template_json_compact,
     parser_action::ParserAction,
     parser_render::parser_panel,
-    ranking::ranked_items_cached,
+    ranking::{top_bottom, RankedItem},
     reducer::GroupState,
-    state::AppState,
+    state::{normalize_scope, AppState},
     ui_action::UI_RPC_FIELD,
 };
 
@@ -153,6 +153,22 @@ impl JsBuilder {
     }
 }
 
+/// Short content hash of the bundled static assets, used as a `?v=` cache
+/// buster so CSS/JS changes take effect immediately instead of being masked by
+/// the `max-age` on `/static`.
+fn asset_version() -> &'static str {
+    use std::sync::OnceLock;
+    static V: OnceLock<String> = OnceLock::new();
+    V.get_or_init(|| {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        THEME_DEFAULT_CSS.hash(&mut h);
+        THEME_RETRO_CSS.hash(&mut h);
+        SORTER_UI_JS.hash(&mut h);
+        format!("{:x}", h.finish())
+    })
+}
+
 pub fn now_ms() -> i64 {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -161,7 +177,9 @@ pub fn now_ms() -> i64 {
 }
 
 fn layout(title: &str, body: Markup, views: u64, theme: &str, theme_next: &str) -> Markup {
-    let css_href = format!("/static/theme_{theme}.css");
+    let ver = asset_version();
+    let css_href = format!("/static/theme_{theme}.css?v={ver}");
+    let js_src = format!("/static/sorter_ui.js?v={ver}");
     html! {
         (DOCTYPE)
         html {
@@ -193,29 +211,24 @@ fn layout(title: &str, body: Markup, views: u64, theme: &str, theme_next: &str) 
                         }
                     }
                 }
-                script src="/static/sorter_ui.js" {}
+                script src=(js_src) {}
             }
         }
     }
 }
 
-pub fn ranking_panel(group: &GroupState) -> Markup {
-    let items = ranked_items_cached(group);
+fn rank_list(label: &str, items: &[RankedItem], start_rank: usize) -> Markup {
     html! {
-        section id="ranking-panel" class="demo-panel" {
-            h2 { "Ranking" }
-            @if items.is_empty() {
-                p class="muted" { "No votes yet — compare two items below." }
-            } @else {
-                ol class="rank-list" {
-                    @for (i, r) in items.iter().enumerate() {
-                        li {
-                            span class="rank-num" { (i + 1) ". " }
-                            strong { (r.item.as_str()) }
-                            span class="muted" {
-                                " — "
-                                ({ format!("{:.1}%", r.score * 100.0) })
-                            }
+        @if !items.is_empty() {
+            h3 class="rank-heading muted small" { (label) }
+            ol class="rank-list" {
+                @for (i, r) in items.iter().enumerate() {
+                    li {
+                        span class="rank-num" { (start_rank + i) ". " }
+                        strong { (r.item.as_str()) }
+                        span class="muted" {
+                            " — "
+                            ({ format!("{:.1}%", r.score * 100.0) })
                         }
                     }
                 }
@@ -224,23 +237,60 @@ pub fn ranking_panel(group: &GroupState) -> Markup {
     }
 }
 
-pub fn vote_panel() -> Markup {
+pub fn ranking_panel(scope: &str, group: &GroupState) -> Markup {
+    let total = group.idx_to_item.len();
+    let (top, bottom) = top_bottom(group, 8);
+    html! {
+        section id="ranking-panel" class="demo-panel" {
+            h2 {
+                "Ranking"
+                @if !scope.is_empty() {
+                    " — " span class="scope-name" { "r/" (scope) }
+                }
+            }
+            @if total == 0 {
+                p class="muted" {
+                    @if scope.is_empty() {
+                        "No votes yet — compare two items below."
+                    } @else {
+                        "No votes yet for r/" (scope) " — compare two items below to start the ranking."
+                    }
+                }
+            } @else {
+                (rank_list(if bottom.is_empty() { "" } else { "Top" }, &top, 1))
+                @if !bottom.is_empty() {
+                    p class="rank-gap muted small" { "⋯" }
+                    (rank_list("Bottom", &bottom, total - bottom.len() + 1))
+                }
+            }
+        }
+    }
+}
+
+pub fn vote_panel(scope: &str) -> Markup {
     let rpc = template_json_compact(&serde_json::json!({
         "action": "record_vote",
         "a": {"$form": "item_a"},
         "b": {"$form": "item_b"},
         "ratio_left": 2,
-        "ratio_right": 1
+        "ratio_right": 1,
+        "scope": {"$form": "scope"}
     }))
     .expect("vote rpc json");
     html! {
         section id="vote-panel" class="demo-panel" {
             h2 { "Compare" }
             p class="muted small" {
-                "Left item wins at 2:1. Votes append to the JSONL log and update rank centrality."
+                @if scope.is_empty() {
+                    "Left item wins at 2:1. Votes append to the JSONL log and update rank centrality."
+                } @else {
+                    "Ranking " span class="scope-name" { "r/" (scope) }
+                    ". Left item wins at 2:1; each vote updates this ranking."
+                }
             }
             form method="post" action="/ui" id="vote-form" {
                 input type="hidden" name=(UI_RPC_FIELD) value=(rpc);
+                input type="hidden" name="scope" value=(scope);
                 div class="vote-fields" {
                     label {
                         "Left (wins) "
@@ -258,6 +308,18 @@ pub fn vote_panel() -> Markup {
 }
 
 
+fn query_param(uri: &Uri, key: &str) -> Option<String> {
+    let q = uri.query()?;
+    q.split('&').find_map(|pair| {
+        let mut it = pair.splitn(2, '=');
+        if it.next()? == key {
+            Some(it.next().unwrap_or("").to_string())
+        } else {
+            None
+        }
+    })
+}
+
 pub async fn home(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -268,13 +330,18 @@ pub async fn home(
     let views = state.views.get_views(&path);
     let theme = theme_from_jar(&jar);
     let theme_next = theme_next_from_uri(&uri);
-    let group = state.group.read().await;
+    let scope = normalize_scope(&query_param(&uri, "sub").unwrap_or_default());
+
+    let groups = state.groups.read().await;
+    let empty = GroupState::new();
+    let group = groups.get(&scope).unwrap_or(&empty);
+
     let empty_action = ParserAction::suggest(String::new(), None);
     let body = html! {
         h1 { "sorter2" }
         (parser_panel("", &empty_action))
-        (vote_panel())
-        (ranking_panel(&group))
+        (vote_panel(&scope))
+        (ranking_panel(&scope, group))
     };
     layout("sorter2", body, views, theme, &theme_next)
 }

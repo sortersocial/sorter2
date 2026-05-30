@@ -85,12 +85,14 @@ fn render_db_subs(partial: &str, prefix: &str) -> Markup {
         .take(6)
         .collect();
     html! {
-        div class="parser-db-subs muted small" {
-            p { "Subreddits:" }
-            ul {
-                @for sub in matches {
-                    @let completion = format!("{prefix}{sub}");
-                    li { (completion_button(&completion, &format!("r/{sub}"), false)) }
+        @if !matches.is_empty() {
+            div class="parser-db-subs muted small" {
+                p { "Subreddits:" }
+                ul {
+                    @for sub in matches {
+                        @let completion = format!("{prefix}{sub}");
+                        li { (completion_button(&completion, &format!("r/{sub}"), false)) }
+                    }
                 }
             }
         }
@@ -140,6 +142,12 @@ fn render_action(action: &ParserAction) -> Markup {
                     strong { "r/" (subreddit) }
                     @if subreddit.len() <= 3 {
                         span class="muted small" { " (partial — tab or pick a match)" }
+                    }
+                }
+                p {
+                    a class="parser-rank-link"
+                        href=(format!("/?sub={subreddit}")) {
+                        "Rank r/" (subreddit) " →"
                     }
                 }
                 (render_db_subs(subreddit, prefix))

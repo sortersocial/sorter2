@@ -19,13 +19,36 @@
     }).then(evalJs);
   }
 
+  // Parser responses race: a slow response for an earlier keystroke can arrive
+  // after a newer one and clobber the panel. Tag each request with a monotonic
+  // sequence number and only apply a response if it is newer than the last one
+  // applied, so stale (superseded) responses are discarded.
+  var parserSeq = 0;
+  var parserApplied = 0;
+
+  function postParserForm(form) {
+    var mySeq = ++parserSeq;
+    return fetch(form.action, {
+      method: 'POST',
+      body: new URLSearchParams(new FormData(form)),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      credentials: 'same-origin',
+    }).then(function (resp) {
+      return resp.text();
+    }).then(function (js) {
+      if (mySeq <= parserApplied) return;
+      parserApplied = mySeq;
+      evalJs(js);
+    });
+  }
+
   var parserTimer = null;
 
   function scheduleParserInput(input) {
     if (parserTimer) clearTimeout(parserTimer);
     parserTimer = setTimeout(function () {
       var form = document.getElementById('parser-form');
-      if (form) postUiForm(form);
+      if (form) postParserForm(form);
     }, 120);
   }
 
@@ -38,6 +61,11 @@
       if (f.getAttribute('data-navigate') === 'full') return;
       e.preventDefault();
       await postUiForm(f);
+      if (f.id === 'vote-form') {
+        f.reset();
+        var firstField = f.querySelector('input[type="text"]');
+        if (firstField) firstField.focus();
+      }
     });
 
     document.addEventListener('input', function (e) {
