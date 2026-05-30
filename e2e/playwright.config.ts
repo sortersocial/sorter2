@@ -13,6 +13,7 @@ export default defineConfig({
   use: {
     baseURL: BASE_URL,
     trace: 'on-first-retry',
+    video: process.env.PW_VIDEO === '1' ? 'on' : 'off',
   },
   projects: [
     {
