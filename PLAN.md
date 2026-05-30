@@ -52,6 +52,13 @@ This is **event sourcing / CQRS**:
 
 Durable is **not** a second source of truth. If projection and log diverge, **stream JSONL and rebuild durable**.
 
+The plan is sound, but only if the projection layer is treated as a crash-recoverable index:
+
+- JSONL append must mean "the bytes are recoverable after process or VM crash" (`flush` alone is not enough; use `sync_data` / fsync-equivalent on the append path or make an explicit weaker durability tradeoff).
+- Durable projection writes are allowed to lag JSONL, but startup must catch up from the last applied event before serving reads.
+- Event application must be exactly-once for the durable projection. Votes add edge weights, so accidentally replaying the same event twice changes rankings.
+- Projection schema should stay boring and explicit: persist nodes, children, edge weights, voted pairs, and capped recent votes directly. Avoid clever nested abstractions if they make rebuilds, migrations, or audits harder.
+
 ---
 
 ## What we have today (baseline)
@@ -131,6 +138,16 @@ scope_cache.invalidate(scope_for(event));
 
 On failure after (1): replay from log repairs projection on next boot or via `replay-index` command.
 
+Because JSONL and RocksDB cannot be committed atomically together, durable must record a projection cursor alongside the projection:
+
+- Prefer a monotonically increasing event sequence number in each JSONL event.
+- Acceptable first version: byte offset + line checksum, as long as truncation and partial trailing lines are handled deliberately.
+- Update projection data and cursor in the same RocksDB `WriteBatch`.
+- On startup, read the cursor, scan only the JSONL tail after that cursor, apply missing events, then serve.
+- If the cursor is missing, corrupt, or points past the log, rebuild durable from JSONL.
+
+This keeps the append-first rule simple: if the process dies after JSONL append but before RocksDB apply, catch-up repairs it; if it dies after RocksDB apply but before cursor update, the batch should not expose a cursor that skips work.
+
 ---
 
 ## Read path
@@ -155,6 +172,8 @@ Payload fetch (rare): `entity_store.get(id)` only when render needs fields not i
 ```
 open entity_db (RocksDB)
 open / validate scope indexes in same DB
+read projection cursor
+stream only unapplied JSONL tail into durable
 do NOT replay JSONL into RAM
 serve requests (cold scopes loaded on demand)
 ```
@@ -279,15 +298,20 @@ Multiple subreddits fit on 256MB with LRU eviction, not all resident at once.
 ### Phase 1 — Durable projection (write path)
 
 - [ ] Single `Db` under `{data_dir}/store` (payloads + reducer)
-- [ ] `apply_event` writes to durable collections (nodes, scopes) in addition to or instead of `GlobalTree`
+- [ ] JSONL append path uses explicit durable sync semantics (`sync_data` / fsync-equivalent) or documents any weaker mode
+- [ ] Add projection cursor metadata (event sequence, or byte offset + checksum)
+- [ ] `apply_event` writes to durable collections (nodes, scopes) and cursor in one RocksDB `WriteBatch`
 - [ ] Journal + Reddit import paths use same apply
 - [ ] Batched writes where possible (one flush per vote / per import batch)
+- [ ] Idempotency tests: replay/catch-up never double-applies vote edge weights
 - [ ] Tests: apply event → read back from durable
 
 ### Phase 2 — Stop full tree at boot
 
-- [ ] Startup: open durable only; no `GlobalTree::new()` + full replay into RAM
+- [ ] Startup: open durable, catch up from projection cursor, then serve
+- [ ] No `GlobalTree::new()` + full replay into RAM on normal boot
 - [ ] `replay-index` command / flag: stream JSONL → durable (offline rebuild)
+- [ ] Recovery tests: crash after JSONL append, crash after projection write, corrupt/missing cursor
 - [ ] Integration tests use replay-index fixture or temp DB
 
 ### Phase 3 — Scope load on read
@@ -323,10 +347,12 @@ Multiple subreddits fit on 256MB with LRU eviction, not all resident at once.
 ## Open questions
 
 1. **One DB or two?** `{data_dir}/entity_db` today vs single `{data_dir}/store` — merge on Phase 1?
-2. **Scope key encoding** — string `ItemId` paths vs hashed; must match event `scope` field.
-3. **Child scope wiring** — Reddit `apply_entity_under_parent` creates children without full path ensure; durable schema must preserve this.
-4. **Clojure smoke tests** — still read `events.jsonl`; durable is internal. No change expected.
-5. **Fly volume** — `/data` holds JSONL + RocksDB; monitor disk alongside RAM.
+2. **Event identity** — add event sequence numbers now, or start with byte offset + checksum?
+3. **Append durability mode** — pay fsync cost per mutation/batch, or document an acknowledged data-loss window?
+4. **Scope key encoding** — string `ItemId` paths vs hashed; must match event `scope` field.
+5. **Child scope wiring** — Reddit `apply_entity_under_parent` creates children without full path ensure; durable schema must preserve this.
+6. **Clojure smoke tests** — still read `events.jsonl`; durable is internal. No change expected.
+7. **Fly volume** — `/data` holds JSONL + RocksDB; monitor disk alongside RAM.
 
 ---
 
