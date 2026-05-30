@@ -91,8 +91,8 @@
               (let [after (loc/text-content (page/locator pg "#vote-edge-history-region"))]
                 (is (str/includes? after "votes on this pair")
                     "shows edge history title after vote")
-                (is (str/includes? after "50:50")
-                    "shows submitted ratio after vote")
+                (is (str/includes? after "1:1")
+                    "shows submitted ratio after vote (default slider at center)")
                 (is (not (str/includes? after "no votes on this pair yet"))
                     "does not revert to empty edge history")))
             (finally
