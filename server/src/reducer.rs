@@ -122,7 +122,12 @@ pub struct EntityData {
     pub title: String,
     pub author: Option<String>,
     pub body_html: Option<String>,
+    /// Small preview (subreddit listing / child rows).
     pub thumb_url: Option<String>,
+    /// Full-size still image for the post detail view.
+    pub image_url: Option<String>,
+    /// Outbound link for link/video posts (`url` / `url_overridden_by_dest`).
+    pub link_url: Option<String>,
 }
 
 /// One node in the fractal tree: entity + ranked children.

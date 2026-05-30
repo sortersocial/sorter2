@@ -11,6 +11,9 @@ use crate::{
 };
 
 fn entity_panel(node: &NodeState) -> Markup {
+    if let Some(markup) = crate::render::reddit::entity_markup(node) {
+        return markup;
+    }
     html! {
         @if let Some(data) = &node.data {
             div id="entity-panel" class="entity-card" {

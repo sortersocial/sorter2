@@ -171,6 +171,41 @@ code {
   margin-top: 0;
 }
 
+.reddit-post-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.reddit-post-thumb-link {
+  flex-shrink: 0;
+  line-height: 0;
+}
+
+.reddit-post-thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.reddit-post-url a {
+  word-break: break-all;
+}
+
+.reddit-post-figure {
+  margin: 0.75rem 0;
+}
+
+.reddit-post-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
 .scope-name {
   color: var(--accent);
   font-weight: 600;

@@ -608,6 +608,8 @@ fn parse_subreddit_about(v: &Value) -> Option<crate::reducer::EntityData> {
         author: None,
         body_html,
         thumb_url,
+        image_url: None,
+        link_url: None,
     })
 }
 
@@ -635,13 +637,62 @@ fn parse_post_listing(v: &Value) -> Option<crate::reducer::EntityData> {
         .and_then(|t| t.as_str())
         .filter(|s| s.starts_with("http"))
         .map(|s| s.to_string());
+    let image_url = reddit_post_image_url(child);
+    let link_url = reddit_post_link_url(child);
 
     Some(crate::reducer::EntityData {
         title,
         author,
         body_html,
         thumb_url,
+        image_url,
+        link_url,
     })
+}
+
+fn reddit_post_link_url(data: &Value) -> Option<String> {
+    for key in ["url_overridden_by_dest", "url"] {
+        if let Some(u) = data.get(key).and_then(|v| v.as_str()) {
+            if u.starts_with("http") {
+                return Some(u.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Full-size still for post detail: direct image `url`, else Reddit preview source.
+fn reddit_post_image_url(data: &Value) -> Option<String> {
+    for key in ["url", "url_overridden_by_dest"] {
+        if let Some(u) = data.get(key).and_then(|v| v.as_str()) {
+            if reddit_direct_image_url(u) {
+                return Some(u.to_string());
+            }
+        }
+    }
+    reddit_preview_source_url(data)
+}
+
+fn reddit_preview_source_url(data: &Value) -> Option<String> {
+    data.pointer("/preview/images/0/source/url")
+        .and_then(|v| v.as_str())
+        .filter(|s| s.starts_with("http"))
+        .map(str::to_string)
+}
+
+fn reddit_direct_image_url(url: &str) -> bool {
+    let u = url.to_ascii_lowercase();
+    if u.contains("redgifs.com") {
+        return false;
+    }
+    u.contains("i.redd.it")
+        || u.contains("preview.redd.it")
+        || u.contains("external-preview.redd.it")
+        || u.ends_with(".jpg")
+        || u.ends_with(".jpeg")
+        || u.ends_with(".png")
+        || u.ends_with(".gif")
+        || u.ends_with(".webp")
 }
 
 #[cfg(test)]
@@ -671,5 +722,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(entity.title, "The Rust Programming Language");
+    }
+
+    #[test]
+    fn parse_post_listing_extracts_thumb_and_full_preview() {
+        let json = include_str!("../../test/fixtures/reddit/post_preview.json");
+        let v: Value = serde_json::from_str(json).unwrap();
+        let id = ItemId::parse("reddit.com/r/nsfw/comments/1tpy6a1/angel_eyes").unwrap();
+        let entity = entity_view_from_payload(&id, &v).unwrap();
+        assert_eq!(entity.title, "Angel Eyes");
+        assert!(entity.thumb_url.as_ref().unwrap().contains("width=140"));
+        assert!(entity.image_url.as_ref().unwrap().contains("auto=webp"));
+        assert!(!entity.image_url.as_ref().unwrap().contains("redgifs"));
+        assert_eq!(
+            entity.link_url.as_deref(),
+            Some("http://v3.redgifs.com/watch/impossibleprestigioushedgehog")
+        );
     }
 }

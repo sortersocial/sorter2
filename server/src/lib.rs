@@ -8,6 +8,7 @@ pub mod parser;
 pub mod path_types;
 pub mod ranking;
 pub mod reddit;
+pub mod render;
 pub mod reducer;
 pub mod journal;
 pub mod state;

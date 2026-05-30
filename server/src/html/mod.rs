@@ -153,16 +153,21 @@ pub fn breadcrumb_path(item: &ItemId) -> Markup {
     }
 }
 
-fn rank_list(label: &str, items: &[RankedItem], start_rank: usize) -> Markup {
+fn rank_list(label: &str, items: &[RankedItem], start_rank: usize, tree: &GlobalTree) -> Markup {
     html! {
         @if !items.is_empty() {
             h3 class="rank-heading muted small" { (label) }
             ol class="rank-list" {
                 @for (i, r) in items.iter().enumerate() {
-                    li {
+                    @let href = item_href(&r.item);
+                    li class=(if crate::render::reddit::is_reddit_post(&r.item) { "reddit-post-row" } else { "" }) {
                         span class="rank-num" { (start_rank + i) ". " }
-                        a href=(item_href(&r.item)) {
-                            strong { (display_label(&r.item)) }
+                        @if let Some(row) = crate::render::reddit::child_row_markup(tree, &r.item, &href) {
+                            (row)
+                        } @else {
+                            a href=(href) {
+                                strong { (display_label(&r.item)) }
+                            }
                         }
                         span class="muted" {
                             " — "
@@ -196,9 +201,14 @@ fn unranked_list(label: &str, items: &[ItemId], tree: &GlobalTree) -> Markup {
             h3 class="rank-heading muted small" { (label) }
             ul class="rank-list unranked" {
                 @for it in items {
-                    li {
-                        a href=(item_href(it)) {
-                            strong { (child_label(tree, it)) }
+                    @let href = item_href(it);
+                    li class=(if crate::render::reddit::is_reddit_post(it) { "reddit-post-row" } else { "" }) {
+                        @if let Some(row) = crate::render::reddit::child_row_markup(tree, it, &href) {
+                            (row)
+                        } @else {
+                            a href=(href) {
+                                strong { (child_label(tree, it)) }
+                            }
                         }
                     }
                 }
@@ -253,7 +263,7 @@ pub fn ranking_panel(item: &ItemId, node: &NodeState, tree: &GlobalTree) -> Mark
             } @else {
                 @for (gi, ranked) in ranked_groups.iter().enumerate() {
                     @let label = if multi { format!("Ranking group {}", gi + 1) } else { "Ranking".to_string() };
-                    (rank_list(&label, ranked, 1))
+                    (rank_list(&label, ranked, 1, tree))
                 }
                 (unranked_list("Unranked", &unranked, tree))
             }
