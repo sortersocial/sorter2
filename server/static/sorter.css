@@ -230,8 +230,51 @@ h1 {
   margin: 0.75rem 0;
 }
 
+.rank-row {
+  will-change: transform;
+}
+
+.rank-row-enter {
+  animation: rank-row-enter 260ms ease;
+}
+
+@keyframes rank-row-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.35rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.vote-page-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 1.25rem;
+  align-items: start;
+}
+
 .vote-compare-shell {
-  max-width: 960px;
+  min-width: 0;
+}
+
+.vote-ranking-panel {
+  position: sticky;
+  top: 1rem;
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+}
+
+.vote-ranking-panel h2 {
+  margin: 0 0 0.25rem;
+}
+
+.vote-ranking-panel #ranking-panel {
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .vote-compare-scope {
@@ -357,4 +400,15 @@ h1 {
 
 .ratio-right {
   background: var(--muted);
+}
+
+@media (max-width: 900px) {
+  .vote-page-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .vote-ranking-panel {
+    position: static;
+    max-height: none;
+  }
 }

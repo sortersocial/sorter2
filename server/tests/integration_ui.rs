@@ -65,6 +65,14 @@ async fn post_ui_vote_compare_morphs_edge_history() {
         "expected edge history morph, got: {body}"
     );
     assert!(
+        body.contains("vote-ranking-panel"),
+        "expected ranking sidebar morph, got: {body}"
+    );
+    assert!(
+        body.contains("sorter2MorphWithFlip"),
+        "expected animated ranking morph, got: {body}"
+    );
+    assert!(
         body.contains("70:30"),
         "expected recorded ratio in morph, got: {body}"
     );
@@ -141,6 +149,40 @@ async fn browse_url_renders_subreddit_page() {
         .unwrap();
     assert!(html.contains("ranking-panel"));
     assert!(html.contains("/~/https://reddit.com/r/rust"));
+}
+
+#[tokio::test]
+async fn vote_page_renders_live_ranking_sidebar() {
+    let (addr, _tmp) = start_test_server().await;
+    let client = reqwest::Client::new();
+    let seed_rpc = serde_json::json!({
+        "action": "record_vote",
+        "a": "alpha",
+        "b": "beta",
+        "ratio_left": 2,
+        "ratio_right": 1
+    })
+    .to_string();
+    let mut form = HashMap::new();
+    form.insert(UI_RPC_FIELD.to_string(), seed_rpc);
+    client
+        .post(format!("http://{addr}/ui"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+
+    let html = client
+        .get(format!("http://{addr}/vote?parent="))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains("vote-ranking-panel"));
+    assert!(html.contains("live ranking"));
+    assert!(html.contains("data-rank-item=\"alpha\""));
 }
 
 #[tokio::test]

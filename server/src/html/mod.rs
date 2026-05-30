@@ -65,6 +65,15 @@ impl JsBuilder {
         self
     }
 
+    pub(crate) fn morph_selector_flip(mut self, selector: &str, markup: Markup) -> Self {
+        let html = js_string_literal(&markup.into_string());
+        self.snippets.push(format!(
+            "if (window.sorter2MorphWithFlip) {{ window.sorter2MorphWithFlip({sel}, {html}); }} else {{ var __el = document.querySelector({sel}); if (__el) {{ Idiomorph.morph(__el, {html}); }} }}",
+            sel = js_string_literal(selector),
+        ));
+        self
+    }
+
     pub(crate) fn morph_inner_selector(mut self, selector: &str, markup: Markup) -> Self {
         let html = js_string_literal(&markup.into_string());
         self.snippets.push(format!(
@@ -171,7 +180,8 @@ fn rank_list(label: &str, items: &[RankedItem], start_rank: usize, tree: &Global
             ol class="rank-list" {
                 @for (i, r) in items.iter().enumerate() {
                     @let href = item_href(&r.item);
-                    li class=(if crate::render::reddit::is_reddit_post(&r.item) { "reddit-post-row" } else { "" }) {
+                    li class=(if crate::render::reddit::is_reddit_post(&r.item) { "rank-row reddit-post-row" } else { "rank-row" })
+                        data-rank-item=(r.item.as_str()) {
                         span class="rank-num" { (start_rank + i) ". " }
                         @if let Some(row) = crate::render::reddit::child_row_markup(tree, &r.item, &href) {
                             (row)
@@ -210,7 +220,8 @@ fn unranked_list(label: &str, items: &[ItemId], tree: &GlobalTree) -> Markup {
             ul class="rank-list unranked" {
                 @for it in items {
                     @let href = item_href(it);
-                    li class=(if crate::render::reddit::is_reddit_post(it) { "reddit-post-row" } else { "" }) {
+                    li class=(if crate::render::reddit::is_reddit_post(it) { "rank-row reddit-post-row" } else { "rank-row" })
+                        data-rank-item=(it.as_str()) {
                         @if let Some(row) = crate::render::reddit::child_row_markup(tree, it, &href) {
                             (row)
                         } @else {
