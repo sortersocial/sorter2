@@ -29,7 +29,7 @@ body {
 
 .view-meta {
   position: fixed;
-  top: 0.5rem;
+  top: 0.1rem;
   right: 0.5rem;
   font-size: 0.75rem;
 }
@@ -165,4 +165,8 @@ code {
 .rank-gap {
   text-align: center;
   margin: 0.25rem 0;
+}
+
+h1 {
+  margin: 0;
 }

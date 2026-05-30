@@ -1,0 +1,19 @@
+{:paths ["."]
+ :deps {}
+ :tasks
+ {:requires ([babashka.process :as p]
+             [clojure.string :as str])
+
+  watch
+  {:doc "Hot-reload the server on source changes (requires cargo-watch)"
+   :task (do
+           (deref (p/process ["mkdir" "-p" "dev-data"] {:inherit true}))
+           (deref (p/process ["cargo" "watch"
+                              "-x" "run -p server"
+                              "-w" "server/"]
+                             {:inherit true
+                              :env (merge (into {} (System/getenv))
+                                          {"SLUG_DATA_DIR" "dev-data"
+                                           "SLUG_KEYS"     "dev:dev"
+                                           "PORT"          "8080"
+                                           "RUST_LOG"      "info"})})))}}}

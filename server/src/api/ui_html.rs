@@ -6,9 +6,8 @@ use axum::{
 use std::collections::HashMap;
 
 use crate::{
-    html::{js_string_literal, ranking_panel, JsBuilder},
+    html::{input_panel, js_string_literal, ranking_panel, JsBuilder},
     parser::parse_reddit_url,
-    parser_render::navigate_panel,
     path_types::ItemId,
     reddit::ensure_partial_tree,
     state::{parse_item_param, AppState},
@@ -82,7 +81,7 @@ pub async fn post_ui_html(
                     .into_response()
             }
             Err(message) => {
-                let panel = navigate_panel(&query, Some(&message));
+                let panel = input_panel(&query, Some(&message));
                 JsBuilder::new()
                     .morph_selector("#parser-panel", panel)
                     .into_response()

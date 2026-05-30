@@ -4,7 +4,6 @@ pub mod events;
 pub mod form_template;
 pub mod html;
 pub mod parser;
-pub mod parser_render;
 pub mod path_types;
 pub mod ranking;
 pub mod reddit;

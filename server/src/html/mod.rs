@@ -8,7 +8,6 @@ use maud::{html, Markup, DOCTYPE};
 
 use crate::{
     form_template::template_json_compact,
-    parser_render::navigate_panel,
     path_types::ItemId,
     ranking::{top_bottom, RankedItem},
     reducer::{GroupState, NodeState},
@@ -224,48 +223,33 @@ pub fn ranking_panel(item: &ItemId, group: &GroupState) -> Markup {
     }
 }
 
-pub fn vote_panel(parent: &ItemId) -> Markup {
-    let parent_str = parent.as_str();
+pub fn input_panel(query: &str, error: Option<&str>) -> Markup {
     let rpc = template_json_compact(&serde_json::json!({
-        "action": "record_vote",
-        "a": {"$form": "item_a"},
-        "b": {"$form": "item_b"},
-        "ratio_left": 2,
-        "ratio_right": 1,
-        "scope": {"$form": "scope"}
+        "action": "parse_query",
+        "query": {"$form": "query"},
     }))
-    .expect("vote rpc json");
+    .expect("parse_query rpc template");
     html! {
-        section id="vote-panel" class="demo-panel" {
-            h2 { "Compare" }
-            p class="muted small" {
-                @if parent.is_root() {
-                    "Left item wins at 2:1. Votes append to the JSONL log and update rank centrality."
-                } @else {
-                    "Ranking children of "
-                    span class="scope-name" { (parent_str) }
-                    ". Left item wins at 2:1; each vote updates this ranking."
+        section id="parser-panel" class="demo-panel" {
+            form method="post" action="/ui" id="parser-form" {
+                textarea
+                    name="query"
+                    id="parser-input"
+                    rows="3"
+                    placeholder="https://reddit.com/r/rust or r/rust"
+                    autocomplete="off"
+                    spellcheck="false" {
+                    (query)
                 }
-            }
-            form method="post" action="/ui" id="vote-form" {
                 input type="hidden" name=(UI_RPC_FIELD) value=(rpc);
-                input type="hidden" name="scope" value=(parent_str);
-                div class="vote-fields" {
-                    label {
-                        "Left (wins) "
-                        input type="text" name="item_a" required placeholder="alpha" autocomplete="off";
-                    }
-                    label {
-                        "Right "
-                        input type="text" name="item_b" required placeholder="beta" autocomplete="off";
-                    }
-                }
-                button type="submit" class="btn-primary" { "Vote" }
+                button type="submit" class="btn-primary" { "Go" }
+            }
+            @if let Some(msg) = error {
+                p class="parser-error muted" { (msg) }
             }
         }
     }
 }
-
 
 async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
     let path = uri.path().to_string();
@@ -278,11 +262,10 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
     let group = &node.local_ranking;
 
     let body = html! {
-        h1 { "sorter2" }
+        h1 { "sorter" }
+        (input_panel("", None))
         (breadcrumb_path(&item))
-        (navigate_panel("", None))
         (entity_panel(node))
-        (vote_panel(&item))
         (ranking_panel(&item, group))
     };
     layout("sorter2", body, views)
