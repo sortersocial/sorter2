@@ -5,9 +5,10 @@ use tokio::sync::RwLock;
 use crate::{
     event_log::EventLog,
     events::Event,
-    path_types::ItemId,
-    reducer::{GlobalTree, VoteData},
     journal::JournalClient,
+    path_types::ItemId,
+    reddit::{default_user_agent, RedditBroker},
+    reducer::{GlobalTree, VoteData},
     views::ViewStore,
 };
 
@@ -73,6 +74,7 @@ pub struct AppState {
     pub views: ViewStore,
     pub tree: Arc<RwLock<GlobalTree>>,
     journal: JournalClient,
+    pub reddit: RedditBroker,
 }
 
 impl AppState {
@@ -112,6 +114,7 @@ impl AppState {
 
         let tree = Arc::new(RwLock::new(tree));
         let journal = JournalClient::spawn(tree.clone(), event_log.clone());
+        let reddit = RedditBroker::spawn(tree.clone(), &default_user_agent());
 
         Self {
             cfg: Arc::new(cfg),
@@ -119,6 +122,7 @@ impl AppState {
             views,
             tree,
             journal,
+            reddit,
         }
     }
 
@@ -127,8 +131,11 @@ impl AppState {
             id: id.as_str().to_string(),
         };
         self.event_log.append(&event).await.map_err(|e| e.to_string())?;
-        let mut w = self.tree.write().await;
-        w.ensure_path(id);
+        {
+            let mut w = self.tree.write().await;
+            w.ensure_path(id);
+        }
+        self.reddit.request_fetch(id.clone());
         Ok(())
     }
 

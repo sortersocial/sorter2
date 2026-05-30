@@ -7,3 +7,4 @@
 data/
 repomix-output.xml
 dev-data/
+.env

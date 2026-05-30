@@ -272,5 +272,16 @@ pub async fn home(State(state): State<AppState>, uri: Uri) -> impl IntoResponse 
 
 pub async fn browse(State(state): State<AppState>, uri: Uri) -> impl IntoResponse {
     let item = ItemId::from_browse_uri(uri.path()).unwrap_or(ItemId::root());
+    if item.as_str().starts_with("reddit.com") {
+        let needs_fetch = {
+            let tree = state.tree.read().await;
+            tree.get(&item)
+                .map(|n| n.data.is_none())
+                .unwrap_or(true)
+        };
+        if needs_fetch {
+            state.reddit.request_fetch(item.clone());
+        }
+    }
     item_page(state, uri, item).await
 }
