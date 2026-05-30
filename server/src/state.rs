@@ -237,7 +237,7 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_scope, parse_item_param};
+    use super::{normalize_scope, parse_item_param, AppConfig, AppState};
     use crate::{
         entity_store::EntityStore, event_log::EventLog, events::Event, path_types::ItemId,
         projection_store::ProjectionStore, reducer::GlobalTree,
@@ -309,6 +309,53 @@ mod tests {
         let second_root = second.get(&ItemId::root()).unwrap();
         let second_edge_total: f64 = second_root.local_ranking.edges.values().sum();
         assert_eq!(second_edge_total, first_edge_total);
+    }
+
+    #[tokio::test]
+    async fn live_ensure_node_updates_projection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let state = AppState::new(AppConfig {
+            data_dir: data_dir.clone(),
+            event_log_path: format!("{data_dir}/events.jsonl"),
+            port: 0,
+        })
+        .await;
+        let id = ItemId::parse("reddit.com/r/rust").unwrap();
+
+        state.ensure_node(&id).await.unwrap();
+
+        assert_eq!(state.projection_store.last_applied_event_count().unwrap(), 1);
+        let projected = state.projection_store.load_tree().unwrap();
+        assert!(projected.get(&id).is_some());
+        let reddit = projected.get(&ItemId::parse("reddit.com").unwrap()).unwrap();
+        assert!(reddit.children.contains(&ItemId::parse("reddit.com/r").unwrap()));
+    }
+
+    #[tokio::test]
+    async fn live_record_vote_updates_projection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let state = AppState::new(AppConfig {
+            data_dir: data_dir.clone(),
+            event_log_path: format!("{data_dir}/events.jsonl"),
+            port: 0,
+        })
+        .await;
+
+        state
+            .record_vote(&ItemId::root(), "alpha", "beta", 2, 1)
+            .await
+            .unwrap();
+
+        assert_eq!(state.projection_store.last_applied_event_count().unwrap(), 1);
+        let projected = state.projection_store.load_tree().unwrap();
+        let root = projected.get(&ItemId::root()).unwrap();
+        assert!(root.children.contains(&ItemId::parse("alpha").unwrap()));
+        assert!(root.children.contains(&ItemId::parse("beta").unwrap()));
+        assert_eq!(root.local_ranking.idx_to_item.len(), 2);
+        let edge_total: f64 = root.local_ranking.edges.values().sum();
+        assert_eq!(edge_total, 3.0);
     }
 
     #[test]

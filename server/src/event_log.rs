@@ -57,6 +57,7 @@ impl EventLog {
         line.push('\n');
         f.write_all(line.as_bytes()).await?;
         f.flush().await?;
+        f.sync_data().await?;
         Ok(())
     }
 
