@@ -8,9 +8,13 @@ Single Rust web app **`sorter2-server`**: pairwise voting, rank-centrality ranki
 
 ### Toolchain (non-obvious)
 
+- **Bootstrap script**: `./scripts/cursor-env-install.sh` (also run via `.cursor/environment.json` on Cloud Agent boot) installs Playwright Chromium, Babashka, bbin, `clj-paren-repair`, and warms the RocksDB build.
 - **Rust 1.88+** is required (some transitive crates need a recent Cargo). The image may ship older `/usr/local/cargo` (1.83); use **rustup** and `rustup default 1.88.0` before building.
-- **System packages** for builds: `pkg-config`, `libssl-dev` (for `reqwest` / OpenSSL in integration tests and release builds).
-- **Clojure CLI 1.12.0.1530** (optional but used in CI): install from https://clojure.org/guides/install_clojure — needed for `./scripts/clj-test.sh` / Kaocha tests.
+- **RocksDB / `durable`**: Ubuntu’s default `c++` is often **clang** without libc++ headers. Set **`CXX=g++`** and **`RUSTFLAGS="-C linker=g++"`** (or `CC=gcc`) before `cargo build` / `cargo test` — both are set in the bootstrap script and `.cursor/environment.json`.
+- **System packages** for builds: `build-essential`, `g++`, `pkg-config`, `libssl-dev` (for `reqwest` / OpenSSL and `librocksdb-sys`).
+- **Clojure CLI 1.12.0.1530** (used in CI): install from https://clojure.org/guides/install_clojure — needed for `./scripts/clj-test.sh` / Kaocha tests.
+- **Babashka / bbin / clj-paren-repair**: installed by `cursor-env-install.sh` into `~/.local/bin` (bb tasks in `bb.edn`, delimiter repair for Clojure edits).
+- **Playwright** (Spel browser tests in `test/vote_compare.clj`): Chromium via `clojure -M -e "(com.microsoft.playwright.CLI/main ...)"` — run once after clone or use the bootstrap script.
 
 ### Commands (see also `TEST.sh`)
 
@@ -19,6 +23,7 @@ Single Rust web app **`sorter2-server`**: pairwise voting, rank-centrality ranki
 | Rust unit + integration tests | `cargo test --all` |
 | Full suite (Rust + Clojure smoke) | `./TEST.sh` |
 | Clojure smoke only | `./scripts/clj-test.sh` |
+| Cloud VM bootstrap | `./scripts/cursor-env-install.sh` |
 | Run dev server | `cargo run --package sorter2-server` |
 | Release binary | `cargo build --release --package sorter2-server` → `target/release/sorter2-server` |
 

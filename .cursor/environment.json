@@ -1,0 +1,12 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "install": "./scripts/cursor-env-install.sh",
+  "env": {
+    "CC": "gcc",
+    "CXX": "g++",
+    "RUSTFLAGS": "-C linker=g++"
+  }
+}
