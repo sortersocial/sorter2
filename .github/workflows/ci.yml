@@ -28,6 +28,9 @@ jobs:
         with:
           cli: "1.12.0.1530"
 
+      - name: Install Playwright browser (spel browser tests)
+        run: clojure -M -e "(com.microsoft.playwright.CLI/main (into-array String [\"install\" \"chromium\" \"--with-deps\"]))"
+
       - name: Clojure tests (Kaocha)
         run: |
           mkdir -p target
