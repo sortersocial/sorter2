@@ -57,4 +57,6 @@ Use **tmux** for `cargo run --package sorter2-server` (dev server). Rebuild afte
 ### Gotchas
 
 - First `cargo test` / `cargo build --release` is slow; Clojure smoke test always does a release build.
+- After `rustup default 1.88.0`, put **`/usr/local/cargo/bin`** on `PATH` (many Cloud VMs have no `~/.cargo/env` when rustup uses `/usr/local/rustup`).
+- On Ubuntu VMs **without** the `.cursor/Dockerfile` image, install **Clojure CLI** before the tail of `./scripts/cursor-env-install.sh` (it calls `clojure` for Playwright): `curl -fsSL https://download.clojure.org/install/linux-install-1.12.0.1530.sh | sudo bash`.
 - `legacy/` and `ideas/` are not part of the workspace build.
