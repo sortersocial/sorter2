@@ -24,7 +24,6 @@
       var f = e.target;
       if (!f || f.tagName !== 'FORM') return;
       if ((f.method || 'get').toLowerCase() !== 'post') return;
-      if (f.id === 'sorter-theme-form') return;
       if (f.getAttribute('data-navigate') === 'full') return;
       e.preventDefault();
       await postUiForm(f);

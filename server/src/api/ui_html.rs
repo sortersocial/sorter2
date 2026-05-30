@@ -73,11 +73,7 @@ pub async fn post_ui_html(
                     ensure_partial_tree(&mut tree, &item);
                 }
                 let _ = state.ensure_node(&item).await;
-                let dest = if item.is_root() {
-                    "/".to_string()
-                } else {
-                    format!("/?item={}", item.as_str())
-                };
+                let dest = item.browse_href();
                 JsBuilder::new()
                     .raw(&format!(
                         "window.location.href={};",

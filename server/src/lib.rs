@@ -30,9 +30,9 @@ pub fn create_app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/static/:filename", get(crate::html::serve_static))
+        .route("/~/*item_path", get(crate::html::browse))
         .route("/", get(crate::html::home))
         .route("/ui", post(crate::api::ui_html::post_ui_html))
-        .route("/theme", post(crate::html::post_theme))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }

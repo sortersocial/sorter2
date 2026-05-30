@@ -1,13 +1,10 @@
 use axum::{
     body::Body,
     extract::{Path, State},
-    http::{header, HeaderValue, StatusCode, Uri},
+    http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
-    Form,
 };
-use axum_extra::extract::cookie::CookieJar;
 use maud::{html, Markup, DOCTYPE};
-use serde::Deserialize;
 
 use crate::{
     form_template::template_json_compact,
@@ -15,96 +12,25 @@ use crate::{
     path_types::ItemId,
     ranking::{top_bottom, RankedItem},
     reducer::{GroupState, NodeState},
-    state::{parse_item_param, AppState},
+    state::AppState,
     ui_action::UI_RPC_FIELD,
 };
 
-const THEME_DEFAULT_CSS: &str = include_str!("../../static/theme_default.css");
-const THEME_RETRO_CSS: &str = include_str!("../../static/theme_retro.css");
+const SORTER_CSS: &str = include_str!("../../static/sorter.css");
 const SORTER_UI_JS: &str = include_str!("../../static/sorter_ui.js");
 
-pub const SORTER_THEME_COOKIE: &str = "sorter-theme";
-
-pub fn normalize_theme(raw: &str) -> &'static str {
-    match raw {
-        "retro" => "retro",
-        _ => "default",
-    }
-}
-
-pub fn theme_from_jar(jar: &CookieJar) -> &'static str {
-    jar.get(SORTER_THEME_COOKIE)
-        .map(|c| normalize_theme(c.value()))
-        .unwrap_or("default")
-}
-
-pub fn theme_next_from_uri(uri: &Uri) -> String {
-    uri.path_and_query()
-        .map(|pq| pq.as_str().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "/".to_string())
-}
-
-pub fn theme_cookie_header_value(theme: &str) -> HeaderValue {
-    let t = normalize_theme(theme);
-    let s = format!("{SORTER_THEME_COOKIE}={t}; Path=/; SameSite=Lax; Max-Age=31536000");
-    HeaderValue::from_str(&s).expect("theme cookie must be ASCII")
-}
-
-fn sanitize_theme_next(next: Option<&str>) -> String {
-    let s = next.unwrap_or("/").trim();
-    if s.starts_with('/') && !s.starts_with("//") && s.len() < 8192 {
-        s.to_string()
-    } else {
-        "/".to_string()
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ThemeForm {
-    theme: String,
-    next: Option<String>,
-}
-
-pub async fn post_theme(Form(form): Form<ThemeForm>) -> impl IntoResponse {
-    let theme = normalize_theme(&form.theme);
-    let next = sanitize_theme_next(form.next.as_deref());
-    let loc =
-        HeaderValue::try_from(next.as_str()).unwrap_or_else(|_| HeaderValue::from_static("/"));
-    Response::builder()
-        .status(StatusCode::SEE_OTHER)
-        .header(header::LOCATION, loc)
-        .header(header::SET_COOKIE, theme_cookie_header_value(theme))
-        .body(Body::empty())
-        .expect("theme redirect response")
-}
-
 pub async fn serve_static(Path(filename): Path<String>) -> impl IntoResponse {
-    if filename == "sorter_ui.js" {
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "text/javascript; charset=utf-8")
-            .header(header::CACHE_CONTROL, "public, max-age=3600")
-            .body(SORTER_UI_JS.to_string())
-            .unwrap()
-            .into_response();
-    }
-
-    let theme = filename
-        .strip_prefix("theme_")
-        .and_then(|s| s.strip_suffix(".css"));
-
-    let css = match theme {
-        Some("default") => THEME_DEFAULT_CSS,
-        Some("retro") => THEME_RETRO_CSS,
+    let (content_type, body) = match filename.as_str() {
+        "sorter.css" => ("text/css; charset=utf-8", SORTER_CSS),
+        "sorter_ui.js" => ("text/javascript; charset=utf-8", SORTER_UI_JS),
         _ => return (StatusCode::NOT_FOUND, "static file not found").into_response(),
     };
 
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
+        .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, "public, max-age=3600")
-        .body(css.to_string())
+        .body(body.to_string())
         .unwrap()
         .into_response()
 }
@@ -162,8 +88,7 @@ fn asset_version() -> &'static str {
     V.get_or_init(|| {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        THEME_DEFAULT_CSS.hash(&mut h);
-        THEME_RETRO_CSS.hash(&mut h);
+        SORTER_CSS.hash(&mut h);
         SORTER_UI_JS.hash(&mut h);
         format!("{:x}", h.finish())
     })
@@ -176,9 +101,9 @@ pub fn now_ms() -> i64 {
     t.as_millis() as i64
 }
 
-fn layout(title: &str, body: Markup, views: u64, theme: &str, theme_next: &str) -> Markup {
+fn layout(title: &str, body: Markup, views: u64) -> Markup {
     let ver = asset_version();
-    let css_href = format!("/static/theme_{theme}.css?v={ver}");
+    let css_href = format!("/static/sorter.css?v={ver}");
     let js_src = format!("/static/sorter_ui.js?v={ver}");
     html! {
         (DOCTYPE)
@@ -187,7 +112,7 @@ fn layout(title: &str, body: Markup, views: u64, theme: &str, theme_next: &str) 
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) }
-                link rel="stylesheet" href=(css_href) id="theme-stylesheet";
+                link rel="stylesheet" href=(css_href);
                 script src="https://unpkg.com/idiomorph@0.3.0/dist/idiomorph.min.js" {}
             }
             body class="home" {
@@ -196,21 +121,6 @@ fn layout(title: &str, body: Markup, views: u64, theme: &str, theme_next: &str) 
                 }
                 div id="errors" {}
                 (body)
-                div id="controls" {
-                    a href="https://github.com/sortersocial/sorter2" id="src-link" { "src" }
-                    form id="sorter-theme-form" method="post" action="/theme" data-navigate="full" {
-                        input type="hidden" name="next" value=(theme_next);
-                        select id="theme-select" name="theme" onchange="this.form.submit()" aria-label="Theme" {
-                            @for (val, label) in [("default", "default"), ("retro", "retro")] {
-                                @if theme == val {
-                                    option value=(val) selected { (label) }
-                                } @else {
-                                    option value=(val) { (label) }
-                                }
-                            }
-                        }
-                    }
-                }
                 script src=(js_src) {}
             }
         }
@@ -218,11 +128,7 @@ fn layout(title: &str, body: Markup, views: u64, theme: &str, theme_next: &str) 
 }
 
 fn item_href(id: &ItemId) -> String {
-    if id.is_root() {
-        "/".to_string()
-    } else {
-        format!("/?item={}", id.as_str())
-    }
+    id.browse_href()
 }
 
 fn segment_label(seg: &str) -> &str {
@@ -361,39 +267,10 @@ pub fn vote_panel(parent: &ItemId) -> Markup {
 }
 
 
-fn query_param(uri: &Uri, key: &str) -> Option<String> {
-    let q = uri.query()?;
-    q.split('&').find_map(|pair| {
-        let mut it = pair.splitn(2, '=');
-        if it.next()? == key {
-            Some(it.next().unwrap_or("").to_string())
-        } else {
-            None
-        }
-    })
-}
-
-pub async fn home(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    uri: Uri,
-) -> impl IntoResponse {
+async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
     let path = uri.path().to_string();
     state.views.increment(path.clone());
     let views = state.views.get_views(&path);
-    let theme = theme_from_jar(&jar);
-    let theme_next = theme_next_from_uri(&uri);
-
-    let item_raw = query_param(&uri, "item")
-        .or_else(|| query_param(&uri, "sub").map(|sub| {
-            if sub.is_empty() {
-                String::new()
-            } else {
-                format!("reddit.com/r/{sub}")
-            }
-        }))
-        .unwrap_or_default();
-    let item = parse_item_param(&item_raw);
 
     let tree = state.tree.read().await;
     let empty_node = NodeState::default();
@@ -408,5 +285,14 @@ pub async fn home(
         (vote_panel(&item))
         (ranking_panel(&item, group))
     };
-    layout("sorter2", body, views, theme, &theme_next)
+    layout("sorter2", body, views)
+}
+
+pub async fn home(State(state): State<AppState>, uri: Uri) -> impl IntoResponse {
+    item_page(state, uri, ItemId::root()).await
+}
+
+pub async fn browse(State(state): State<AppState>, uri: Uri) -> impl IntoResponse {
+    let item = ItemId::from_browse_uri(uri.path()).unwrap_or(ItemId::root());
+    item_page(state, uri, item).await
 }

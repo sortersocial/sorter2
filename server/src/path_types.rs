@@ -90,6 +90,50 @@ impl ItemId {
         paths
     }
 
+    /// Full URL for the browser location bar after `/~/`.
+    pub fn to_browse_url(&self) -> String {
+        if self.is_root() {
+            return String::new();
+        }
+        if self.as_str().contains("://") {
+            return self.as_str().to_string();
+        }
+        if self
+            .segments()
+            .first()
+            .is_some_and(|s| s.contains('.'))
+        {
+            format!("https://{}", self.as_str())
+        } else {
+            self.as_str().to_string()
+        }
+    }
+
+    /// App route, e.g. `/~/https://reddit.com/r/rust`.
+    pub fn browse_href(&self) -> String {
+        if self.is_root() {
+            "/".to_string()
+        } else {
+            format!("/~/{}", self.to_browse_url())
+        }
+    }
+
+    /// Parse the tail after `/~/` in a request path.
+    pub fn from_browse_tail(tail: &str) -> ItemId {
+        let raw = normalize_browse_tail(tail);
+        if raw.is_empty() {
+            return ItemId::root();
+        }
+        ItemId::from_url(&raw)
+            .or_else(|| ItemId::parse(&raw))
+            .unwrap_or_else(|| ItemId::opaque(raw))
+    }
+
+    pub fn from_browse_uri(path: &str) -> Option<ItemId> {
+        path.strip_prefix("/~/")
+            .map(ItemId::from_browse_tail)
+    }
+
     fn canonicalize(raw: &str) -> Option<String> {
         let s = raw.trim();
         if s.is_empty() {
@@ -153,6 +197,21 @@ fn normalize_host(host: &str) -> String {
     } else {
         h
     }
+}
+
+fn normalize_browse_tail(tail: &str) -> String {
+    let t = tail.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    // Some HTTP stacks collapse `https://` → `https:/` inside a path segment.
+    if t.starts_with("https:/") && !t.starts_with("https://") {
+        return format!("https://{}", &t[7..]);
+    }
+    if t.starts_with("http:/") && !t.starts_with("http://") {
+        return format!("http://{}", &t[6..]);
+    }
+    t.to_string()
 }
 
 fn normalize_reddit_host_path(s: &str) -> String {
@@ -251,5 +310,23 @@ mod tests {
             "reddit.com/r/rust"
         );
         assert!(ItemId::from_legacy_scope("").is_root());
+    }
+
+    #[test]
+    fn browse_href_wraps_canonical_path() {
+        let id = ItemId::parse("reddit.com/r/rust").unwrap();
+        assert_eq!(id.browse_href(), "/~/https://reddit.com/r/rust");
+    }
+
+    #[test]
+    fn from_browse_tail_parses_full_url() {
+        let id = ItemId::from_browse_tail("https://reddit.com/r/AmITheAsshole");
+        assert_eq!(id.as_str(), "reddit.com/r/amitheasshole");
+    }
+
+    #[test]
+    fn from_browse_uri_strips_prefix() {
+        let id = ItemId::from_browse_uri("/~/https://reddit.com/r/rust").unwrap();
+        assert_eq!(id.as_str(), "reddit.com/r/rust");
     }
 }

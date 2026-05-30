@@ -71,6 +71,22 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
 }
 
 #[tokio::test]
+async fn browse_url_renders_subreddit_page() {
+    let (addr, _tmp) = start_test_server().await;
+    let client = reqwest::Client::new();
+    let html = client
+        .get(format!("http://{addr}/~/https://reddit.com/r/rust"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains("ranking-panel"));
+    assert!(html.contains("/~/https://reddit.com/r/rust"));
+}
+
+#[tokio::test]
 async fn post_ui_parse_query_redirects_to_subreddit() {
     let (addr, _tmp) = start_test_server().await;
     let rpc = serde_json::json!({
@@ -93,5 +109,5 @@ async fn post_ui_parse_query_redirects_to_subreddit() {
         .unwrap();
 
     assert!(body.contains("window.location.href"));
-    assert!(body.contains("/?item=reddit.com/r/rust"));
+    assert!(body.contains("/~/https://reddit.com/r/rust"));
 }
