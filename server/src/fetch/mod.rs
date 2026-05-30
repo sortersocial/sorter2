@@ -77,8 +77,9 @@ pub fn fetch_entity_stream(
             let tree = state.tree.read().await;
             let empty = NodeState::default();
             let node = tree.get(&id).unwrap_or(&empty);
+            let sel = html::entity_section_selector(&id);
             JsBuilder::new()
-                .morph_selector("#entity-section", html::entity_section(&id, node, true))
+                .morph_selector(&sel, html::entity_section(&id, node, true))
                 .build()
         };
         yield Ok(js_event(fetching_js));
@@ -100,12 +101,13 @@ pub fn fetch_entity_stream(
             FetchJobResult::Imported(_)
             | FetchJobResult::NotFound
             | FetchJobResult::SkippedCached
-            | FetchJobResult::SkippedDuplicate => {
+            |             FetchJobResult::SkippedDuplicate => {
                 let tree = state.tree.read().await;
                 let empty = NodeState::default();
                 let node = tree.get(&id).unwrap_or(&empty);
+                let sel = html::entity_section_selector(&id);
                 let mut b = JsBuilder::new()
-                    .morph_selector("#entity-section", html::entity_section(&id, node, false));
+                    .morph_selector(&sel, html::entity_section(&id, node, false));
                 if kind == FetchKind::Children {
                     b = b.morph_selector("#ranking-panel", ranking_panel(&id, node, &tree));
                 }
@@ -115,8 +117,9 @@ pub fn fetch_entity_stream(
                 let tree = state.tree.read().await;
                 let empty = NodeState::default();
                 let node = tree.get(&id).unwrap_or(&empty);
+                let sel = html::entity_section_selector(&id);
                 let js = JsBuilder::new()
-                    .morph_selector("#entity-section", html::entity_section(&id, node, false))
+                    .morph_selector(&sel, html::entity_section(&id, node, false))
                     .raw(&error_js(&format!("Reddit rate limit — retry in {reset_secs}s.")))
                     .build();
                 yield Ok(js_event(js));
@@ -125,8 +128,9 @@ pub fn fetch_entity_stream(
                 let tree = state.tree.read().await;
                 let empty = NodeState::default();
                 let node = tree.get(&id).unwrap_or(&empty);
+                let sel = html::entity_section_selector(&id);
                 let js = JsBuilder::new()
-                    .morph_selector("#entity-section", html::entity_section(&id, node, false))
+                    .morph_selector(&sel, html::entity_section(&id, node, false))
                     .raw(&error_js(&format!("Fetch failed: {msg}")))
                     .build();
                 yield Ok(js_event(js));

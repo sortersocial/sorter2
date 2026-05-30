@@ -10,13 +10,18 @@ use crate::{
     ui_action::UI_RPC_FIELD,
 };
 
-fn entity_panel(node: &NodeState) -> Markup {
+/// CSS selector for Idiomorph / SSE updates of one entity block.
+pub fn entity_section_selector(item: &ItemId) -> String {
+    format!(r#"[data-entity-section="{}"]"#, item.as_str())
+}
+
+pub fn entity_panel(node: &NodeState) -> Markup {
     if let Some(markup) = crate::render::reddit::entity_markup(node) {
         return markup;
     }
     html! {
         @if let Some(data) = &node.data {
-            div id="entity-panel" class="entity-card" {
+            div class="entity-card" {
                 h2 { (data.title) }
                 @if let Some(author) = &data.author {
                     p class="muted small" { "by " (author) }
@@ -76,11 +81,11 @@ pub fn fetch_entity_panel(item: &ItemId, has_data: bool, fetching: bool) -> Mark
     }
 }
 
-/// Entity card + fetch control (target `#entity-section` for Idiomorph / SSE).
+/// Entity card + fetch control (morph target [`entity_section_selector`]).
 pub fn entity_section(item: &ItemId, node: &NodeState, fetching: bool) -> Markup {
     let has_data = node.data.is_some();
     html! {
-        section id="entity-section" class="demo-panel" {
+        section class="entity-section demo-panel" data-entity-section=(item.as_str()) {
             (entity_panel(node))
             (fetch_entity_panel(item, has_data, fetching))
         }

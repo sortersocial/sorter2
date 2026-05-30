@@ -8,6 +8,7 @@ use maud::{html, Markup};
 use serde::Deserialize;
 
 use crate::{
+    fetch::html::entity_section,
     form_template::template_json_compact,
     html::JsBuilder,
     pair::{children_of, resolve_pair, suggest_next_pair_in_pool},
@@ -169,37 +170,13 @@ pub(crate) fn vote_recorded_morph(
 }
 
 fn vote_compare_item_card(tree: &GlobalTree, item: &ItemId, side_class: &str) -> Markup {
-    let href = item_href(item);
-    let title = child_title(tree, item);
+    let node = tree.get(item).cloned().unwrap_or_else(|| NodeState {
+        id: item.clone(),
+        ..Default::default()
+    });
     html! {
         div class=(format!("vote-compare-side {side_class}")) {
-            a class=(format!("vote-compare-item {side_class}")) href=(href) {
-                @if let Some(row) = crate::render::reddit::child_row_markup(tree, item, &href) {
-                    (row)
-                } @else {
-                    strong { (title) }
-                }
-            }
-            @if let Some(node) = tree.get(item) {
-                @if crate::render::reddit::is_reddit_post(item) {
-                    @if let Some(data) = &node.data {
-                        @if let Some(src) = data.image_url.as_ref().or(data.thumb_url.as_ref()) {
-                            figure class="vote-compare-figure" {
-                                img class="vote-compare-image" src=(src) alt="" loading="lazy";
-                            }
-                        }
-                        @if let Some(author) = &data.author {
-                            p class="muted small" { "by " (author) }
-                        }
-                    }
-                } @else if let Some(data) = &node.data {
-                    @if let Some(body) = &data.body_html {
-                        div class="vote-compare-item-body" {
-                            (maud::PreEscaped(body))
-                        }
-                    }
-                }
-            }
+            (entity_section(item, &node, false))
         }
     }
 }
@@ -270,9 +247,6 @@ pub async fn vote_page(
                 (vote_compare_item_card(&tree, &right, "vote-compare-right"))
             }
             (vote_back_nav(&parent))
-            div id="vote-edge-history-region" {
-                (edge_history)
-            }
             form id="vote-compare-form" method="POST" action="/ui" {
                 input type="hidden" name=(UI_RPC_FIELD) value=(rpc_json);
                 input type="hidden" name="ratio_left" id="vote-ratio-left" value="50";
@@ -284,6 +258,9 @@ pub async fn vote_page(
                     span id="vote-slider-right-label" { (child_title(&tree, &right)) }
                 }
                 (vote_compare_actions(&parent, next_pair.as_ref()))
+            }
+            div id="vote-edge-history-region" {
+                (edge_history)
             }
         }
     };

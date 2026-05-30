@@ -11,7 +11,7 @@ pub fn is_reddit_post(id: &ItemId) -> bool {
     id.as_str().starts_with("reddit.com/") && id.as_str().contains("/comments/")
 }
 
-/// Post detail card (`#entity-panel`).
+/// Post detail card (inside [`crate::fetch::html::entity_panel`]).
 pub fn entity_markup(node: &NodeState) -> Option<Markup> {
     if !is_reddit_post(&node.id) {
         return None;
@@ -41,7 +41,7 @@ pub fn child_row_markup(tree: &GlobalTree, id: &ItemId, href: &str) -> Option<Ma
 fn post_entity_card(data: &EntityData) -> Markup {
     let image = data.image_url.as_ref().or(data.thumb_url.as_ref());
     html! {
-        div id="entity-panel" class="entity-card reddit-post" {
+        div class="entity-card reddit-post" {
             h2 { (data.title) }
             @if let Some(author) = &data.author {
                 p class="muted small" { "by " (author) }

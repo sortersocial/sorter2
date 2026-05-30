@@ -254,38 +254,11 @@ h1 {
 }
 
 .vote-compare-side {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1rem;
   min-height: 120px;
 }
 
-.vote-compare-item {
-  color: var(--accent);
-  text-decoration: none;
-  display: block;
-}
-
-.vote-compare-item:hover {
-  text-decoration: underline;
-}
-
-.vote-compare-figure {
-  margin: 0.75rem 0 0;
-}
-
-.vote-compare-image {
-  display: block;
-  max-width: 100%;
-  height: auto;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-}
-
-.vote-compare-item-body {
-  margin-top: 0.75rem;
-  font-size: 0.9rem;
+.vote-compare-side .entity-section {
+  margin: 0;
 }
 
 .vote-compare-nav {
