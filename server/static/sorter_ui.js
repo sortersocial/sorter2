@@ -8,48 +8,24 @@
     }
   }
 
-  function morphSelector(selector, html) {
-    var el = document.querySelector(selector);
-    if (el && typeof Idiomorph !== 'undefined') {
-      Idiomorph.morph(el, html);
-    }
-  }
-
-  function handleSseEvent(eventType, data, form) {
-    if (eventType === 'fetching' || eventType === 'complete') {
-      try {
-        var msg = JSON.parse(data);
-        morphSelector(msg.selector || '#entity-section', msg.html);
-      } catch (err) {
-        console.warn('fetch morph parse', err);
-      }
-    }
-    if (eventType === 'complete' || eventType === 'error') {
-      var btn = form && form.querySelector('button[type="submit"]');
-      if (btn) btn.disabled = false;
-    }
-    if (eventType === 'error') {
-      try {
-        var err = JSON.parse(data);
-        console.warn('fetch error:', err.message || data);
-      } catch (_e) {
-        console.warn('fetch error:', data);
-      }
-    }
-  }
-
-  function consumeSseStream(response, form) {
+  // Each SSE event's `data` is a JS snippet to eval (same as the non-stream
+  // /ui responses). Parse the raw event stream, joining multi-line `data:`
+  // fields, and eval each event as it arrives.
+  function consumeSseStream(response) {
     var reader = response.body.getReader();
     var decoder = new TextDecoder();
     var buffer = '';
-    var eventType = '';
     var dataLines = [];
 
     function dispatch() {
-      if (!eventType && dataLines.length === 0) return;
-      handleSseEvent(eventType || 'message', dataLines.join('\n'), form);
-      eventType = '';
+      if (dataLines.length === 0) return;
+      var js = dataLines.join('\n');
       dataLines = [];
+      try {
+        evalJs(js);
+      } catch (err) {
+        console.warn('fetch eval failed', err);
+      }
     }
 
     function pump() {
@@ -65,11 +41,10 @@
           var line = parts[i].replace(/\r$/, '');
           if (line === '') {
             dispatch();
-          } else if (line.indexOf('event:') === 0) {
-            eventType = line.slice(6).trim();
           } else if (line.indexOf('data:') === 0) {
-            dataLines.push(line.slice(5).trim());
+            dataLines.push(line.slice(5).replace(/^ /, ''));
           }
+          // `event:`/`id:`/`:` comment lines are ignored — data carries the JS.
         }
         return pump();
       });
@@ -78,9 +53,13 @@
     return pump();
   }
 
+  function isFetchForm(form) {
+    return form.classList && form.classList.contains('fetch-entity-form');
+  }
+
   function postUiForm(form) {
     var btn = form.querySelector('button[type="submit"]');
-    if (form.id === 'fetch-entity-form' && btn) {
+    if (isFetchForm(form) && btn) {
       btn.disabled = true;
     }
     return fetch(form.action, {
@@ -91,11 +70,11 @@
     }).then(function (resp) {
       var ct = resp.headers.get('content-type') || '';
       if (ct.indexOf('text/event-stream') !== -1) {
-        return consumeSseStream(resp, form);
+        return consumeSseStream(resp);
       }
       return resp.text().then(evalJs);
     }).catch(function (err) {
-      if (form.id === 'fetch-entity-form' && btn) {
+      if (isFetchForm(form) && btn) {
         btn.disabled = false;
       }
       console.warn('POST /ui failed', err);

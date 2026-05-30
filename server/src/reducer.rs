@@ -208,6 +208,17 @@ impl GlobalTree {
             node.data = view;
         }
     }
+
+    /// Directly attach `child` under `parent`, bypassing path-based nesting.
+    /// Used for imported listings (e.g. a subreddit's posts) so they show up
+    /// as children of the subreddit rather than a deep `…/comments/<id>` path.
+    pub fn link_child(&mut self, parent: &ItemId, child: &ItemId) {
+        self.ensure_path(parent);
+        self.ensure_path(child);
+        if let Some(p) = self.nodes.get_mut(parent) {
+            p.children.insert(child.clone());
+        }
+    }
 }
 
 #[cfg(test)]

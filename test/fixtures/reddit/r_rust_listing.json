@@ -1,0 +1,29 @@
+{
+  "kind": "Listing",
+  "data": {
+    "after": "t3_bbb",
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "title": "Announcing Rust 1.99",
+          "permalink": "/r/rust/comments/aaa/announcing_rust_199/",
+          "author": "alice",
+          "selftext_html": "<p>release notes</p>",
+          "thumbnail": "self",
+          "subreddit": "rust"
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "title": "What are you working on this week?",
+          "permalink": "/r/rust/comments/bbb/what_are_you_working_on/",
+          "author": "bob",
+          "thumbnail": "default",
+          "subreddit": "rust"
+        }
+      }
+    ]
+  }
+}

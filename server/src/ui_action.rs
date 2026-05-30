@@ -8,6 +8,16 @@ use thiserror::Error;
 
 pub const UI_RPC_FIELD: &str = "__rpc__";
 
+/// What a `fetch_entity` action targets: the node itself, or its children.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum FetchTarget {
+    #[default]
+    #[serde(rename = "self")]
+    SelfEntity,
+    #[serde(rename = "children")]
+    Children,
+}
+
 /// HTML form / fetch `POST /ui` payload after template fill and deserialization.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -26,9 +36,12 @@ pub enum HtmlUiAction {
     ParseQuery {
         query: String,
     },
-    /// Import entity data; `POST /ui` responds with `text/event-stream` (not JS).
+    /// Import entity data; `POST /ui` responds with `text/event-stream` whose
+    /// events carry JS snippets to `eval` (Idiomorph morphs), not JSON.
     FetchEntity {
         item: String,
+        #[serde(default)]
+        kind: FetchTarget,
     },
 }
 

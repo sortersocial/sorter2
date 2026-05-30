@@ -56,12 +56,9 @@ pub async fn post_ui_html(
                 return ui_js_warn(&e).into_response();
             }
             let tree = state.tree.read().await;
-            let empty = crate::reducer::GroupState::new();
-            let group = tree
-                .get(&parent)
-                .map(|n| &n.local_ranking)
-                .unwrap_or(&empty);
-            let panel = ranking_panel(&parent, group);
+            let empty = crate::reducer::NodeState::default();
+            let node = tree.get(&parent).unwrap_or(&empty);
+            let panel = ranking_panel(&parent, node);
             JsBuilder::new()
                 .morph_selector("#ranking-panel", panel)
                 .into_response()
@@ -88,9 +85,9 @@ pub async fn post_ui_html(
                     .into_response()
             }
         },
-        HtmlUiAction::FetchEntity { item } => {
+        HtmlUiAction::FetchEntity { item, kind } => {
             let id = parse_item_param(&item);
-            fetch::fetch_entity_stream(state, id).into_response()
+            fetch::fetch_entity_stream(state, id, kind).into_response()
         }
     }
 }

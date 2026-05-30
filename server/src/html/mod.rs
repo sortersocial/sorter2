@@ -6,12 +6,16 @@ use axum::{
 };
 use maud::{html, Markup, DOCTYPE};
 
+use std::collections::HashSet;
+
 use crate::{
     fetch::html::entity_section,
     form_template::template_json_compact,
     path_types::ItemId,
-    ranking::{top_bottom, RankedItem},
-    reducer::{GroupState, NodeState},
+    ranking::{
+        connected_components_from_voted_pairs, ranked_items_subset, RankedItem, MAX_ITERS, TOL,
+    },
+    reducer::NodeState,
     state::AppState,
     ui_action::UI_RPC_FIELD,
 };
@@ -178,12 +182,60 @@ fn display_label(id: &ItemId) -> String {
         .to_string()
 }
 
-pub fn ranking_panel(item: &ItemId, group: &GroupState) -> Markup {
-    let total = group.idx_to_item.len();
-    let (top, bottom) = top_bottom(group, 8);
+/// Plain (unscored) list of children that have no votes yet.
+fn unranked_list(label: &str, items: &[ItemId]) -> Markup {
+    html! {
+        @if !items.is_empty() {
+            h3 class="rank-heading muted small" { (label) }
+            ul class="rank-list unranked" {
+                @for it in items {
+                    li {
+                        a href=(item_href(it)) {
+                            strong { (display_label(it)) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn ranking_panel(item: &ItemId, node: &NodeState) -> Markup {
+    let group = &node.local_ranking;
+    let n = group.idx_to_item.len();
+    let (comps, _isolates) =
+        connected_components_from_voted_pairs(n, group.voted_pairs.iter().copied());
+
+    // Each connected component of voted items is its own ranking; isolated and
+    // never-voted children fall into the "unranked" bucket below.
+    let mut ranked_ids: HashSet<ItemId> = HashSet::new();
+    let mut ranked_groups: Vec<Vec<RankedItem>> = Vec::new();
+    for comp in &comps {
+        if comp.len() < 2 {
+            continue;
+        }
+        let ranked = ranked_items_subset(group, comp, MAX_ITERS, TOL);
+        for r in &ranked {
+            ranked_ids.insert(r.item.clone());
+        }
+        ranked_groups.push(ranked);
+    }
+    ranked_groups.sort_by(|a, b| b.len().cmp(&a.len()));
+
+    let mut unranked: Vec<ItemId> = node
+        .children
+        .iter()
+        .filter(|c| !ranked_ids.contains(*c))
+        .cloned()
+        .collect();
+    unranked.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+    let has_ranked = !ranked_groups.is_empty();
+    let multi = ranked_groups.len() > 1;
+
     html! {
         section id="ranking-panel" class="demo-panel" {
-            @if total == 0 {
+            @if !has_ranked && unranked.is_empty() {
                 p class="muted" {
                     @if item.is_root() {
                         "No votes yet — compare two items below."
@@ -192,11 +244,11 @@ pub fn ranking_panel(item: &ItemId, group: &GroupState) -> Markup {
                     }
                 }
             } @else {
-                (rank_list(if bottom.is_empty() { "" } else { "Top" }, &top, 1))
-                @if !bottom.is_empty() {
-                    p class="rank-gap muted small" { "⋯" }
-                    (rank_list("Bottom", &bottom, total - bottom.len() + 1))
+                @for (gi, ranked) in ranked_groups.iter().enumerate() {
+                    @let label = if multi { format!("Ranking group {}", gi + 1) } else { "Ranking".to_string() };
+                    (rank_list(&label, ranked, 1))
                 }
+                (unranked_list("Unranked", &unranked))
             }
         }
     }
@@ -239,14 +291,13 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
     let tree = state.tree.read().await;
     let empty_node = NodeState::default();
     let node = tree.get(&item).unwrap_or(&empty_node);
-    let group = &node.local_ranking;
 
     let body = html! {
         h1 { "sorter" }
         (input_panel("", None))
         (breadcrumb_path(&item))
         (entity_section(&item, node, false))
-        (ranking_panel(&item, group))
+        (ranking_panel(&item, node))
     };
     layout("sorter2", body, views)
 }

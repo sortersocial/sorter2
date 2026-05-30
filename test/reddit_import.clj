@@ -14,16 +14,22 @@
     (.getLocalPort s)))
 
 (defn- start-mock-reddit [port fixtures-dir]
-  (let [fixture (io/file fixtures-dir "r_rust_about.json")
-        body (.getBytes (slurp fixture) "UTF-8")
+  (let [about (.getBytes (slurp (io/file fixtures-dir "r_rust_about.json")) "UTF-8")
+        listing (.getBytes (slurp (io/file fixtures-dir "r_rust_listing.json")) "UTF-8")
         server (HttpServer/create (InetSocketAddress. "127.0.0.1" port) 0)
         handler
         (proxy [HttpHandler] []
           (handle [^HttpExchange exchange]
-            (.sendResponseHeaders exchange 200 (alength body))
-            (let [out (.getResponseBody exchange)]
-              (.write out body)
-              (.close out))))]
+            ;; Route by path: `/r/<sub>/about.json` is the subreddit entity,
+            ;; `/r/<sub>.json` is the children listing.
+            (let [path (.getPath (.getRequestURI exchange))
+                  body (if (str/includes? path "/about")
+                         about
+                         listing)]
+              (.sendResponseHeaders exchange 200 (alength body))
+              (let [out (.getResponseBody exchange)]
+                (.write out body)
+                (.close out)))))]
     (.createContext server "/" handler)
     (.setExecutor server nil)
     (.start server)
@@ -44,12 +50,13 @@
             (do (Thread/sleep 200) (recur))
             false))))))
 
-(defn- curl-fetch-ui-sse [base item]
+(defn- curl-fetch-ui-sse [base item kind]
   (process/shell {:out :string :err :string}
                  "curl" "-sfN" "--max-time" "20"
                  "-X" "POST" (str base "/ui")
                  "--data-urlencode"
-                 (str "__rpc__={\"action\":\"fetch_entity\",\"item\":\"" item "\"}")))
+                 (str "__rpc__={\"action\":\"fetch_entity\",\"item\":\"" item
+                      "\",\"kind\":\"" kind "\"}")))
 
 (defn- wait-event-log [path ms]
   (let [deadline (+ (System/currentTimeMillis) ms)]

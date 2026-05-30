@@ -24,7 +24,8 @@ pub fn ensure_partial_tree(tree: &mut GlobalTree, id: &ItemId) {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchJobResult {
-    Imported,
+    /// Number of entities written (1 for self, N for children).
+    Imported(usize),
     NotFound,
     SkippedDuplicate,
     SkippedCached,
@@ -32,8 +33,16 @@ pub enum FetchJobResult {
     Failed(String),
 }
 
+/// What to import for a node: the node's own entity, or its child listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FetchKind {
+    SelfEntity,
+    Children,
+}
+
 pub struct RedditCommand {
     pub id: ItemId,
+    pub kind: FetchKind,
     /// User-initiated fetch bypasses the in-memory "recently fetched" cache.
     pub force: bool,
     pub done: Option<oneshot::Sender<FetchJobResult>>,
@@ -52,8 +61,12 @@ struct RedditCredentials {
 
 #[derive(Clone)]
 pub struct RedditApiConfig {
+    /// Unauthenticated `.json` requests (public).
     pub api_base: String,
-    pub oauth_base: String,
+    /// `POST …/api/v1/access_token` (always www.reddit.com in production).
+    pub oauth_token_base: String,
+    /// Bearer-authenticated API (`GET` subreddit about, etc.).
+    pub oauth_api_base: String,
     pub user_agent: String,
     creds: Option<RedditCredentials>,
 }
@@ -85,7 +98,8 @@ impl RedditBroker {
 
         tracing::debug!(
             api_base = %config.api_base,
-            oauth_base = %config.oauth_base,
+            oauth_token_base = %config.oauth_token_base,
+            oauth_api_base = %config.oauth_api_base,
             oauth = config.creds.is_some(),
             "reddit worker started"
         );
@@ -99,11 +113,12 @@ impl RedditBroker {
     pub fn request_fetch(
         &self,
         id: ItemId,
+        kind: FetchKind,
         force: bool,
         done: Option<oneshot::Sender<FetchJobResult>>,
     ) {
-        match self.tx.try_send(RedditCommand { id: id.clone(), force, done }) {
-            Ok(()) => tracing::debug!(item = %id, force, "reddit fetch queued"),
+        match self.tx.try_send(RedditCommand { id: id.clone(), kind, force, done }) {
+            Ok(()) => tracing::debug!(item = %id, ?kind, force, "reddit fetch queued"),
             Err(_) => tracing::warn!(item = %id, "reddit fetch queue full, dropped"),
         }
     }
@@ -113,7 +128,8 @@ impl RedditApiConfig {
     pub fn from_env() -> Self {
         Self {
             api_base: reddit_api_base(),
-            oauth_base: reddit_oauth_base(),
+            oauth_token_base: reddit_oauth_token_base(),
+            oauth_api_base: reddit_oauth_api_base(),
             user_agent: default_user_agent(),
             creds: RedditCredentials::from_env(),
         }
@@ -142,8 +158,16 @@ pub fn reddit_api_base() -> String {
     std::env::var("REDDIT_API_BASE").unwrap_or_else(|_| "https://www.reddit.com".into())
 }
 
-pub fn reddit_oauth_base() -> String {
-    std::env::var("REDDIT_OAUTH_BASE").unwrap_or_else(|_| "https://www.reddit.com".into())
+/// Where to `POST /api/v1/access_token` (not the bearer API host).
+pub fn reddit_oauth_token_base() -> String {
+    std::env::var("REDDIT_OAUTH_TOKEN_BASE")
+        .or_else(|_| std::env::var("REDDIT_OAUTH_BASE"))
+        .unwrap_or_else(|_| "https://www.reddit.com".into())
+}
+
+/// Host for OAuth-authenticated API `GET`s (must not be www.reddit.com).
+pub fn reddit_oauth_api_base() -> String {
+    std::env::var("REDDIT_OAUTH_API_BASE").unwrap_or_else(|_| "https://oauth.reddit.com".into())
 }
 
 pub fn default_user_agent() -> String {
@@ -152,8 +176,14 @@ pub fn default_user_agent() -> String {
     })
 }
 
+/// Can the node's own entity be imported (subreddit `about` or a post)?
 pub fn is_fetchable(id: &ItemId) -> bool {
     !map_item_to_reddit_api(id, "https://example.com").is_empty()
+}
+
+/// Can we import this node's children (currently: a subreddit's posts)?
+pub fn is_children_fetchable(id: &ItemId) -> bool {
+    !map_children_url(id, "https://example.com").is_empty()
 }
 
 pub fn entity_view_from_payload(id: &ItemId, payload: &Value) -> Option<crate::reducer::EntityData> {
@@ -181,92 +211,116 @@ async fn reddit_worker(
     client: Client,
     config: RedditApiConfig,
 ) {
-    let mut in_flight = HashSet::new();
-    let mut recently_fetched: HashMap<ItemId, Instant> = HashMap::new();
+    let mut in_flight: HashSet<(ItemId, FetchKind)> = HashSet::new();
+    let mut recently_fetched: HashMap<(ItemId, FetchKind), Instant> = HashMap::new();
     let mut current_delay = Duration::from_secs(1);
     let mut oauth: Option<OAuthToken> = None;
     let cache_ttl = Duration::from_secs(300);
     let creds = config.creds.clone();
     let api_base = config.api_base.clone();
-    let oauth_base = config.oauth_base.clone();
+    let oauth_token_base = config.oauth_token_base.clone();
+    let oauth_api_base = config.oauth_api_base.clone();
 
     while let Some(cmd) = rx.recv().await {
         let now = Instant::now();
         recently_fetched.retain(|_, t| now.duration_since(*t) < cache_ttl);
 
-        if in_flight.contains(&cmd.id) {
-            tracing::debug!(item = %cmd.id, "reddit fetch skipped: already in flight");
+        let kind = cmd.kind;
+        let key = (cmd.id.clone(), kind);
+
+        if in_flight.contains(&key) {
+            tracing::debug!(item = %cmd.id, ?kind, "reddit fetch skipped: already in flight");
             notify(cmd.done, FetchJobResult::SkippedDuplicate);
             continue;
         }
-        if !cmd.force && recently_fetched.contains_key(&cmd.id) {
-            tracing::debug!(item = %cmd.id, "reddit fetch skipped: recently fetched cache");
+        if !cmd.force && recently_fetched.contains_key(&key) {
+            tracing::debug!(item = %cmd.id, ?kind, "reddit fetch skipped: recently fetched cache");
             notify(cmd.done, FetchJobResult::SkippedCached);
             continue;
         }
 
-        in_flight.insert(cmd.id.clone());
+        in_flight.insert(key.clone());
         let fetch_id = cmd.id.clone();
         let done = cmd.done;
 
         tracing::debug!(
             item = %fetch_id,
+            ?kind,
             delay_ms = current_delay.as_millis(),
             "reddit fetch starting after delay"
         );
         tokio::time::sleep(current_delay).await;
 
         if let Some(c) = &creds {
-            oauth = ensure_oauth_token(&client, &oauth_base, c, oauth.take()).await;
+            oauth = ensure_oauth_token(&client, &oauth_token_base, c, oauth.take()).await;
         }
 
         let token = oauth.as_ref().map(|t| t.access_token.as_str());
-        if token.is_some() {
-            tracing::debug!(item = %fetch_id, "reddit fetch using OAuth bearer");
-        }
-
         let fetch_base = if token.is_some() {
-            &oauth_base
+            tracing::debug!(
+                item = %fetch_id,
+                base = %oauth_api_base,
+                "reddit fetch using OAuth bearer"
+            );
+            &oauth_api_base
         } else {
             &api_base
         };
-        let outcome = do_fetch(&client, fetch_base, &fetch_id, token).await;
+        let url = match kind {
+            FetchKind::SelfEntity => map_item_to_reddit_api(&fetch_id, fetch_base),
+            FetchKind::Children => map_children_url(&fetch_id, fetch_base),
+        };
+        let outcome = do_fetch(&client, &url, &fetch_id, token).await;
 
         match outcome {
             Ok(FetchOutcome::Payload(payload)) => {
-                let ts = now_ms();
-                let event = Event::EntityImported {
-                    id: fetch_id.as_str().to_string(),
-                    ts,
-                    payload: payload.clone(),
+                let imports: Vec<(ItemId, Value)> = match kind {
+                    FetchKind::SelfEntity => vec![(fetch_id.clone(), payload)],
+                    FetchKind::Children => parse_children(&fetch_id, &payload),
                 };
                 tracing::debug!(
                     item = %fetch_id,
-                    ts,
-                    payload_keys = ?payload.as_object().map(|o| o.len()),
-                    "reddit fetch got JSON payload, appending event"
+                    ?kind,
+                    count = imports.len(),
+                    "reddit fetch got payload, importing"
                 );
-                match event_log.append(&event).await {
-                    Err(e) => {
-                        tracing::warn!(
-                            item = %fetch_id,
-                            err = %e,
-                            "reddit event log append failed"
-                        );
-                        notify(done, FetchJobResult::Failed(e.to_string()));
+
+                let mut write_err: Option<String> = None;
+                let mut written = 0usize;
+                for (child_id, child_payload) in imports {
+                    let event = Event::EntityImported {
+                        id: child_id.as_str().to_string(),
+                        ts: now_ms(),
+                        payload: child_payload.clone(),
+                    };
+                    if let Err(e) = event_log.append(&event).await {
+                        tracing::warn!(item = %child_id, err = %e, "reddit event log append failed");
+                        write_err = Some(e.to_string());
+                        break;
                     }
-                    Ok(()) => {
-                        apply_entity_import(&mut *tree.write().await, &fetch_id, payload);
-                        recently_fetched.insert(fetch_id.clone(), Instant::now());
+                    {
+                        let mut tree = tree.write().await;
+                        apply_entity_import(&mut tree, &child_id, child_payload);
+                        if kind == FetchKind::Children {
+                            tree.link_child(&fetch_id, &child_id);
+                        }
+                    }
+                    written += 1;
+                }
+
+                match write_err {
+                    Some(e) => notify(done, FetchJobResult::Failed(e)),
+                    None => {
+                        recently_fetched.insert(key.clone(), Instant::now());
                         current_delay = Duration::from_millis(600);
-                        tracing::info!(item = %fetch_id, "reddit entity imported");
-                        notify(done, FetchJobResult::Imported);
+                        tracing::info!(item = %fetch_id, ?kind, written, "reddit import complete");
+                        notify(done, FetchJobResult::Imported(written));
                     }
                 }
             }
             Ok(FetchOutcome::NotFound) => {
                 tracing::debug!(item = %fetch_id, "reddit fetch: not found (no event written)");
-                recently_fetched.insert(fetch_id.clone(), Instant::now());
+                recently_fetched.insert(key.clone(), Instant::now());
                 notify(done, FetchJobResult::NotFound);
             }
             Ok(FetchOutcome::RateLimited { reset_secs }) => {
@@ -286,7 +340,7 @@ async fn reddit_worker(
             }
         }
 
-        in_flight.remove(&fetch_id);
+        in_flight.remove(&key);
     }
 }
 
@@ -358,11 +412,10 @@ async fn ensure_oauth_token(
 
 async fn do_fetch(
     client: &Client,
-    api_base: &str,
+    url: &str,
     id: &ItemId,
     bearer: Option<&str>,
 ) -> Result<FetchOutcome, String> {
-    let url = map_item_to_reddit_api(id, api_base);
     if url.is_empty() {
         tracing::debug!(item = %id, "reddit do_fetch: no API URL for item");
         return Ok(FetchOutcome::NotFound);
@@ -370,7 +423,7 @@ async fn do_fetch(
 
     tracing::debug!(item = %id, %url, bearer = bearer.is_some(), "reddit HTTP GET");
 
-    let mut req = client.get(&url);
+    let mut req = client.get(url);
     if let Some(token) = bearer {
         req = req.bearer_auth(token);
     }
@@ -408,6 +461,9 @@ async fn do_fetch(
             body_prefix = %body.chars().take(240).collect::<String>(),
             "reddit non-success body"
         );
+        if status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED {
+            return Err(format!("Reddit API {status}: {body}"));
+        }
         return Ok(FetchOutcome::NotFound);
     }
 
@@ -474,6 +530,43 @@ pub fn map_item_to_reddit_api(id: &ItemId, api_base: &str) -> String {
     String::new()
 }
 
+/// Listing URL for a node's children. Currently only subreddits
+/// (`reddit.com/r/<sub>` → `/r/<sub>.json`) expose a child listing.
+pub fn map_children_url(id: &ItemId, api_base: &str) -> String {
+    let path = id.as_str();
+    if !path.starts_with("reddit.com/") {
+        return String::new();
+    }
+    let base = api_base.trim_end_matches('/');
+    let segments: Vec<&str> = path.split('/').collect();
+    if segments.len() == 3 && segments[1] == "r" {
+        return format!("{base}/r/{}.json?raw_json=1&limit=25", segments[2]);
+    }
+    String::new()
+}
+
+/// Parse a subreddit listing payload into `(child_id, child_payload)` entries.
+/// Each child id is the post's permalink under `reddit.com/…`, and the payload
+/// is the raw `{kind, data}` listing element (persisted per child).
+fn parse_children(_parent: &ItemId, payload: &Value) -> Vec<(ItemId, Value)> {
+    let mut out = Vec::new();
+    let children = match payload.pointer("/data/children").and_then(|c| c.as_array()) {
+        Some(c) => c,
+        None => return out,
+    };
+    for child in children {
+        let permalink = match child.pointer("/data/permalink").and_then(|p| p.as_str()) {
+            Some(p) if !p.is_empty() => p,
+            _ => continue,
+        };
+        let path = format!("reddit.com{}", permalink.trim_end_matches('/'));
+        if let Some(id) = ItemId::parse(&path) {
+            out.push((id, child.clone()));
+        }
+    }
+    out
+}
+
 fn parse_reddit_view(id: &ItemId, v: &Value) -> Option<crate::reducer::EntityData> {
     let segments: Vec<&str> = id.as_str().split('/').collect();
 
@@ -512,8 +605,13 @@ fn parse_subreddit_about(v: &Value) -> Option<crate::reducer::EntityData> {
 }
 
 fn parse_post_listing(v: &Value) -> Option<crate::reducer::EntityData> {
-    let listing = v.as_array()?.first()?;
-    let child = listing.pointer("/data/children/0/data")?;
+    // Two shapes: a comments-page array `[listing, comments]`, or a single
+    // listing element `{kind, data}` (from a subreddit children import).
+    let child = if let Some(arr) = v.as_array() {
+        arr.first()?.pointer("/data/children/0/data")?
+    } else {
+        v.get("data")?
+    };
     let title = child.get("title")?.as_str()?.to_string();
     let author = child
         .get("author")
@@ -549,6 +647,10 @@ mod tests {
         assert_eq!(
             map_item_to_reddit_api(&id, "https://www.reddit.com"),
             "https://www.reddit.com/r/rust/about.json?raw_json=1"
+        );
+        assert_eq!(
+            map_item_to_reddit_api(&id, "https://oauth.reddit.com"),
+            "https://oauth.reddit.com/r/rust/about.json?raw_json=1"
         );
     }
 
