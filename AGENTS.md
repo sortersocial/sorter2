@@ -9,9 +9,9 @@ Single Rust web app **`sorter2-server`**: pairwise voting, rank-centrality ranki
 ### Toolchain (non-obvious)
 
 - **Bootstrap script**: `./scripts/cursor-env-install.sh` (also run via `.cursor/environment.json` on Cloud Agent boot) installs Playwright Chromium, Babashka, bbin, `clj-paren-repair`, and warms the RocksDB build.
-- **Rust 1.88+** is required (some transitive crates need a recent Cargo). The image may ship older `/usr/local/cargo` (1.83); use **rustup** and `rustup default 1.88.0` before building.
+- **Rust 1.88+** is required (`rust-toolchain.toml`). The Cloud Dockerfile and `cursor-env-install.sh` install **rustup** 1.88.0 first so `cargo` works while Playwright/Clojure bootstrap continues. Do not rely on `/usr/local/cargo` (often missing or stale).
 - **RocksDB / `durable`**: Ubuntu’s default `c++` is often **clang** without libc++ headers. Set **`CXX=g++`** and **`RUSTFLAGS="-C linker=g++"`** (or `CC=gcc`) before `cargo build` / `cargo test` — both are set in the bootstrap script and `.cursor/environment.json`.
-- **System packages** for builds: `build-essential`, `g++`, `pkg-config`, `libssl-dev`, `libclang-dev` (bindgen for `librocksdb-sys`), `openjdk-21-jre-headless` (Clojure / **bbin**). The bootstrap sets **`JAVA_HOME`** when Java is present.
+- **System packages** for builds: `build-essential`, `g++`, `clang`, `libclang-dev`, `pkg-config`, `libssl-dev`, `openjdk-21-jre-headless` (for `reqwest` / OpenSSL, `librocksdb-sys`, `zstd-sys` / bindgen, and **bbin** / Clojure JVM). The bootstrap sets **`JAVA_HOME`** when Java is present.
 - **Clojure CLI 1.12.0.1530** (used in CI): install from https://clojure.org/guides/install_clojure — needed for `./scripts/clj-test.sh` / Kaocha tests.
 - **Babashka / bbin / clj-paren-repair**: installed by `cursor-env-install.sh` into `~/.local/bin` (bb tasks in `bb.edn`, delimiter repair for Clojure edits).
 - **Playwright** (Spel browser tests in `test/vote_compare.clj`): Chromium via `clojure -M -e "(com.microsoft.playwright.CLI/main ...)"` — run once after clone or use the bootstrap script.

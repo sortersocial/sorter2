@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Idempotent Cloud Agent / Cursor VM bootstrap for sorter2.
-# Installs: RocksDB C++ toolchain (g++), Playwright browsers, Babashka, bbin, clj-paren-repair.
+# Installs: RocksDB C++ toolchain (g++, libclang), Playwright browsers, Babashka, bbin, clj-paren-repair.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,10 +31,20 @@ detect_java_home() {
 }
 
 cat >"${profile_snippet}" <<'EOF'
-export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:/usr/local/cargo/bin:${PATH}"
+# Prefer rustup (~/.cargo/bin); do not prepend /usr/local/cargo (often stale 1.83).
+[[ -f "${HOME}/.cargo/env" ]] && . "${HOME}/.cargo/env"
+export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
 export CC="${CC:-gcc}"
 export CXX="${CXX:-g++}"
 export RUSTFLAGS="${RUSTFLAGS:--C linker=g++}"
+if [[ -z "${LIBCLANG_PATH:-}" ]]; then
+  for candidate in /usr/lib/llvm-*/lib; do
+    if [[ -e "${candidate}/libclang.so" ]]; then
+      export LIBCLANG_PATH="${candidate}"
+      break
+    fi
+  done
+fi
 if [[ -z "${JAVA_HOME:-}" ]]; then
   if command -v java >/dev/null 2>&1; then
     export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
@@ -49,12 +59,60 @@ for rc in "${HOME}/.bashrc" "${HOME}/.profile"; do
   fi
 done
 
+rust_toolchain_channel() {
+  local channel="1.88.0"
+  if [[ -f "${ROOT}/rust-toolchain.toml" ]]; then
+    local parsed
+    parsed="$(
+      grep -E '^\s*channel\s*=' "${ROOT}/rust-toolchain.toml" \
+        | head -1 \
+        | sed -E 's/.*=\s*"?([^"]+)"?.*/\1/' \
+        | tr -d ' '
+    )"
+    [[ -n "${parsed}" ]] && channel="${parsed}"
+  fi
+  printf '%s' "${channel}"
+}
+
+# Install Rust before apt/playwright so `cargo test` works while the rest of bootstrap runs.
+ensure_rust_toolchain() {
+  local channel triple tc_dir
+  channel="$(rust_toolchain_channel)"
+  triple="${channel}-x86_64-unknown-linux-gnu"
+  tc_dir="${RUSTUP_HOME:-${HOME}/.rustup}/toolchains/${triple}"
+
+  if ! command -v rustup >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain "${channel}"
+  fi
+  # shellcheck source=/dev/null
+  [[ -f "${HOME}/.cargo/env" ]] && source "${HOME}/.cargo/env"
+  export PATH="${HOME}/.cargo/bin:${PATH}"
+
+  if ! rustc -vV >/dev/null 2>&1; then
+    rustup toolchain uninstall "${channel}" 2>/dev/null || true
+    rm -rf "${tc_dir}"
+  fi
+
+  # Idempotent; repairs partial toolchains ("Missing manifest") when rust-toolchain.toml overrides.
+  if ! rustup toolchain install "${channel}"; then
+    rm -rf "${tc_dir}"
+    rustup toolchain install "${channel}"
+  fi
+  rustup default "${channel}" 2>/dev/null || true
+  if ! rustc -vV >/dev/null 2>&1; then
+    echo "cursor-env-install: rustc unavailable after rustup (channel=${channel})" >&2
+    return 1
+  fi
+}
+ensure_rust_toolchain
+
 apt_packages=(
   build-essential
   g++
+  clang
+  libclang-dev
   pkg-config
   libssl-dev
-  libclang-dev
   curl
   ca-certificates
   git
@@ -73,49 +131,14 @@ fi
 
 detect_java_home || true
 
-export PATH="${HOME}/.cargo/bin:/usr/local/cargo/bin:${PATH}"
-
-# Rust 1.88+ (rust-toolchain.toml); recover from partial rustup installs.
-rust_version_ok() {
-  rustc -V 2>/dev/null | grep -qE 'rustc 1\.(8[89]|[9-9][0-9]|[1-9][0-9]{2,})\.'
-}
-
-ensure_rust_toolchain() {
-  local channel=1.88.0
-  local triple="${channel}-x86_64-unknown-linux-gnu"
-  local tc_dir="${RUSTUP_HOME:-${HOME}/.rustup}/toolchains/${triple}"
-
-  if command -v rustc >/dev/null 2>&1 && rust_version_ok; then
-    return 0
-  fi
-
-  if ! command -v rustup >/dev/null 2>&1; then
-    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain "${channel}"
-  else
-    rustup toolchain uninstall "${channel}" 2>/dev/null || true
-    rm -rf "${tc_dir}"
-    if ! rustup toolchain install "${channel}"; then
-      rm -rf "${tc_dir}"
-      rustup toolchain install "${channel}"
+if [[ -z "${LIBCLANG_PATH:-}" ]]; then
+  for candidate in /usr/lib/llvm-*/lib; do
+    if [[ -e "${candidate}/libclang.so" ]]; then
+      export LIBCLANG_PATH="${candidate}"
+      break
     fi
-    rustup default "${channel}"
-  fi
-
-  # shellcheck source=/dev/null
-  if [[ -f "${HOME}/.cargo/env" ]]; then
-    source "${HOME}/.cargo/env"
-  elif [[ -f /root/.cargo/env ]] && [[ -r /root/.cargo/env ]]; then
-    source /root/.cargo/env
-  fi
-
-  if ! rust_version_ok; then
-    echo "cursor-env-install: failed to provision Rust ${channel}" >&2
-    rustc -V >&2 || true
-    return 1
-  fi
-}
-
-ensure_rust_toolchain
+  done
+fi
 
 install_babashka() {
   if command -v bb >/dev/null 2>&1; then
@@ -180,7 +203,7 @@ clojure -M -e "(com.microsoft.playwright.CLI/main (into-array String [\"install\
 
 # Warm RocksDB + release server link (Clojure tests use release binary).
 if ! cargo build -p durable --quiet; then
-  echo "cursor-env-install: cargo build failed (need libclang-dev? CXX=g++?)" >&2
+  echo "cursor-env-install: cargo build failed (need libclang-dev? CXX=g++? LIBCLANG_PATH?)" >&2
   exit 1
 fi
 if ! cargo build --release --package sorter2-server --quiet; then
