@@ -48,3 +48,8 @@ ENV LIBCLANG_PATH="/usr/lib/llvm-18/lib"
 
 # Clojure CLI (matches CI)
 RUN curl -fsSL https://download.clojure.org/install/linux-install-1.12.0.1530.sh | bash
+
+# Rust 1.88 via rustup (matches rust-toolchain.toml); available before async install finishes
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain 1.88.0 --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
