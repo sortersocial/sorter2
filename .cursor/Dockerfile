@@ -13,10 +13,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     pkg-config \
     libssl-dev \
+    libclang-dev \
     curl \
     ca-certificates \
     git \
     sudo \
+    openjdk-21-jre-headless \
     # Playwright Chromium runtime libraries (install-deps subset)
     libasound2t64 \
     libatk-bridge2.0-0t64 \

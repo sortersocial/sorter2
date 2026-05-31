@@ -54,6 +54,7 @@ apt_packages=(
   g++
   pkg-config
   libssl-dev
+  libclang-dev
   curl
   ca-certificates
   git
@@ -72,28 +73,49 @@ fi
 
 detect_java_home || true
 
-# Rust 1.88+ (image may ship older /usr/local/cargo)
-need_rustup=false
-if ! command -v rustc >/dev/null 2>&1; then
-  need_rustup=true
-elif ! rustc --version | grep -qE 'rustc 1\.(8[89]|[9-9][0-9]|[1-9][0-9]{2,})\.'; then
-  need_rustup=true
-fi
-if [[ "${need_rustup}" == true ]]; then
-  if ! command -v rustup >/dev/null 2>&1; then
-    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.88.0
-  else
-    rustup toolchain install 1.88.0
-    rustup default 1.88.0
+export PATH="${HOME}/.cargo/bin:/usr/local/cargo/bin:${PATH}"
+
+# Rust 1.88+ (rust-toolchain.toml); recover from partial rustup installs.
+rust_version_ok() {
+  rustc -V 2>/dev/null | grep -qE 'rustc 1\.(8[89]|[9-9][0-9]|[1-9][0-9]{2,})\.'
+}
+
+ensure_rust_toolchain() {
+  local channel=1.88.0
+  local triple="${channel}-x86_64-unknown-linux-gnu"
+  local tc_dir="${RUSTUP_HOME:-${HOME}/.rustup}/toolchains/${triple}"
+
+  if command -v rustc >/dev/null 2>&1 && rust_version_ok; then
+    return 0
   fi
+
+  if ! command -v rustup >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain "${channel}"
+  else
+    rustup toolchain uninstall "${channel}" 2>/dev/null || true
+    rm -rf "${tc_dir}"
+    if ! rustup toolchain install "${channel}"; then
+      rm -rf "${tc_dir}"
+      rustup toolchain install "${channel}"
+    fi
+    rustup default "${channel}"
+  fi
+
   # shellcheck source=/dev/null
   if [[ -f "${HOME}/.cargo/env" ]]; then
     source "${HOME}/.cargo/env"
   elif [[ -f /root/.cargo/env ]] && [[ -r /root/.cargo/env ]]; then
     source /root/.cargo/env
   fi
-fi
-export PATH="${HOME}/.cargo/bin:/usr/local/cargo/bin:${PATH}"
+
+  if ! rust_version_ok; then
+    echo "cursor-env-install: failed to provision Rust ${channel}" >&2
+    rustc -V >&2 || true
+    return 1
+  fi
+}
+
+ensure_rust_toolchain
 
 install_babashka() {
   if command -v bb >/dev/null 2>&1; then
@@ -157,7 +179,13 @@ clojure -P -M
 clojure -M -e "(com.microsoft.playwright.CLI/main (into-array String [\"install\" \"chromium\" \"--with-deps\"]))"
 
 # Warm RocksDB + release server link (Clojure tests use release binary).
-cargo build -p durable --quiet
-cargo build --release --package sorter2-server --quiet
+if ! cargo build -p durable --quiet; then
+  echo "cursor-env-install: cargo build failed (need libclang-dev? CXX=g++?)" >&2
+  exit 1
+fi
+if ! cargo build --release --package sorter2-server --quiet; then
+  echo "cursor-env-install: release build failed" >&2
+  exit 1
+fi
 
 echo "cursor-env-install: ok (bb=$(bb --version 2>/dev/null || echo missing), CXX=${CXX})"
