@@ -11,6 +11,8 @@ ENV PATH="/root/.local/bin:${PATH}"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     g++ \
+    clang \
+    libclang-dev \
     pkg-config \
     libssl-dev \
     curl \
@@ -41,6 +43,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrandr2 \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
+
+ENV LIBCLANG_PATH="/usr/lib/llvm-18/lib"
 
 # Clojure CLI (matches CI)
 RUN curl -fsSL https://download.clojure.org/install/linux-install-1.12.0.1530.sh | bash
