@@ -31,7 +31,9 @@ detect_java_home() {
 }
 
 cat >"${profile_snippet}" <<'EOF'
-export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:/usr/local/cargo/bin:${PATH}"
+# Prefer rustup (~/.cargo/bin); do not prepend /usr/local/cargo (often stale 1.83).
+[[ -f "${HOME}/.cargo/env" ]] && . "${HOME}/.cargo/env"
+export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
 export CC="${CC:-gcc}"
 export CXX="${CXX:-g++}"
 export RUSTFLAGS="${RUSTFLAGS:--C linker=g++}"
@@ -56,6 +58,41 @@ for rc in "${HOME}/.bashrc" "${HOME}/.profile"; do
     echo ". ${profile_snippet}" >>"${rc}"
   fi
 done
+
+rust_toolchain_channel() {
+  local channel="1.88.0"
+  if [[ -f "${ROOT}/rust-toolchain.toml" ]]; then
+    local parsed
+    parsed="$(
+      grep -E '^\s*channel\s*=' "${ROOT}/rust-toolchain.toml" \
+        | head -1 \
+        | sed -E 's/.*=\s*"?([^"]+)"?.*/\1/' \
+        | tr -d ' '
+    )"
+    [[ -n "${parsed}" ]] && channel="${parsed}"
+  fi
+  printf '%s' "${channel}"
+}
+
+# Install Rust before apt/playwright so `cargo test` works while the rest of bootstrap runs.
+ensure_rust_toolchain() {
+  local channel
+  channel="$(rust_toolchain_channel)"
+  if ! command -v rustup >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain "${channel}"
+  fi
+  # shellcheck source=/dev/null
+  [[ -f "${HOME}/.cargo/env" ]] && source "${HOME}/.cargo/env"
+  export PATH="${HOME}/.cargo/bin:${PATH}"
+  # Idempotent; repairs partial toolchains ("Missing manifest") when rust-toolchain.toml overrides.
+  rustup toolchain install "${channel}"
+  rustup default "${channel}" 2>/dev/null || true
+  if ! rustc -vV >/dev/null 2>&1; then
+    echo "cursor-env-install: rustc unavailable after rustup (channel=${channel})" >&2
+    return 1
+  fi
+}
+ensure_rust_toolchain
 
 apt_packages=(
   build-essential
@@ -90,29 +127,6 @@ if [[ -z "${LIBCLANG_PATH:-}" ]]; then
     fi
   done
 fi
-
-# Rust 1.88+ (image may ship older /usr/local/cargo)
-need_rustup=false
-if ! command -v rustc >/dev/null 2>&1; then
-  need_rustup=true
-elif ! rustc --version | grep -qE 'rustc 1\.(8[89]|[9-9][0-9]|[1-9][0-9]{2,})\.'; then
-  need_rustup=true
-fi
-if [[ "${need_rustup}" == true ]]; then
-  if ! command -v rustup >/dev/null 2>&1; then
-    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.88.0
-  else
-    rustup toolchain install 1.88.0
-    rustup default 1.88.0
-  fi
-  # shellcheck source=/dev/null
-  if [[ -f "${HOME}/.cargo/env" ]]; then
-    source "${HOME}/.cargo/env"
-  elif [[ -f /root/.cargo/env ]] && [[ -r /root/.cargo/env ]]; then
-    source /root/.cargo/env
-  fi
-fi
-export PATH="${HOME}/.cargo/bin:/usr/local/cargo/bin:${PATH}"
 
 install_babashka() {
   if command -v bb >/dev/null 2>&1; then
