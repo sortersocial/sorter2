@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Idempotent Cloud Agent / Cursor VM bootstrap for sorter2.
-# Installs: RocksDB C++ toolchain (g++), Playwright browsers, Babashka, bbin, clj-paren-repair.
+# Installs: RocksDB C++ toolchain (g++, libclang), Playwright browsers, Babashka, bbin, clj-paren-repair.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -35,6 +35,14 @@ export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:/usr/local/cargo/bin:${PATH}"
 export CC="${CC:-gcc}"
 export CXX="${CXX:-g++}"
 export RUSTFLAGS="${RUSTFLAGS:--C linker=g++}"
+if [[ -z "${LIBCLANG_PATH:-}" ]]; then
+  for candidate in /usr/lib/llvm-*/lib; do
+    if [[ -e "${candidate}/libclang.so" ]]; then
+      export LIBCLANG_PATH="${candidate}"
+      break
+    fi
+  done
+fi
 if [[ -z "${JAVA_HOME:-}" ]]; then
   if command -v java >/dev/null 2>&1; then
     export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
@@ -52,6 +60,8 @@ done
 apt_packages=(
   build-essential
   g++
+  clang
+  libclang-dev
   pkg-config
   libssl-dev
   curl
@@ -71,6 +81,15 @@ if command -v apt-get >/dev/null 2>&1; then
 fi
 
 detect_java_home || true
+
+if [[ -z "${LIBCLANG_PATH:-}" ]]; then
+  for candidate in /usr/lib/llvm-*/lib; do
+    if [[ -e "${candidate}/libclang.so" ]]; then
+      export LIBCLANG_PATH="${candidate}"
+      break
+    fi
+  done
+fi
 
 # Rust 1.88+ (image may ship older /usr/local/cargo)
 need_rustup=false

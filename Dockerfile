@@ -3,7 +3,7 @@ FROM rust:1.88-slim AS builder
 WORKDIR /build
 
 RUN apt-get update && \
-    apt-get install -y pkg-config libssl-dev clang && \
+    apt-get install -y pkg-config libssl-dev clang libclang-dev && \
     rm -rf /var/lib/apt/lists/*
 
 COPY . .
