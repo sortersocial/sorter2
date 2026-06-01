@@ -118,13 +118,7 @@ impl AppState {
             projection_store.clone(),
             views.clone(),
         );
-        let reddit = RedditBroker::spawn(
-            event_log.clone(),
-            entity_store.clone(),
-            projection_store.clone(),
-            views.clone(),
-            RedditApiConfig::from_env(),
-        );
+        let reddit = RedditBroker::spawn(journal.clone(), RedditApiConfig::from_env());
 
         Self {
             cfg: Arc::new(cfg),
@@ -138,21 +132,11 @@ impl AppState {
     }
 
     pub async fn ensure_node(&self, id: &ItemId) -> Result<(), String> {
-        let event = Event::NodeEnsured {
-            id: id.as_str().to_string(),
-        };
-        self.event_log
-            .append(&event)
+        self.journal
+            .append(Event::NodeEnsured {
+                id: id.as_str().to_string(),
+            })
             .await
-            .map_err(|e| e.to_string())?;
-        projection_apply::apply_next_event(
-            &self.projection_store,
-            &self.entity_store,
-            &self.views,
-            &event,
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
     }
 
     pub fn scope_tree(&self, id: &ItemId) -> Result<GlobalTree, String> {
@@ -192,7 +176,7 @@ impl AppState {
             scope: parent.as_str().to_string(),
         };
 
-        self.journal.record_vote(event).await
+        self.journal.append(event).await
     }
 }
 

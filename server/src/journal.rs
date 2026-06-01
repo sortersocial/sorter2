@@ -1,3 +1,5 @@
+//! Single-writer pipeline: append to JSONL, then update durable projection.
+
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot};
@@ -24,7 +26,7 @@ impl JournalClient {
         projection_store: ProjectionStore,
         view_store: ViewStore,
     ) -> Self {
-        let (tx, rx) = mpsc::channel(64);
+        let (tx, rx) = mpsc::channel(256);
         tokio::spawn(journal_worker(
             rx,
             event_log,
@@ -35,7 +37,8 @@ impl JournalClient {
         Self { tx }
     }
 
-    pub async fn record_vote(&self, event: Event) -> Result<(), String> {
+    /// Append one event to the log and apply it to all projections (sole write path).
+    pub async fn append(&self, event: Event) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(JournalCommand { event, reply })
@@ -58,34 +61,76 @@ async fn journal_worker(
             batch.push(more);
         }
 
-        let mut disk_err: Option<String> = None;
-        for cmd in &batch {
-            if let Err(e) = event_log.append(&cmd.event).await {
-                disk_err = Some(e.to_string());
-                break;
-            }
-        }
-
-        if let Some(err) = disk_err {
-            for cmd in batch {
-                let _ = cmd.reply.send(Err(err.clone()));
-            }
-            continue;
-        }
-
-        for cmd in &batch {
-            if let Err(e) = projection_apply::apply_next_event(
+        for cmd in batch {
+            let result = append_and_project(
+                &event_log,
                 &projection_store,
                 &entity_store,
                 &view_store,
                 &cmd.event,
-            ) {
-                tracing::warn!(err = %e, "projection update failed after vote append");
-            }
+            )
+            .await;
+            let _ = cmd.reply.send(result);
         }
+    }
+}
 
-        for cmd in batch {
-            let _ = cmd.reply.send(Ok(()));
-        }
+async fn append_and_project(
+    event_log: &EventLog,
+    projection_store: &ProjectionStore,
+    entity_store: &EntityStore,
+    view_store: &ViewStore,
+    event: &Event,
+) -> Result<(), String> {
+    event_log
+        .append(event)
+        .await
+        .map_err(|e| e.to_string())?;
+    projection_apply::apply_next_event(projection_store, entity_store, view_store, event)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{events::Event, path_types::ItemId, projection_store::ProjectionStore};
+
+    #[tokio::test]
+    async fn journal_serializes_concurrent_appends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("events.jsonl");
+        let event_log = Arc::new(EventLog::new(log_path));
+        let db = durable::Db::open(tmp.path().join("store")).unwrap();
+        let entity_store = EntityStore::from_db(&db).unwrap();
+        let projection_store = ProjectionStore::from_db(&db).unwrap();
+        let view_store = ViewStore::from_db(&db).unwrap();
+
+        let journal = JournalClient::spawn(
+            event_log,
+            entity_store,
+            projection_store.clone(),
+            view_store,
+        );
+
+        let j1 = journal.clone();
+        let j2 = journal.clone();
+        let (r1, r2) = tokio::join!(
+            j1.append(Event::NodeEnsured {
+                id: "reddit.com/r/rust".into(),
+            }),
+            j2.append(Event::NodeEnsured {
+                id: "reddit.com/r/python".into(),
+            }),
+        );
+        r1.unwrap();
+        r2.unwrap();
+
+        assert_eq!(projection_store.last_applied_event_count().unwrap(), 2);
+        let tree = projection_store.load_tree().unwrap();
+        assert!(tree.get(&ItemId::parse("reddit.com/r/rust").unwrap()).is_some());
+        assert!(tree
+            .get(&ItemId::parse("reddit.com/r/python").unwrap())
+            .is_some());
     }
 }
