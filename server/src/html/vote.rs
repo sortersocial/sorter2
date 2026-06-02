@@ -154,6 +154,7 @@ fn vote_hud_form(
                     }
                     label class="vote-hud-slider" {
                         input type="range" id="vote-preference-slider" min="0" max="100" value="50"
+                            data-winner="left"
                             aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"
                             aria-label=(format!("Preference: {} vs {}", left.as_str(), right.as_str()));
                     }

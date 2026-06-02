@@ -316,9 +316,12 @@ h1 {
   max-width: 56rem;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: min-content minmax(0, 1fr) auto;
+  /* Fixed side columns so ratio text / buttons never resize the slider track. */
+  grid-template-columns: var(--vote-ratio-col) minmax(0, 1fr) var(--vote-actions-col);
   gap: 0.5rem 0.65rem;
   align-items: center;
+  --vote-ratio-col: 3.25rem;
+  --vote-actions-col: 11.5rem;
 }
 
 .vote-hud #vote-compare-form {
@@ -327,13 +330,23 @@ h1 {
 
 .vote-hud .vote-ratio-readout {
   margin: 0;
+  width: var(--vote-ratio-col);
+  min-width: var(--vote-ratio-col);
   text-align: center;
+  white-space: nowrap;
+}
+
+.vote-hud .vote-ratio-readout .small {
+  display: none;
 }
 
 .vote-hud .vote-compare-actions {
   margin-top: 0;
   justify-content: flex-end;
   gap: 0.5rem;
+  width: var(--vote-actions-col);
+  min-width: var(--vote-actions-col);
+  flex-shrink: 0;
 }
 
 .vote-hud .btn-primary,
@@ -416,13 +429,11 @@ h1 {
 }
 
 .vote-hud .vote-ratio-readout strong {
+  display: inline-block;
+  min-width: 3ch;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
   font-size: 1.1rem;
-}
-
-.vote-hud .vote-ratio-readout .small {
-  font-size: 0.75rem;
 }
 
 .vote-compare-next {
@@ -459,7 +470,11 @@ h1 {
   cursor: pointer;
 }
 
-.vote-hud-slider input[type="range"]::-webkit-slider-runnable-track {
+.vote-hud-slider input[type="range"] {
+  --vote-track-muted: color-mix(in oklch, var(--muted) 55%, var(--bg));
+}
+
+.vote-hud-slider input[type="range"][data-winner="left"]::-webkit-slider-runnable-track {
   height: 0.65rem;
   border-radius: 0;
   border: 2px solid var(--border);
@@ -467,8 +482,21 @@ h1 {
     to right,
     var(--accent) 0%,
     var(--accent) var(--vote-slider-pct, 50%),
-    color-mix(in oklch, var(--muted) 55%, var(--bg)) var(--vote-slider-pct, 50%),
-    color-mix(in oklch, var(--muted) 55%, var(--bg)) 100%
+    var(--vote-track-muted) var(--vote-slider-pct, 50%),
+    var(--vote-track-muted) 100%
+  );
+}
+
+.vote-hud-slider input[type="range"][data-winner="right"]::-webkit-slider-runnable-track {
+  height: 0.65rem;
+  border-radius: 0;
+  border: 2px solid var(--border);
+  background: linear-gradient(
+    to right,
+    var(--vote-track-muted) 0%,
+    var(--vote-track-muted) var(--vote-slider-pct, 50%),
+    var(--accent) var(--vote-slider-pct, 50%),
+    var(--accent) 100%
   );
 }
 
@@ -484,17 +512,35 @@ h1 {
   box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35);
 }
 
-.vote-hud-slider input[type="range"]::-moz-range-track {
+.vote-hud-slider input[type="range"][data-winner="left"]::-moz-range-track,
+.vote-hud-slider input[type="range"][data-winner="right"]::-moz-range-track {
   height: 0.65rem;
   border-radius: 0;
   border: 2px solid var(--border);
-  background: color-mix(in oklch, var(--muted) 55%, var(--bg));
+}
+
+.vote-hud-slider input[type="range"][data-winner="left"]::-moz-range-track {
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--vote-slider-pct, 50%),
+    var(--vote-track-muted) var(--vote-slider-pct, 50%),
+    var(--vote-track-muted) 100%
+  );
+}
+
+.vote-hud-slider input[type="range"][data-winner="right"]::-moz-range-track {
+  background: linear-gradient(
+    to right,
+    var(--vote-track-muted) 0%,
+    var(--vote-track-muted) var(--vote-slider-pct, 50%),
+    var(--accent) var(--vote-slider-pct, 50%),
+    var(--accent) 100%
+  );
 }
 
 .vote-hud-slider input[type="range"]::-moz-range-progress {
-  height: 0.65rem;
-  border-radius: 0;
-  background: var(--accent);
+  background: transparent;
 }
 
 .vote-hud-slider input[type="range"]::-moz-range-thumb {
@@ -563,6 +609,14 @@ h1 {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto auto;
     gap: 0.35rem;
+    --vote-ratio-col: 100%;
+    --vote-actions-col: 100%;
+  }
+
+  .vote-hud .vote-ratio-readout,
+  .vote-hud .vote-compare-actions {
+    width: auto;
+    min-width: 0;
   }
 
   .vote-hud .vote-compare-actions {

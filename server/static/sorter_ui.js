@@ -148,6 +148,7 @@
       if (leftInput) leftInput.value = String(left);
       if (rightInput) rightInput.value = String(right);
       if (ratioDisplay) ratioDisplay.textContent = left + ':' + right;
+      slider.dataset.winner = left >= right ? 'left' : 'right';
     }
     slider.addEventListener('input', update);
     update();
