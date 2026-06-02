@@ -185,8 +185,10 @@ async fn vote_page_renders_live_ranking_sidebar() {
     assert!(html.contains("scope-theme"));
     assert!(html.contains("--accent: oklch("));
     assert!(html.contains("--bg: oklch("));
+    assert!(html.contains("vote-hud"));
     assert!(html.contains("vote-ratio-display"));
     assert!(html.contains(">1:1<"));
+    assert!(!html.contains("vote-slider-left-label"));
     assert!(html.contains("--rank-bg: oklch("));
     assert!(html.contains("--rank-fg: #"));
     assert!(html.contains("data-rank-item=\"alpha\""));

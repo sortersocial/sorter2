@@ -134,6 +134,36 @@ fn vote_back_nav(parent: &ItemId) -> Markup {
     }
 }
 
+fn vote_hud_form(
+    parent: &ItemId,
+    left: &ItemId,
+    right: &ItemId,
+    rpc_json: &str,
+    next_pair: Option<&(ItemId, ItemId)>,
+) -> Markup {
+    html! {
+        div id="vote-hud" class="vote-hud" role="region" aria-label="Vote controls" {
+            form id="vote-compare-form" method="POST" action="/ui" {
+                input type="hidden" name=(UI_RPC_FIELD) value=(rpc_json);
+                input type="hidden" name="ratio_left" id="vote-ratio-left" value="1";
+                input type="hidden" name="ratio_right" id="vote-ratio-right" value="1";
+                div class="vote-hud-inner" {
+                    div class="vote-ratio-readout" {
+                        span class="muted small" { "ratio " }
+                        strong id="vote-ratio-display" { "1:1" }
+                    }
+                    label class="vote-hud-slider" {
+                        input type="range" id="vote-preference-slider" min="0" max="100" value="50"
+                            aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"
+                            aria-label=(format!("Preference: {} vs {}", left.as_str(), right.as_str()));
+                    }
+                    (vote_compare_actions(parent, next_pair))
+                }
+            }
+        }
+    }
+}
+
 fn vote_compare_actions(parent: &ItemId, next: Option<&(ItemId, ItemId)>) -> Markup {
     let next_href = next.map(|(l, r)| vote_compare_href(parent, l, r));
     html! {
@@ -250,41 +280,28 @@ pub async fn vote_page(
     );
 
     let body = html! {
-        div class="scope-theme vote-page-grid" style=(scope_theme_style(&parent)) {
-            section class="vote-compare-shell" {
-                h1 { "compare" }
-                (breadcrumb_path(&parent))
-                p class="muted vote-compare-scope" {
-                    "ranking children of "
-                    a href=(item_href(&parent)) { (child_title(&tree, &parent)) }
-                }
-                div class="vote-compare-pair" {
-                    (vote_compare_item_card(&tree, &left, "vote-compare-left"))
-                    span class="vote-compare-vs" { "vs" }
-                    (vote_compare_item_card(&tree, &right, "vote-compare-right"))
-                }
-                (vote_back_nav(&parent))
-                form id="vote-compare-form" method="POST" action="/ui" {
-                    input type="hidden" name=(UI_RPC_FIELD) value=(rpc_json);
-                    input type="hidden" name="ratio_left" id="vote-ratio-left" value="1";
-                    input type="hidden" name="ratio_right" id="vote-ratio-right" value="1";
-                    div class="vote-ratio-readout" {
-                        span class="muted small" { "ratio " }
-                        strong id="vote-ratio-display" { "1:1" }
+        div class="scope-theme vote-page" style=(scope_theme_style(&parent)) {
+            div class="vote-page-grid" {
+                section class="vote-compare-shell" {
+                    h1 { "compare" }
+                    (breadcrumb_path(&parent))
+                    p class="muted vote-compare-scope" {
+                        "ranking children of "
+                        a href=(item_href(&parent)) { (child_title(&tree, &parent)) }
                     }
-                    label class="vote-compare-slider-label" {
-                        span id="vote-slider-left-label" { (child_title(&tree, &left)) }
-                        input type="range" id="vote-preference-slider" min="0" max="100" value="50"
-                            aria-valuemin="0" aria-valuemax="100";
-                        span id="vote-slider-right-label" { (child_title(&tree, &right)) }
+                    div class="vote-compare-pair" {
+                        (vote_compare_item_card(&tree, &left, "vote-compare-left"))
+                        span class="vote-compare-vs" { "vs" }
+                        (vote_compare_item_card(&tree, &right, "vote-compare-right"))
                     }
-                    (vote_compare_actions(&parent, next_pair.as_ref()))
+                    (vote_back_nav(&parent))
+                    div id="vote-edge-history-region" {
+                        (edge_history)
+                    }
                 }
-                div id="vote-edge-history-region" {
-                    (edge_history)
-                }
+                (vote_ranking_sidebar(&tree, &parent, &left, &right))
             }
-            (vote_ranking_sidebar(&tree, &parent, &left, &right))
+            (vote_hud_form(&parent, &left, &right, &rpc_json, next_pair.as_ref()))
         }
     };
 

@@ -528,5 +528,6 @@ mod tests {
         assert!(SORTER_UI_JS.contains("Math.max(1, v)"));
         assert!(SORTER_UI_JS.contains("var divisor = gcd(left, right)"));
         assert!(SORTER_UI_JS.contains("ratioDisplay.textContent = left + ':' + right"));
+        assert!(SORTER_UI_JS.contains("--vote-slider-pct"));
     }
 }

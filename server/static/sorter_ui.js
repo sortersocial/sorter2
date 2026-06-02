@@ -138,6 +138,8 @@
     function update() {
       var v = parseInt(slider.value, 10);
       if (!Number.isFinite(v)) v = 50;
+      slider.style.setProperty('--vote-slider-pct', v + '%');
+      slider.setAttribute('aria-valuenow', String(v));
       var left = Math.max(1, 100 - v);
       var right = Math.max(1, v);
       var divisor = gcd(left, right);
