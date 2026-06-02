@@ -105,7 +105,6 @@ fn vote_edge_history(tree: &GlobalTree, group: &GroupState, left: &ItemId, right
         } @else {
             h3 class="vote-edge-history-title" {
                 "votes on this pair"
-                span class="vote-edge-history-axis muted" { " · " (legend_left) " : " (legend_right) }
             }
             ul class="vote-edge-history" {
                 @for v in &votes {
@@ -126,13 +125,6 @@ fn vote_edge_history(tree: &GlobalTree, group: &GroupState, left: &ItemId, right
     }
 }
 
-fn vote_back_nav(parent: &ItemId) -> Markup {
-    html! {
-        div class="vote-compare-nav" {
-            a class="vote-compare-back muted" href=(item_href(parent)) { "← back to " (display_label(parent)) }
-        }
-    }
-}
 
 fn vote_hud_form(
     parent: &ItemId,
@@ -286,10 +278,6 @@ pub async fn vote_page(
                 section class="vote-compare-shell" {
                     h1 { "compare" }
                     (breadcrumb_path(&parent))
-                    p class="muted vote-compare-scope" {
-                        "ranking children of "
-                        a href=(item_href(&parent)) { (child_title(&tree, &parent)) }
-                    }
                     div class="vote-compare-pair" {
                         (vote_compare_item_card(&tree, &left, "vote-compare-left"))
                         span class="vote-compare-vs" { "vs" }

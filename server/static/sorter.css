@@ -480,10 +480,10 @@ h1 {
   border: 2px solid var(--border);
   background: linear-gradient(
     to right,
-    var(--accent) 0%,
-    var(--accent) var(--vote-slider-pct, 50%),
+    var(--vote-track-muted) 0%,
     var(--vote-track-muted) var(--vote-slider-pct, 50%),
-    var(--vote-track-muted) 100%
+    var(--accent) var(--vote-slider-pct, 50%),
+    var(--accent) 100%
   );
 }
 
@@ -493,10 +493,10 @@ h1 {
   border: 2px solid var(--border);
   background: linear-gradient(
     to right,
-    var(--vote-track-muted) 0%,
-    var(--vote-track-muted) var(--vote-slider-pct, 50%),
+    var(--accent) 0%,
     var(--accent) var(--vote-slider-pct, 50%),
-    var(--accent) 100%
+    var(--vote-track-muted) var(--vote-slider-pct, 50%),
+    var(--vote-track-muted) 100%
   );
 }
 
@@ -522,20 +522,20 @@ h1 {
 .vote-hud-slider input[type="range"][data-winner="left"]::-moz-range-track {
   background: linear-gradient(
     to right,
-    var(--accent) 0%,
-    var(--accent) var(--vote-slider-pct, 50%),
+    var(--vote-track-muted) 0%,
     var(--vote-track-muted) var(--vote-slider-pct, 50%),
-    var(--vote-track-muted) 100%
+    var(--accent) var(--vote-slider-pct, 50%),
+    var(--accent) 100%
   );
 }
 
 .vote-hud-slider input[type="range"][data-winner="right"]::-moz-range-track {
   background: linear-gradient(
     to right,
-    var(--vote-track-muted) 0%,
-    var(--vote-track-muted) var(--vote-slider-pct, 50%),
+    var(--accent) 0%,
     var(--accent) var(--vote-slider-pct, 50%),
-    var(--accent) 100%
+    var(--vote-track-muted) var(--vote-slider-pct, 50%),
+    var(--vote-track-muted) 100%
   );
 }
 
