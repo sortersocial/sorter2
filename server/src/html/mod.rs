@@ -291,18 +291,17 @@ fn rank_list(
     label: &str,
     items: &[RankedItem],
     start_rank: usize,
-    total_ranked: usize,
-    ordinal_offset: usize,
     highlighted: &HashSet<ItemId>,
     tree: &GlobalTree,
 ) -> Markup {
+    let group_len = items.len();
     html! {
         @if !items.is_empty() {
             h3 class="rank-heading muted small" { (label) }
             ol class="rank-list" {
                 @for (i, r) in items.iter().enumerate() {
                     @let href = item_href(&r.item);
-                    @let style = rank_row_style(parent, ordinal_offset + i, total_ranked);
+                    @let style = rank_row_style(parent, i, group_len);
                     @let class = rank_row_class(&r.item, highlighted);
                     li class=(class)
                         data-rank-item=(r.item.as_str())
@@ -420,8 +419,6 @@ pub fn ranking_panel_with_highlights(
 
     let has_ranked = !ranked_groups.is_empty();
     let multi = ranked_groups.len() > 1;
-    let total_ranked: usize = ranked_groups.iter().map(|g| g.len()).sum();
-    let mut ordinal_offset = 0usize;
 
     html! {
         section id="ranking-panel" class="demo-panel" {
@@ -436,8 +433,7 @@ pub fn ranking_panel_with_highlights(
             } @else {
                 @for (gi, ranked) in ranked_groups.iter().enumerate() {
                     @let label = if multi { format!("Ranking group {}", gi + 1) } else { "Ranking".to_string() };
-                    (rank_list(item, &label, ranked, 1, total_ranked, ordinal_offset, highlighted, tree))
-                    @let _ = { ordinal_offset += ranked.len(); };
+                    (rank_list(item, &label, ranked, 1, highlighted, tree))
                 }
                 (unranked_list("Unranked", &unranked, highlighted, tree))
             }
@@ -520,7 +516,20 @@ pub async fn browse(State(state): State<AppState>, uri: Uri) -> impl IntoRespons
 
 #[cfg(test)]
 mod tests {
-    use super::SORTER_UI_JS;
+    use super::{rank_row_style, SORTER_UI_JS};
+    use crate::path_types::ItemId;
+
+    #[test]
+    fn rank_row_style_gradients_per_group_not_globally() {
+        let parent = ItemId::opaque("test-scope");
+        let first_in_four = rank_row_style(&parent, 0, 4);
+        let last_in_four = rank_row_style(&parent, 3, 4);
+        let first_in_two = rank_row_style(&parent, 0, 2);
+        let last_in_two = rank_row_style(&parent, 1, 2);
+        assert_eq!(first_in_four, first_in_two);
+        assert_eq!(last_in_four, last_in_two);
+        assert_ne!(first_in_four, last_in_four);
+    }
 
     #[test]
     fn vote_slider_left_position_favors_left_item() {

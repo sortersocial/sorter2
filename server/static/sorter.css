@@ -124,7 +124,7 @@ code {
   z-index: 1;
   box-shadow:
     inset 0 0 0 3px var(--accent),
-    inset 0 0 0 5px color-mix(in oklch, var(--rank-fg) 70%, transparent);
+    inset 0 0 0 5px color-mix(in oklch, var(--rank-fg, var(--fg)) 70%, transparent);
   filter: saturate(1.15) brightness(1.04);
 }
 
@@ -320,7 +320,7 @@ h1 {
   grid-template-columns: var(--vote-ratio-col) minmax(0, 1fr) var(--vote-actions-col);
   gap: 0.5rem 0.65rem;
   align-items: center;
-  --vote-ratio-col: 3.25rem;
+  --vote-ratio-col: 12.5rem;
   --vote-actions-col: 11.5rem;
 }
 
@@ -332,7 +332,7 @@ h1 {
   margin: 0;
   width: var(--vote-ratio-col);
   min-width: var(--vote-ratio-col);
-  text-align: center;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -474,6 +474,16 @@ h1 {
   --vote-track-muted: color-mix(in oklch, var(--muted) 55%, var(--bg));
 }
 
+/* Center-anchored fill: the accent grows from the midpoint toward the thumb,
+   so the highlighted mass always sits on the *winning* side (the side the
+   thumb was dragged toward). Left winning => accent on the left half. */
+.vote-hud-slider input[type="range"][data-winner="even"]::-webkit-slider-runnable-track {
+  height: 0.65rem;
+  border-radius: 0;
+  border: 2px solid var(--border);
+  background: var(--vote-track-muted);
+}
+
 .vote-hud-slider input[type="range"][data-winner="left"]::-webkit-slider-runnable-track {
   height: 0.65rem;
   border-radius: 0;
@@ -483,7 +493,9 @@ h1 {
     var(--vote-track-muted) 0%,
     var(--vote-track-muted) var(--vote-slider-pct, 50%),
     var(--accent) var(--vote-slider-pct, 50%),
-    var(--accent) 100%
+    var(--accent) 50%,
+    var(--vote-track-muted) 50%,
+    var(--vote-track-muted) 100%
   );
 }
 
@@ -493,7 +505,9 @@ h1 {
   border: 2px solid var(--border);
   background: linear-gradient(
     to right,
-    var(--accent) 0%,
+    var(--vote-track-muted) 0%,
+    var(--vote-track-muted) 50%,
+    var(--accent) 50%,
     var(--accent) var(--vote-slider-pct, 50%),
     var(--vote-track-muted) var(--vote-slider-pct, 50%),
     var(--vote-track-muted) 100%
@@ -513,10 +527,15 @@ h1 {
 }
 
 .vote-hud-slider input[type="range"][data-winner="left"]::-moz-range-track,
-.vote-hud-slider input[type="range"][data-winner="right"]::-moz-range-track {
+.vote-hud-slider input[type="range"][data-winner="right"]::-moz-range-track,
+.vote-hud-slider input[type="range"][data-winner="even"]::-moz-range-track {
   height: 0.65rem;
   border-radius: 0;
   border: 2px solid var(--border);
+}
+
+.vote-hud-slider input[type="range"][data-winner="even"]::-moz-range-track {
+  background: var(--vote-track-muted);
 }
 
 .vote-hud-slider input[type="range"][data-winner="left"]::-moz-range-track {
@@ -525,14 +544,18 @@ h1 {
     var(--vote-track-muted) 0%,
     var(--vote-track-muted) var(--vote-slider-pct, 50%),
     var(--accent) var(--vote-slider-pct, 50%),
-    var(--accent) 100%
+    var(--accent) 50%,
+    var(--vote-track-muted) 50%,
+    var(--vote-track-muted) 100%
   );
 }
 
 .vote-hud-slider input[type="range"][data-winner="right"]::-moz-range-track {
   background: linear-gradient(
     to right,
-    var(--accent) 0%,
+    var(--vote-track-muted) 0%,
+    var(--vote-track-muted) 50%,
+    var(--accent) 50%,
     var(--accent) var(--vote-slider-pct, 50%),
     var(--vote-track-muted) var(--vote-slider-pct, 50%),
     var(--vote-track-muted) 100%
@@ -573,20 +596,23 @@ h1 {
   margin-bottom: 0.25rem;
 }
 
-.ratio-bar {
-  display: flex;
-  height: 8px;
-  border-radius: 0;
-  overflow: hidden;
-  background: var(--border);
+/* Read-only sliders in vote history — same track/thumb styling as the HUD. */
+.vote-edge-slider {
+  display: block;
+  margin-top: 0.15rem;
 }
 
-.ratio-left {
-  background: var(--accent);
+.vote-edge-slider input[type="range"] {
+  pointer-events: none;
+  cursor: default;
 }
 
-.ratio-right {
-  background: var(--muted);
+.vote-edge-slider input[type="range"]:disabled {
+  opacity: 1;
+}
+
+.vote-edge-legend {
+  margin: 0 0 0.5rem;
 }
 
 @media (max-width: 900px) {

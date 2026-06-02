@@ -19,7 +19,7 @@ use crate::{
     ui_action::UI_RPC_FIELD,
 };
 
-use super::{breadcrumb_path, item_href, layout};
+use super::{breadcrumb_path, layout};
 
 #[derive(Debug, Deserialize)]
 pub struct VoteQuery {
@@ -59,17 +59,6 @@ fn child_title(tree: &GlobalTree, id: &ItemId) -> String {
         .unwrap_or_else(|| display_label(id))
 }
 
-fn ratio_pct(ratio_left: i32, ratio_right: i32) -> f64 {
-    let l = ratio_left.max(0) as f64;
-    let r = ratio_right.max(0) as f64;
-    let sum = l + r;
-    if sum <= 0.0 {
-        50.0
-    } else {
-        (l / sum) * 100.0
-    }
-}
-
 fn ratios_for_page(v: &VoteData, page_left: &ItemId, page_right: &ItemId) -> (i32, i32) {
     match (v.a.as_str(), v.b.as_str()) {
         (a, b) if a == page_left.as_str() && b == page_right.as_str() => {
@@ -94,6 +83,37 @@ fn edge_votes(group: &GroupState, left: &ItemId, right: &ItemId) -> Vec<VoteData
         .collect()
 }
 
+/// HUD `data-winner` value: which side the ratio favours on this page.
+fn winner_side(r_left: i32, r_right: i32) -> &'static str {
+    if r_left > r_right {
+        "left"
+    } else if r_right > r_left {
+        "right"
+    } else {
+        "even"
+    }
+}
+
+fn winner_text(r_left: i32, r_right: i32) -> &'static str {
+    match winner_side(r_left, r_right) {
+        "left" => "left wins",
+        "right" => "right wins",
+        _ => "tie",
+    }
+}
+
+/// Map stored ratios to the live slider position (0 = full left, 100 = full right).
+/// Matches `sorter_ui.js`: `left = 100 - v`, `right = v`.
+fn slider_value_from_ratios(r_left: i32, r_right: i32) -> i32 {
+    let l = r_left.max(0) as f64;
+    let r = r_right.max(0) as f64;
+    let sum = l + r;
+    if sum <= 0.0 {
+        return 50;
+    }
+    ((r / sum) * 100.0).round().clamp(0.0, 100.0) as i32
+}
+
 fn vote_edge_history(tree: &GlobalTree, group: &GroupState, left: &ItemId, right: &ItemId) -> Markup {
     let mut votes = edge_votes(group, left, right);
     votes.sort_by(|a, b| b.ts.cmp(&a.ts));
@@ -106,17 +126,26 @@ fn vote_edge_history(tree: &GlobalTree, group: &GroupState, left: &ItemId, right
             h3 class="vote-edge-history-title" {
                 "votes on this pair"
             }
+            p class="muted small vote-edge-legend" {
+                (format!("left: {legend_left} — right: {legend_right}"))
+            }
             ul class="vote-edge-history" {
                 @for v in &votes {
                     @let (r_left, r_right) = ratios_for_page(v, left, right);
-                    @let pct = ratio_pct(r_left, r_right);
+                    @let slider_val = slider_value_from_ratios(r_left, r_right);
+                    @let side = winner_side(r_left, r_right);
+                    @let label = winner_text(r_left, r_right);
                     li class="vote-edge-history-row" {
                         div class="vote-edge-meta" {
                             span class="vote-edge-ratio" { (format!("{}:{}", r_left, r_right)) }
+                            span class="vote-edge-winner muted small" { " · " (label) }
                         }
-                        div class="ratio-bar vote-edge-bar" aria-hidden="true" {
-                            div class="ratio-left" style={(format!("width: {:.3}%;", pct))} {}
-                            div class="ratio-right" style={(format!("width: {:.3}%;", 100.0 - pct))} {}
+                        label class="vote-hud-slider vote-edge-slider" aria-hidden="true" {
+                            input type="range" class="vote-edge-range" min="0" max="100" value=(slider_val)
+                                data-winner=(side)
+                                style={(format!("--vote-slider-pct: {}%;", slider_val))}
+                                disabled
+                                tabindex="-1";
                         }
                     }
                 }
@@ -283,7 +312,6 @@ pub async fn vote_page(
                         span class="vote-compare-vs" { "vs" }
                         (vote_compare_item_card(&tree, &right, "vote-compare-right"))
                     }
-                    (vote_back_nav(&parent))
                     div id="vote-edge-history-region" {
                         (edge_history)
                     }
@@ -307,4 +335,67 @@ pub async fn vote_page(
         .into_string(),
     )
     .into_response()
+}
+
+#[cfg(test)]
+mod polarity_tests {
+    use super::*;
+    use crate::ranking::ranked_items;
+    use crate::reducer::GlobalTree;
+
+    fn id(s: &str) -> ItemId {
+        ItemId::parse(s).unwrap()
+    }
+
+    /// The page's left number must always equal the vote's weight for the
+    /// item shown on the left, regardless of which order the vote stored a/b.
+    #[test]
+    fn ratios_for_page_orients_to_page_left() {
+        let left = id("left_item");
+        let right = id("right_item");
+
+        // Stored a == page left: keep order.
+        let v1 = VoteData::from_recorded(1, left.as_str(), right.as_str(), 9, 1).unwrap();
+        assert_eq!(ratios_for_page(&v1, &left, &right), (9, 1));
+
+        // Stored a == page right: swap so left stays left.
+        let v2 = VoteData::from_recorded(2, right.as_str(), left.as_str(), 9, 1).unwrap();
+        assert_eq!(ratios_for_page(&v2, &left, &right), (1, 9));
+    }
+
+    #[test]
+    fn winner_side_follows_larger_ratio() {
+        assert_eq!(winner_side(9, 1), "left");
+        assert_eq!(winner_side(1, 9), "right");
+        assert_eq!(winner_side(1, 1), "even");
+    }
+
+    #[test]
+    fn slider_value_matches_hud_mapping() {
+        assert_eq!(slider_value_from_ratios(9, 1), 10);
+        assert_eq!(slider_value_from_ratios(1, 4), 80);
+        assert_eq!(slider_value_from_ratios(1, 1), 50);
+    }
+
+    /// End-to-end polarity invariant: a vote that favours the LEFT item (higher
+    /// `ratio_left`, recorded as the RPC's `a`) must make that item rank #1.
+    /// This is the property the UI must preserve: sliding left => left wins.
+    #[test]
+    fn sliding_left_makes_left_item_win_ranking() {
+        let parent = id("scope");
+        let left = id("left_item");
+        let right = id("right_item");
+
+        // Slider dragged left yields e.g. 9:1 with a = left item.
+        let vote = VoteData::from_recorded(1, left.as_str(), right.as_str(), 9, 1).unwrap();
+        let mut tree = GlobalTree::new();
+        tree.apply_vote(&parent, vote);
+
+        let group = &tree.get(&parent).unwrap().local_ranking;
+        let ranked = ranked_items(group);
+        assert_eq!(
+            ranked[0].item, left,
+            "left item should rank first when ratio favours the left"
+        );
+    }
 }

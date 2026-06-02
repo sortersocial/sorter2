@@ -138,6 +138,10 @@
     function update() {
       var v = parseInt(slider.value, 10);
       if (!Number.isFinite(v)) v = 50;
+      // Slider position drives the colored fill (a center-anchored bar that
+      // grows toward whichever side is winning — see sorter.css). Sliding the
+      // thumb left raises the left number; left winning keeps the accent mass
+      // on the left, matching the "votes on this pair" history bars.
       slider.style.setProperty('--vote-slider-pct', v + '%');
       slider.setAttribute('aria-valuenow', String(v));
       var left = Math.max(1, 100 - v);
@@ -147,8 +151,12 @@
       right = right / divisor;
       if (leftInput) leftInput.value = String(left);
       if (rightInput) rightInput.value = String(right);
-      if (ratioDisplay) ratioDisplay.textContent = left + ':' + right;
-      slider.dataset.winner = left >= right ? 'left' : 'right';
+      var winner = left > right ? 'left' : (right > left ? 'right' : 'even');
+      slider.dataset.winner = winner;
+      if (ratioDisplay) {
+        var label = winner === 'even' ? 'tie' : (winner + ' wins');
+        ratioDisplay.textContent = left + ':' + right + ' \u00b7 ' + label;
+      }
     }
     slider.addEventListener('input', update);
     update();
