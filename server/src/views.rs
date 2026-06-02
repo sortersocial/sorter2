@@ -140,7 +140,10 @@ async fn flush_worker_loop(
     }
 }
 
-fn flush_dirty(memory: &MemStateLock, inner: &Arc<Mutex<ViewStoreInner>>) -> Result<(), ViewStoreError> {
+fn flush_dirty(
+    memory: &MemStateLock,
+    inner: &Arc<Mutex<ViewStoreInner>>,
+) -> Result<(), ViewStoreError> {
     let snapshot: Vec<(String, u64)> = {
         let mut mem = memory.lock().map_err(|_| ViewStoreError::Poisoned)?;
         if mem.dirty.is_empty() {
@@ -160,9 +163,7 @@ fn flush_dirty(memory: &MemStateLock, inner: &Arc<Mutex<ViewStoreInner>>) -> Res
     let inner = inner.lock().map_err(|_| ViewStoreError::Poisoned)?;
     let mut batch = inner.db.batch();
     for (path, count) in &snapshot {
-        inner
-            .counts
-            .put_in_batch(&mut batch, path, count)?;
+        inner.counts.put_in_batch(&mut batch, path, count)?;
     }
     batch.commit()?;
     Ok(())

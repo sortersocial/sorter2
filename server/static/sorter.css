@@ -468,9 +468,6 @@ h1 {
   margin: 0;
   background: transparent;
   cursor: pointer;
-}
-
-.vote-hud-slider input[type="range"] {
   --vote-track-muted: color-mix(in oklch, var(--muted) 55%, var(--bg));
 }
 

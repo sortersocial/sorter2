@@ -114,11 +114,7 @@ impl ItemId {
         if self.as_str().contains("://") {
             return self.as_str().to_string();
         }
-        if self
-            .segments()
-            .first()
-            .is_some_and(|s| s.contains('.'))
-        {
+        if self.segments().first().is_some_and(|s| s.contains('.')) {
             format!("https://{}", self.as_str())
         } else {
             self.as_str().to_string()
@@ -146,8 +142,7 @@ impl ItemId {
     }
 
     pub fn from_browse_uri(path: &str) -> Option<ItemId> {
-        path.strip_prefix("/~/")
-            .map(ItemId::from_browse_tail)
+        path.strip_prefix("/~/").map(ItemId::from_browse_tail)
     }
 
     fn canonicalize(raw: &str) -> Option<String> {
@@ -273,10 +268,7 @@ mod tests {
             "https://old.reddit.com/r/AmItheAsshole/comments/1trnvdl/aita_for_cancelling/",
         )
         .unwrap();
-        assert_eq!(
-            id.as_str(),
-            "reddit.com/r/amitheasshole/comments/1trnvdl"
-        );
+        assert_eq!(id.as_str(), "reddit.com/r/amitheasshole/comments/1trnvdl");
     }
 
     #[test]
@@ -296,10 +288,7 @@ mod tests {
     #[test]
     fn parent_of_post_is_subreddit() {
         let id = ItemId::parse("reddit.com/r/aww/comments/1trnvdl").unwrap();
-        assert_eq!(
-            id.parent().unwrap().as_str(),
-            "reddit.com/r/aww"
-        );
+        assert_eq!(id.parent().unwrap().as_str(), "reddit.com/r/aww");
     }
 
     #[test]
@@ -342,7 +331,8 @@ mod tests {
 
     #[test]
     fn from_storage_strips_post_title_slug() {
-        let id = ItemId::from_storage("reddit.com/r/rust/comments/aaa/announcing_rust_199").unwrap();
+        let id =
+            ItemId::from_storage("reddit.com/r/rust/comments/aaa/announcing_rust_199").unwrap();
         assert_eq!(id.as_str(), "reddit.com/r/rust/comments/aaa");
     }
 

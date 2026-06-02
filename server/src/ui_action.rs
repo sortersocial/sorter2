@@ -36,9 +36,7 @@ pub enum HtmlUiAction {
         vote_compare: bool,
     },
     /// Parse pasted Reddit URL/path; redirect to subreddit ranking on success.
-    ParseQuery {
-        query: String,
-    },
+    ParseQuery { query: String },
     /// Import entity data; `POST /ui` responds with `text/event-stream` whose
     /// events carry JS snippets to `eval` (Idiomorph morphs), not JSON.
     FetchEntity {

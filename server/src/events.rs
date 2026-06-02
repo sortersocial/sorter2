@@ -20,9 +20,5 @@ pub enum Event {
     /// Register a node path in the fractal tree (no external fetch).
     NodeEnsured { id: String },
     /// Full upstream API payload for a node (domain-specific view derived at replay/render time).
-    EntityImported {
-        id: String,
-        ts: i64,
-        payload: Value,
-    },
+    EntityImported { id: String, ts: i64, payload: Value },
 }

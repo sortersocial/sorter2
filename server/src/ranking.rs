@@ -68,12 +68,8 @@ pub fn connected_components_from_voted_pairs(
 /// there is no score cache.
 pub fn ranked_items(group: &GroupState) -> Vec<RankedItem> {
     let n = group.idx_to_item.len();
-    let scores = compute_scores_from_edges(
-        n,
-        group.edges.iter().map(|(&k, &w)| (k, w)),
-        MAX_ITERS,
-        TOL,
-    );
+    let scores =
+        compute_scores_from_edges(n, group.edges.iter().map(|(&k, &w)| (k, w)), MAX_ITERS, TOL);
 
     let mut items: Vec<RankedItem> = group
         .idx_to_item
@@ -85,7 +81,11 @@ pub fn ranked_items(group: &GroupState) -> Vec<RankedItem> {
         })
         .collect();
 
-    items.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    items.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     items
 }
 
@@ -216,7 +216,12 @@ pub fn compute_scores_from_edges(
 /// Rank-centrality within a subset of items (an induced subgraph), using the group's aggregated edges.
 ///
 /// `idxs` are indices into `group.idx_to_item`. The returned items use the original item names.
-pub fn ranked_items_subset(group: &GroupState, idxs: &[usize], max_iters: usize, tol: f64) -> Vec<RankedItem> {
+pub fn ranked_items_subset(
+    group: &GroupState,
+    idxs: &[usize],
+    max_iters: usize,
+    tol: f64,
+) -> Vec<RankedItem> {
     if idxs.is_empty() {
         return vec![];
     }
@@ -241,11 +246,18 @@ pub fn ranked_items_subset(group: &GroupState, idxs: &[usize], max_iters: usize,
         .enumerate()
         .filter_map(|(j, &orig)| {
             let item = group.idx_to_item.get(orig)?.clone();
-            Some(RankedItem { item, score: *scores.get(j).unwrap_or(&0.0) })
+            Some(RankedItem {
+                item,
+                score: *scores.get(j).unwrap_or(&0.0),
+            })
         })
         .collect();
 
-    items.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    items.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     items
 }
 
@@ -417,8 +429,10 @@ mod tests {
         g.apply_vote(vote(1, "a", "b", 3, 1)); // a > b
         g.apply_vote(vote(2, "c", "d", 1, 4)); // d > c
 
-        let (comps, _) =
-            connected_components_from_voted_pairs(g.idx_to_item.len(), g.voted_pairs.iter().copied());
+        let (comps, _) = connected_components_from_voted_pairs(
+            g.idx_to_item.len(),
+            g.voted_pairs.iter().copied(),
+        );
         assert_eq!(comps.len(), 2);
 
         // Rank each component and ensure winner is first within that component.

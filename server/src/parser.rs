@@ -43,10 +43,7 @@ mod tests {
             "https://old.reddit.com/r/AmItheAsshole/comments/1trnvdl/aita_for_cancelling/",
         )
         .unwrap();
-        assert_eq!(
-            id.as_str(),
-            "reddit.com/r/amitheasshole/comments/1trnvdl"
-        );
+        assert_eq!(id.as_str(), "reddit.com/r/amitheasshole/comments/1trnvdl");
     }
 
     #[test]

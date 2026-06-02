@@ -89,10 +89,7 @@ fn pair_priority(
 }
 
 /// All unordered pairs from `pool`, optionally skipping `exclude`.
-fn candidate_pairs(
-    pool: &[ItemId],
-    exclude: Option<(&ItemId, &ItemId)>,
-) -> Vec<(ItemId, ItemId)> {
+fn candidate_pairs(pool: &[ItemId], exclude: Option<(&ItemId, &ItemId)>) -> Vec<(ItemId, ItemId)> {
     let mut out = Vec::new();
     for i in 0..pool.len() {
         for j in (i + 1)..pool.len() {
@@ -228,10 +225,7 @@ impl PairError {
                 "provide both left and right, or neither",
                 axum::http::StatusCode::BAD_REQUEST,
             ),
-            Self::NoPair => (
-                "no pair available",
-                axum::http::StatusCode::BAD_REQUEST,
-            ),
+            Self::NoPair => ("no pair available", axum::http::StatusCode::BAD_REQUEST),
         }
     }
 }
@@ -292,16 +286,20 @@ mod tests {
                 "reddit.com/r/rust/d",
             ],
         );
-        let ab = VoteData::from_recorded(1, "reddit.com/r/rust/a", "reddit.com/r/rust/b", 2, 1).unwrap();
-        let cd = VoteData::from_recorded(2, "reddit.com/r/rust/c", "reddit.com/r/rust/d", 2, 1).unwrap();
+        let ab =
+            VoteData::from_recorded(1, "reddit.com/r/rust/a", "reddit.com/r/rust/b", 2, 1).unwrap();
+        let cd =
+            VoteData::from_recorded(2, "reddit.com/r/rust/c", "reddit.com/r/rust/d", 2, 1).unwrap();
         tree.apply_vote(&parent, ab);
         tree.apply_vote(&parent, cd);
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);
-        let from_ab = chosen.contains("reddit.com/r/rust/a") || chosen.contains("reddit.com/r/rust/b");
-        let from_cd = chosen.contains("reddit.com/r/rust/c") || chosen.contains("reddit.com/r/rust/d");
+        let from_ab =
+            chosen.contains("reddit.com/r/rust/a") || chosen.contains("reddit.com/r/rust/b");
+        let from_cd =
+            chosen.contains("reddit.com/r/rust/c") || chosen.contains("reddit.com/r/rust/d");
         assert!(from_ab && from_cd, "expected bridge pair, got {:?}", chosen);
     }
 
@@ -316,7 +314,8 @@ mod tests {
                 "reddit.com/r/rust/c",
             ],
         );
-        let ab = VoteData::from_recorded(1, "reddit.com/r/rust/a", "reddit.com/r/rust/b", 2, 1).unwrap();
+        let ab =
+            VoteData::from_recorded(1, "reddit.com/r/rust/a", "reddit.com/r/rust/b", 2, 1).unwrap();
         tree.apply_vote(&parent, ab);
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);

@@ -31,10 +31,7 @@ pub struct VoteQuery {
 }
 
 pub fn vote_href(parent: &ItemId) -> String {
-    format!(
-        "/vote?parent={}",
-        urlencoding::encode(parent.as_str())
-    )
+    format!("/vote?parent={}", urlencoding::encode(parent.as_str()))
 }
 
 fn vote_compare_href(parent: &ItemId, left: &ItemId, right: &ItemId) -> String {
@@ -114,7 +111,12 @@ fn slider_value_from_ratios(r_left: i32, r_right: i32) -> i32 {
     ((r / sum) * 100.0).round().clamp(0.0, 100.0) as i32
 }
 
-fn vote_edge_history(tree: &GlobalTree, group: &GroupState, left: &ItemId, right: &ItemId) -> Markup {
+fn vote_edge_history(
+    tree: &GlobalTree,
+    group: &GroupState,
+    left: &ItemId,
+    right: &ItemId,
+) -> Markup {
     let mut votes = edge_votes(group, left, right);
     votes.sort_by(|a, b| b.ts.cmp(&a.ts));
     let legend_left = child_title(tree, left);
@@ -153,7 +155,6 @@ fn vote_edge_history(tree: &GlobalTree, group: &GroupState, left: &ItemId, right
         }
     }
 }
-
 
 fn vote_hud_form(
     parent: &ItemId,
@@ -200,7 +201,12 @@ fn vote_compare_actions(parent: &ItemId, next: Option<&(ItemId, ItemId)>) -> Mar
     }
 }
 
-fn vote_ranking_sidebar(tree: &GlobalTree, parent: &ItemId, left: &ItemId, right: &ItemId) -> Markup {
+fn vote_ranking_sidebar(
+    tree: &GlobalTree,
+    parent: &ItemId,
+    left: &ItemId,
+    right: &ItemId,
+) -> Markup {
     let empty = NodeState::default();
     let node = tree.get(parent).unwrap_or(&empty);
     let highlighted: HashSet<ItemId> = [left.clone(), right.clone()].into_iter().collect();
@@ -222,11 +228,7 @@ pub(crate) fn vote_recorded_morph(
 ) -> JsBuilder {
     let pool = children_of(tree, parent);
     let empty = NodeState::default();
-    let group = tree
-        .get(parent)
-        .unwrap_or(&empty)
-        .local_ranking
-        .clone();
+    let group = tree.get(parent).unwrap_or(&empty).local_ranking.clone();
     let edge_history = vote_edge_history(tree, &group, left, right);
     let next_pair = suggest_next(&group, left, right, &pool);
     let actions = vote_compare_actions(parent, next_pair.as_ref());
@@ -249,8 +251,12 @@ fn vote_compare_item_card(tree: &GlobalTree, item: &ItemId, side_class: &str) ->
     }
 }
 
-
-fn suggest_next(group: &GroupState, left: &ItemId, right: &ItemId, pool: &[ItemId]) -> Option<(ItemId, ItemId)> {
+fn suggest_next(
+    group: &GroupState,
+    left: &ItemId,
+    right: &ItemId,
+    pool: &[ItemId],
+) -> Option<(ItemId, ItemId)> {
     suggest_next_pair_in_pool(group, pool, Some((left, right)))
 }
 
@@ -262,22 +268,20 @@ pub async fn vote_page(
     let left_param = q.left.as_deref().map(parse_item_param);
     let right_param = q.right.as_deref().map(parse_item_param);
 
-    let tree = state.scope_tree(&parent).unwrap_or_else(|_| GlobalTree::new());
+    let tree = state
+        .scope_tree(&parent)
+        .unwrap_or_else(|_| GlobalTree::new());
     let empty = NodeState::default();
     let parent_node = tree.get(&parent).unwrap_or(&empty);
 
-    let (left, right) = match resolve_pair(
-        &tree,
-        &parent,
-        left_param.as_ref(),
-        right_param.as_ref(),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            let (msg, status) = e.status_message();
-            return (status, msg).into_response();
-        }
-    };
+    let (left, right) =
+        match resolve_pair(&tree, &parent, left_param.as_ref(), right_param.as_ref()) {
+            Ok(p) => p,
+            Err(e) => {
+                let (msg, status) = e.status_message();
+                return (status, msg).into_response();
+            }
+        };
 
     let pool = children_of(&tree, &parent);
     let group = &parent_node.local_ranking;
@@ -326,15 +330,7 @@ pub async fn vote_page(
     state.views.increment(path.clone());
     let views = state.views.get_views(&path);
 
-    Html(
-        layout(
-            &title,
-            body,
-            views,
-        )
-        .into_string(),
-    )
-    .into_response()
+    Html(layout(&title, body, views).into_string()).into_response()
 }
 
 #[cfg(test)]
