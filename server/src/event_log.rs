@@ -5,7 +5,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
 };
 
-use crate::events::Event;
+use crate::events::{Event, EventRecord, CURRENT_EVENT_SCHEMA};
 
 #[derive(Debug, Default)]
 pub struct ReplayStats {
@@ -22,6 +22,24 @@ pub enum EventLogError {
     Json(#[from] serde_json::Error),
     #[error("apply error: {0}")]
     Apply(String),
+    #[error("unsupported event schema: {0}")]
+    UnsupportedSchema(u32),
+}
+
+/// Parse one JSONL line: wrapped [`EventRecord`] or legacy bare [`Event`].
+fn parse_line(line: &str) -> Result<EventRecord, EventLogError> {
+    if let Ok(record) = serde_json::from_str::<EventRecord>(line) {
+        if record.schema != CURRENT_EVENT_SCHEMA {
+            return Err(EventLogError::UnsupportedSchema(record.schema));
+        }
+        return Ok(record);
+    }
+
+    let event = serde_json::from_str::<Event>(line)?;
+    Ok(EventRecord {
+        schema: 1,
+        event,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +71,8 @@ impl EventLog {
             .open(&self.path)
             .await?;
 
-        let mut line = serde_json::to_string(event)?;
+        let record = EventRecord::new(event.clone());
+        let mut line = serde_json::to_string(&record)?;
         line.push('\n');
         f.write_all(line.as_bytes()).await?;
         f.flush().await?;
@@ -93,19 +112,20 @@ impl EventLog {
             if trimmed.is_empty() {
                 continue;
             }
-            match serde_json::from_str::<Event>(trimmed) {
-                Ok(ev) => {
+            match parse_line(trimmed) {
+                Ok(record) => {
                     valid_events += 1;
                     if valid_events <= skip_valid_events {
                         stats.skipped += 1;
                         continue;
                     }
-                    match apply(valid_events, ev) {
+                    match apply(valid_events, record.event) {
                         Ok(()) => stats.applied += 1,
                         Err(e) => return Err(e),
                     }
                 }
-                Err(_) => stats.bad_lines += 1,
+                Err(EventLogError::Json(_)) => stats.bad_lines += 1,
+                Err(e) => return Err(e),
             }
         }
 
@@ -164,5 +184,67 @@ mod tests {
         assert_eq!(stats.applied, 2);
         assert_eq!(stats.bad_lines, 0);
         assert_eq!(seen.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn append_writes_schema_envelope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("events.jsonl");
+        let log = EventLog::new(&path);
+        log.append(&Event::NodeEnsured {
+            id: "reddit.com/r/rust".into(),
+        })
+        .await
+        .unwrap();
+
+        let line = std::fs::read_to_string(&path).unwrap();
+        let record: EventRecord = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(record.schema, CURRENT_EVENT_SCHEMA);
+        assert!(matches!(record.event, Event::NodeEnsured { .. }));
+    }
+
+    #[tokio::test]
+    async fn replay_accepts_legacy_bare_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("events.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"node_ensured","id":"reddit.com/r/rust"}
+{"schema":1,"event":{"type":"vote_recorded","ts":1,"a":"a","b":"b","ratio_left":2,"ratio_right":1,"scope":""}}
+"#,
+        )
+        .unwrap();
+
+        let log = EventLog::new(&path);
+        let mut seen = Vec::new();
+        let stats = log
+            .replay(|ev| {
+                seen.push(ev);
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(stats.applied, 2);
+        assert_eq!(stats.bad_lines, 0);
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_unsupported_schema() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("events.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"schema":99,"event":{"type":"node_ensured","id":"x"}}"#,
+        )
+        .unwrap();
+
+        let log = EventLog::new(&path);
+        let err = log
+            .replay(|_| Ok(()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EventLogError::UnsupportedSchema(99)));
     }
 }

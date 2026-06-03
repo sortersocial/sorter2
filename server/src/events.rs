@@ -1,6 +1,30 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Schema version for new JSONL records. Bump when event semantics change.
+pub const CURRENT_EVENT_SCHEMA: u32 = 1;
+
+fn default_event_schema() -> u32 {
+    1
+}
+
+/// One JSONL line: schema envelope around a domain [`Event`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventRecord {
+    #[serde(default = "default_event_schema")]
+    pub schema: u32,
+    pub event: Event,
+}
+
+impl EventRecord {
+    pub fn new(event: Event) -> Self {
+        Self {
+            schema: CURRENT_EVENT_SCHEMA,
+            event,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
