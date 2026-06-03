@@ -1,7 +1,6 @@
 //! Reddit API import via a single background worker (rate limits, dedup, backoff).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use reqwest::{header, Client, StatusCode};
@@ -10,8 +9,8 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    entity_store::EntityStore, event_log::EventLog, events::Event, fetch::now_ms,
-    path_types::ItemId, projection_apply, projection_store::ProjectionStore, reducer::GlobalTree,
+    entity_store::EntityStore, events::Event, fetch::now_ms, journal::JournalClient,
+    path_types::ItemId, reducer::GlobalTree,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,13 +70,7 @@ struct OAuthToken {
 }
 
 impl RedditBroker {
-    pub fn spawn(
-        event_log: Arc<EventLog>,
-        entity_store: EntityStore,
-        projection_store: ProjectionStore,
-        view_store: crate::views::ViewStore,
-        config: RedditApiConfig,
-    ) -> Self {
+    pub fn spawn(journal: JournalClient, config: RedditApiConfig) -> Self {
         let (tx, rx) = mpsc::channel(100);
 
         let mut headers = header::HeaderMap::new();
@@ -100,15 +93,7 @@ impl RedditBroker {
             "reddit worker started"
         );
 
-        tokio::spawn(reddit_worker(
-            rx,
-            event_log,
-            entity_store,
-            projection_store,
-            view_store,
-            client,
-            config,
-        ));
+        tokio::spawn(reddit_worker(rx, journal, client, config));
 
         Self { tx }
     }
@@ -224,10 +209,7 @@ fn notify(done: Option<oneshot::Sender<FetchJobResult>>, result: FetchJobResult)
 
 async fn reddit_worker(
     mut rx: mpsc::Receiver<RedditCommand>,
-    event_log: Arc<EventLog>,
-    entity_store: EntityStore,
-    projection_store: ProjectionStore,
-    view_store: crate::views::ViewStore,
+    journal: JournalClient,
     client: Client,
     config: RedditApiConfig,
 ) {
@@ -311,20 +293,11 @@ async fn reddit_worker(
                     let event = Event::EntityImported {
                         id: child_id.as_str().to_string(),
                         ts: now_ms(),
-                        payload: child_payload.clone(),
+                        payload: child_payload,
                     };
-                    if let Err(e) = event_log.append(&event).await {
-                        tracing::warn!(item = %child_id, err = %e, "reddit event log append failed");
-                        write_err = Some(e.to_string());
-                        break;
-                    }
-                    if let Err(e) = projection_apply::apply_next_event(
-                        &projection_store,
-                        &entity_store,
-                        &view_store,
-                        &event,
-                    ) {
-                        write_err = Some(e.to_string());
+                    if let Err(e) = journal.append(event).await {
+                        tracing::warn!(item = %child_id, err = %e, "reddit import journal failed");
+                        write_err = Some(e);
                         break;
                     }
                     written += 1;
