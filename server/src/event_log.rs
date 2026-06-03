@@ -10,7 +10,6 @@ use crate::events::{Event, EventRecord, CURRENT_EVENT_SCHEMA};
 #[derive(Debug, Default)]
 pub struct ReplayStats {
     pub applied: usize,
-    pub bad_lines: usize,
     pub skipped: usize,
 }
 
@@ -24,6 +23,24 @@ pub enum EventLogError {
     Apply(String),
     #[error("unsupported event schema: {0}")]
     UnsupportedSchema(u32),
+    #[error("invalid event log line {line_no}: {detail}")]
+    BadLine { line_no: usize, detail: String },
+}
+
+impl EventLogError {
+    fn at_line(line_no: usize, err: Self) -> Self {
+        match err {
+            Self::Json(e) => Self::BadLine {
+                line_no,
+                detail: e.to_string(),
+            },
+            Self::UnsupportedSchema(v) => Self::BadLine {
+                line_no,
+                detail: format!("unsupported event schema: {v}"),
+            },
+            other => other,
+        }
+    }
 }
 
 fn parse_line(line: &str) -> Result<EventRecord, EventLogError> {
@@ -99,24 +116,21 @@ impl EventLog {
         let mut reader = BufReader::new(f).lines();
 
         let mut valid_events = 0_u64;
+        let mut line_no = 0_usize;
         while let Some(line) = reader.next_line().await? {
+            line_no += 1;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            match parse_line(trimmed) {
-                Ok(record) => {
-                    valid_events += 1;
-                    if valid_events <= skip_valid_events {
-                        stats.skipped += 1;
-                        continue;
-                    }
-                    match apply(valid_events, record.event) {
-                        Ok(()) => stats.applied += 1,
-                        Err(e) => return Err(e),
-                    }
-                }
-                Err(EventLogError::Json(_)) => stats.bad_lines += 1,
+            let record = parse_line(trimmed).map_err(|e| EventLogError::at_line(line_no, e))?;
+            valid_events += 1;
+            if valid_events <= skip_valid_events {
+                stats.skipped += 1;
+                continue;
+            }
+            match apply(valid_events, record.event) {
+                Ok(()) => stats.applied += 1,
                 Err(e) => return Err(e),
             }
         }
@@ -174,7 +188,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(stats.applied, 2);
-        assert_eq!(stats.bad_lines, 0);
         assert_eq!(seen.len(), 2);
     }
 
@@ -196,7 +209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replay_counts_bare_event_lines_as_bad() {
+    async fn replay_fails_on_bare_event_line() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("events.jsonl");
         std::fs::write(
@@ -208,10 +221,8 @@ mod tests {
         .unwrap();
 
         let log = EventLog::new(&path);
-        let stats = log.replay(|_| Ok(())).await.unwrap();
-
-        assert_eq!(stats.bad_lines, 1);
-        assert_eq!(stats.applied, 1);
+        let err = log.replay(|_| Ok(())).await.unwrap_err();
+        assert!(matches!(err, EventLogError::BadLine { line_no: 1, .. }));
     }
 
     #[tokio::test]
@@ -229,6 +240,12 @@ mod tests {
             .replay(|_| Ok(()))
             .await
             .unwrap_err();
-        assert!(matches!(err, EventLogError::UnsupportedSchema(99)));
+        assert!(matches!(
+            err,
+            EventLogError::BadLine {
+                line_no: 1,
+                detail: ref d,
+            } if d.contains("unsupported event schema: 99")
+        ));
     }
 }
