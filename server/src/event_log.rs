@@ -26,20 +26,12 @@ pub enum EventLogError {
     UnsupportedSchema(u32),
 }
 
-/// Parse one JSONL line: wrapped [`EventRecord`] or legacy bare [`Event`].
 fn parse_line(line: &str) -> Result<EventRecord, EventLogError> {
-    if let Ok(record) = serde_json::from_str::<EventRecord>(line) {
-        if record.schema != CURRENT_EVENT_SCHEMA {
-            return Err(EventLogError::UnsupportedSchema(record.schema));
-        }
-        return Ok(record);
+    let record = serde_json::from_str::<EventRecord>(line)?;
+    if record.schema != CURRENT_EVENT_SCHEMA {
+        return Err(EventLogError::UnsupportedSchema(record.schema));
     }
-
-    let event = serde_json::from_str::<Event>(line)?;
-    Ok(EventRecord {
-        schema: 1,
-        event,
-    })
+    Ok(record)
 }
 
 #[derive(Debug, Clone)]
@@ -204,7 +196,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replay_accepts_legacy_bare_events() {
+    async fn replay_counts_bare_event_lines_as_bad() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("events.jsonl");
         std::fs::write(
@@ -216,18 +208,10 @@ mod tests {
         .unwrap();
 
         let log = EventLog::new(&path);
-        let mut seen = Vec::new();
-        let stats = log
-            .replay(|ev| {
-                seen.push(ev);
-                Ok(())
-            })
-            .await
-            .unwrap();
+        let stats = log.replay(|_| Ok(())).await.unwrap();
 
-        assert_eq!(stats.applied, 2);
-        assert_eq!(stats.bad_lines, 0);
-        assert_eq!(seen.len(), 2);
+        assert_eq!(stats.bad_lines, 1);
+        assert_eq!(stats.applied, 1);
     }
 
     #[tokio::test]
