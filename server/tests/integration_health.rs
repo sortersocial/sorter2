@@ -11,6 +11,7 @@ async fn start_test_server() -> (SocketAddr, TempDir) {
     let cfg = AppConfig {
         data_dir: data.clone(),
         event_log_path: format!("{data}/events.jsonl"),
+        views_log_path: format!("{data}/views.jsonl"),
         port: 0,
     };
     let state = create_app_state(cfg).await;

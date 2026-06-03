@@ -5,7 +5,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
 };
 
-use crate::events::{Event, EventRecord, CURRENT_EVENT_SCHEMA};
+use crate::events::{EventRecord, CURRENT_LOG_SCHEMA};
 
 #[derive(Debug, Default)]
 pub struct ReplayStats {
@@ -45,7 +45,7 @@ impl EventLogError {
 
 fn parse_line(line: &str) -> Result<EventRecord, EventLogError> {
     let record = serde_json::from_str::<EventRecord>(line)?;
-    if record.schema != CURRENT_EVENT_SCHEMA {
+    if record.schema != CURRENT_LOG_SCHEMA {
         return Err(EventLogError::UnsupportedSchema(record.schema));
     }
     Ok(record)
@@ -72,7 +72,7 @@ impl EventLog {
         Ok(())
     }
 
-    pub async fn append(&self, event: &Event) -> Result<(), EventLogError> {
+    pub async fn append(&self, record: &EventRecord) -> Result<(), EventLogError> {
         self.ensure_parent_dir().await?;
         let mut f: tokio::fs::File = OpenOptions::new()
             .create(true)
@@ -80,8 +80,7 @@ impl EventLog {
             .open(&self.path)
             .await?;
 
-        let record = EventRecord::new(event.clone());
-        let mut line = serde_json::to_string(&record)?;
+        let mut line = serde_json::to_string(record)?;
         line.push('\n');
         f.write_all(line.as_bytes()).await?;
         f.flush().await?;
@@ -89,23 +88,22 @@ impl EventLog {
         Ok(())
     }
 
-    /// Stream the log one line at a time — parse each [`Event`], apply, drop before the next line.
-    pub async fn replay<F>(&self, mut apply: F) -> Result<ReplayStats, EventLogError>
+    /// Stream the log one line at a time — parse each record, apply, drop before the next line.
+    pub async fn replay<F>(&self, apply: F) -> Result<ReplayStats, EventLogError>
     where
-        F: FnMut(Event) -> Result<(), EventLogError>,
+        F: FnMut(EventRecord) -> Result<(), EventLogError>,
     {
-        self.replay_from(0, |_, ev| apply(ev)).await
+        self.replay_from(0, apply).await
     }
 
-    /// Stream valid events after `skip_valid_events`, passing each event's
-    /// one-based valid-event count to the callback.
+    /// Replay records with `seq` greater than `after_seq`.
     pub async fn replay_from<F>(
         &self,
-        skip_valid_events: u64,
+        after_seq: u64,
         mut apply: F,
     ) -> Result<ReplayStats, EventLogError>
     where
-        F: FnMut(u64, Event) -> Result<(), EventLogError>,
+        F: FnMut(EventRecord) -> Result<(), EventLogError>,
     {
         let mut stats = ReplayStats::default();
         if !fs::try_exists(&self.path).await? {
@@ -114,9 +112,8 @@ impl EventLog {
 
         let f = fs::File::open(&self.path).await?;
         let mut reader = BufReader::new(f).lines();
-
-        let mut valid_events = 0_u64;
         let mut line_no = 0_usize;
+
         while let Some(line) = reader.next_line().await? {
             line_no += 1;
             let trimmed = line.trim();
@@ -124,26 +121,23 @@ impl EventLog {
                 continue;
             }
             let record = parse_line(trimmed).map_err(|e| EventLogError::at_line(line_no, e))?;
-            valid_events += 1;
-            if valid_events <= skip_valid_events {
+            if record.seq <= after_seq {
                 stats.skipped += 1;
                 continue;
             }
-            match apply(valid_events, record.event) {
-                Ok(()) => stats.applied += 1,
-                Err(e) => return Err(e),
-            }
+            apply(record)?;
+            stats.applied += 1;
         }
 
         Ok(stats)
     }
 
     /// Load every event into memory. Prefer [`Self::replay`] for startup.
-    pub async fn load_all(&self) -> Result<(Vec<Event>, Vec<(usize, String)>), EventLogError> {
+    pub async fn load_all(&self) -> Result<(Vec<EventRecord>, Vec<(usize, String)>), EventLogError> {
         let mut events = Vec::new();
         let stats = self
-            .replay(|ev| {
-                events.push(ev);
+            .replay(|record| {
+                events.push(record);
                 Ok(())
             })
             .await?;
@@ -155,56 +149,69 @@ impl EventLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::Event;
+    use crate::events::{event_timestamp, Event};
+
+    fn sample_record(seq: u64, event: Event) -> EventRecord {
+        EventRecord::new(seq, event_timestamp(&event), event)
+    }
 
     #[tokio::test]
     async fn replay_applies_one_line_at_a_time() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("events.jsonl");
         let log = EventLog::new(&path);
-        log.append(&Event::NodeEnsured {
-            id: "reddit.com/r/rust".into(),
-        })
+        log.append(&sample_record(
+            1,
+            Event::NodeEnsured {
+                id: "reddit.com/r/rust".into(),
+            },
+        ))
         .await
         .unwrap();
-        log.append(&Event::VoteRecorded {
-            ts: 1,
-            a: "a".into(),
-            b: "b".into(),
-            ratio_left: 2,
-            ratio_right: 1,
-            scope: String::new(),
-        })
+        log.append(&sample_record(
+            2,
+            Event::VoteRecorded {
+                ts: 1,
+                a: "a".into(),
+                b: "b".into(),
+                ratio_left: 2,
+                ratio_right: 1,
+                scope: String::new(),
+            },
+        ))
         .await
         .unwrap();
 
         let mut seen = Vec::new();
         let stats = log
-            .replay(|ev| {
-                seen.push(ev);
+            .replay(|record| {
+                seen.push(record.seq);
                 Ok(())
             })
             .await
             .unwrap();
 
         assert_eq!(stats.applied, 2);
-        assert_eq!(seen.len(), 2);
+        assert_eq!(seen, vec![1, 2]);
     }
 
     #[tokio::test]
-    async fn append_writes_schema_envelope() {
+    async fn append_writes_schema_envelope_with_seq_and_ts() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("events.jsonl");
         let log = EventLog::new(&path);
-        log.append(&Event::NodeEnsured {
+        let event = Event::NodeEnsured {
             id: "reddit.com/r/rust".into(),
-        })
-        .await
-        .unwrap();
+        };
+        log.append(&sample_record(1, event))
+            .await
+            .unwrap();
 
         let line = std::fs::read_to_string(&path).unwrap();
         let record: EventRecord = serde_json::from_str(line.trim()).unwrap();
-        assert_eq!(record.schema, CURRENT_EVENT_SCHEMA);
+        assert_eq!(record.schema, CURRENT_LOG_SCHEMA);
+        assert_eq!(record.seq, 1);
+        assert!(record.ts > 0);
         assert!(matches!(record.event, Event::NodeEnsured { .. }));
     }
 
@@ -215,7 +222,7 @@ mod tests {
         std::fs::write(
             &path,
             r#"{"type":"node_ensured","id":"reddit.com/r/rust"}
-{"schema":1,"event":{"type":"vote_recorded","ts":1,"a":"a","b":"b","ratio_left":2,"ratio_right":1,"scope":""}}
+{"schema":1,"seq":1,"ts":1,"event":{"type":"vote_recorded","ts":1,"a":"a","b":"b","ratio_left":2,"ratio_right":1,"scope":""}}
 "#,
         )
         .unwrap();
@@ -231,7 +238,7 @@ mod tests {
         let path = tmp.path().join("events.jsonl");
         std::fs::write(
             &path,
-            r#"{"schema":99,"event":{"type":"node_ensured","id":"x"}}"#,
+            r#"{"schema":99,"seq":1,"ts":1,"event":{"type":"node_ensured","id":"x"}}"#,
         )
         .unwrap();
 

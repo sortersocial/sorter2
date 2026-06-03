@@ -10,6 +10,7 @@ use crate::{
     projection_store::ProjectionStore,
     reddit::{RedditApiConfig, RedditBroker},
     reducer::{GlobalTree, VoteData},
+    view_log::ViewLog,
     views::ViewStore,
 };
 
@@ -40,20 +41,18 @@ async fn catch_up_projection(
     event_log: &EventLog,
     entity_store: &EntityStore,
     projection_store: &ProjectionStore,
-    view_store: &ViewStore,
 ) -> Result<(), crate::event_log::EventLogError> {
-    let cursor = projection_store
+    let after_seq = projection_store
         .last_applied_event_count()
         .map_err(|e| crate::event_log::EventLogError::Apply(e.to_string()))?;
 
     event_log
-        .replay_from(cursor, |event_count, ev| {
+        .replay_from(after_seq, |record| {
             projection_apply::apply_event(
                 projection_store,
                 entity_store,
-                view_store,
-                event_count,
-                &ev,
+                record.seq,
+                &record.event,
             )
         })
         .await?;
@@ -65,6 +64,7 @@ async fn catch_up_projection(
 pub struct AppConfig {
     pub data_dir: String,
     pub event_log_path: String,
+    pub views_log_path: String,
     pub port: u16,
 }
 
@@ -73,6 +73,8 @@ impl AppConfig {
         let data_dir = std::env::var("SORTER2_DATA_DIR").unwrap_or_else(|_| "./data".into());
         let event_log_path = std::env::var("SORTER2_EVENT_LOG")
             .unwrap_or_else(|_| format!("{data_dir}/events.jsonl"));
+        let views_log_path = std::env::var("SORTER2_VIEWS_LOG")
+            .unwrap_or_else(|_| format!("{data_dir}/views.jsonl"));
         let port = std::env::var("PORT")
             .ok()
             .and_then(|p| p.parse().ok())
@@ -80,6 +82,7 @@ impl AppConfig {
         Self {
             data_dir,
             event_log_path,
+            views_log_path,
             port,
         }
     }
@@ -89,6 +92,7 @@ impl AppConfig {
 pub struct AppState {
     pub cfg: Arc<AppConfig>,
     pub event_log: Arc<EventLog>,
+    pub view_log: Arc<ViewLog>,
     pub entity_store: EntityStore,
     pub projection_store: ProjectionStore,
     pub views: ViewStore,
@@ -99,16 +103,22 @@ pub struct AppState {
 impl AppState {
     pub async fn new(cfg: AppConfig) -> Self {
         let event_log = Arc::new(EventLog::new(cfg.event_log_path.clone()));
+        let view_log = Arc::new(ViewLog::new(cfg.views_log_path.clone()));
         let store_path = format!("{}/store", cfg.data_dir);
         let db = durable::Db::open(std::path::Path::new(&store_path)).expect("store db");
         let entity_store = EntityStore::from_db(&db).expect("entity store");
         let projection_store = ProjectionStore::from_db(&db).expect("projection store");
         let views = ViewStore::from_db(&db).expect("view store");
-        views.spawn_flush_worker();
 
-        if let Err(e) =
-            catch_up_projection(&event_log, &entity_store, &projection_store, &views).await
-        {
+        if let Err(e) = views.catch_up(&view_log).await {
+            tracing::warn!(err = %e, "view log replay failed");
+        }
+        if let Err(e) = views.flush() {
+            tracing::warn!(err = %e, "view store flush after catch-up failed");
+        }
+        views.spawn_worker(view_log.clone());
+
+        if let Err(e) = catch_up_projection(&event_log, &entity_store, &projection_store).await {
             tracing::warn!(err = %e, "event log replay failed");
         }
 
@@ -116,13 +126,13 @@ impl AppState {
             event_log.clone(),
             entity_store.clone(),
             projection_store.clone(),
-            views.clone(),
         );
         let reddit = RedditBroker::spawn(journal.clone(), RedditApiConfig::from_env());
 
         Self {
             cfg: Arc::new(cfg),
             event_log,
+            view_log,
             entity_store,
             projection_store,
             views,
@@ -186,9 +196,12 @@ mod tests {
     use crate::{
         entity_store::EntityStore, event_log::EventLog, event_reducer, events::Event,
         path_types::ItemId, projection_store::ProjectionStore, reducer::GlobalTree,
-        views::ViewStore,
     };
     use serde_json::json;
+
+    fn event_record(seq: u64, event: Event) -> crate::events::EventRecord {
+        crate::events::EventRecord::new(seq, crate::events::event_timestamp(&event), event)
+    }
 
     #[tokio::test]
     async fn replay_entity_imported_restores_view() {
@@ -197,16 +210,17 @@ mod tests {
         let log = EventLog::new(log_path.to_string_lossy().into_owned());
         let entity_store = EntityStore::open(&tmp.path().join("entity_db")).unwrap();
         let payload = json!({"kind":"t5","data":{"title":"Rust","display_name":"rust"}});
-        log.append(&Event::EntityImported {
+        let event = Event::EntityImported {
             id: "reddit.com/r/rust".into(),
             ts: 1,
             payload: payload.clone(),
-        })
-        .await
-        .unwrap();
+        };
+        log.append(&event_record(1, event))
+            .await
+            .unwrap();
 
         let mut tree = GlobalTree::new();
-        log.replay(|ev| event_reducer::apply_event(ev, &mut tree, &entity_store))
+        log.replay(|record| event_reducer::apply_event(record.event, &mut tree, &entity_store))
             .await
             .unwrap();
         let node = tree
@@ -221,58 +235,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn projected_replay_applies_view_recorded_events() {
-        let tmp = tempfile::tempdir().unwrap();
-        let log_path = tmp.path().join("events.jsonl");
-        let log = EventLog::new(log_path.to_string_lossy().into_owned());
-        log.append(&Event::ViewRecorded {
-            path: "/vote".into(),
-            ts: 1,
-        })
-        .await
-        .unwrap();
-        log.append(&Event::ViewRecorded {
-            path: "/vote".into(),
-            ts: 2,
-        })
-        .await
-        .unwrap();
-
-        let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
-        let projection_store = ProjectionStore::from_db(&db).unwrap();
-        let view_store = ViewStore::from_db(&db).unwrap();
-
-        super::catch_up_projection(&log, &entity_store, &projection_store, &view_store)
-            .await
-            .unwrap();
-
-        assert_eq!(view_store.get_views_count("/vote").unwrap(), 2);
-        assert_eq!(projection_store.last_applied_event_count().unwrap(), 2);
-    }
-
-    #[tokio::test]
     async fn projected_replay_cursor_prevents_double_applying_votes() {
         let tmp = tempfile::tempdir().unwrap();
         let log_path = tmp.path().join("events.jsonl");
         let log = EventLog::new(log_path.to_string_lossy().into_owned());
-        log.append(&Event::VoteRecorded {
-            ts: 1,
-            a: "alpha".into(),
-            b: "beta".into(),
-            ratio_left: 2,
-            ratio_right: 1,
-            scope: String::new(),
-        })
+        log.append(&event_record(
+            1,
+            Event::VoteRecorded {
+                ts: 1,
+                a: "alpha".into(),
+                b: "beta".into(),
+                ratio_left: 2,
+                ratio_right: 1,
+                scope: String::new(),
+            },
+        ))
         .await
         .unwrap();
 
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
         let entity_store = EntityStore::from_db(&db).unwrap();
         let projection_store = ProjectionStore::from_db(&db).unwrap();
-        let view_store = ViewStore::from_db(&db).unwrap();
 
-        super::catch_up_projection(&log, &entity_store, &projection_store, &view_store)
+        super::catch_up_projection(&log, &entity_store, &projection_store)
             .await
             .unwrap();
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
@@ -281,7 +266,7 @@ mod tests {
         let first_edge_total: f64 = first_root.local_ranking.edges.values().sum();
         assert_eq!(first_edge_total, 3.0);
 
-        super::catch_up_projection(&log, &entity_store, &projection_store, &view_store)
+        super::catch_up_projection(&log, &entity_store, &projection_store)
             .await
             .unwrap();
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
@@ -298,6 +283,7 @@ mod tests {
         let state = AppState::new(AppConfig {
             data_dir: data_dir.clone(),
             event_log_path: format!("{data_dir}/events.jsonl"),
+            views_log_path: format!("{data_dir}/views.jsonl"),
             port: 0,
         })
         .await;
@@ -326,6 +312,7 @@ mod tests {
         let state = AppState::new(AppConfig {
             data_dir: data_dir.clone(),
             event_log_path: format!("{data_dir}/events.jsonl"),
+            views_log_path: format!("{data_dir}/views.jsonl"),
             port: 0,
         })
         .await;
@@ -353,22 +340,27 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().to_string_lossy().into_owned();
         let log = EventLog::new(format!("{data_dir}/events.jsonl"));
-        log.append(&Event::NodeEnsured {
-            id: "reddit.com/r/rust".into(),
-        })
+        log.append(&event_record(
+            1,
+            Event::NodeEnsured {
+                id: "reddit.com/r/rust".into(),
+            },
+        ))
         .await
         .unwrap();
-        log.append(&Event::NodeEnsured {
-            id: "reddit.com/r/python".into(),
-        })
+        log.append(&event_record(
+            2,
+            Event::NodeEnsured {
+                id: "reddit.com/r/python".into(),
+            },
+        ))
         .await
         .unwrap();
         {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
             let entity_store = EntityStore::from_db(&db).unwrap();
             let projection_store = ProjectionStore::from_db(&db).unwrap();
-            let view_store = ViewStore::from_db(&db).unwrap();
-            super::catch_up_projection(&log, &entity_store, &projection_store, &view_store)
+            super::catch_up_projection(&log, &entity_store, &projection_store)
                 .await
                 .unwrap();
         }
@@ -376,6 +368,7 @@ mod tests {
         let cfg = AppConfig {
             data_dir: data_dir.clone(),
             event_log_path: format!("{data_dir}/events.jsonl"),
+            views_log_path: format!("{data_dir}/views.jsonl"),
             port: 0,
         };
         let second = AppState::new(cfg).await;
@@ -399,22 +392,24 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().to_string_lossy().into_owned();
         let log = EventLog::new(format!("{data_dir}/events.jsonl"));
-        log.append(&Event::VoteRecorded {
-            ts: 1,
-            a: "alpha".into(),
-            b: "beta".into(),
-            ratio_left: 2,
-            ratio_right: 1,
-            scope: String::new(),
-        })
+        log.append(&event_record(
+            1,
+            Event::VoteRecorded {
+                ts: 1,
+                a: "alpha".into(),
+                b: "beta".into(),
+                ratio_left: 2,
+                ratio_right: 1,
+                scope: String::new(),
+            },
+        ))
         .await
         .unwrap();
         {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
             let entity_store = EntityStore::from_db(&db).unwrap();
             let projection_store = ProjectionStore::from_db(&db).unwrap();
-            let view_store = ViewStore::from_db(&db).unwrap();
-            super::catch_up_projection(&log, &entity_store, &projection_store, &view_store)
+            super::catch_up_projection(&log, &entity_store, &projection_store)
                 .await
                 .unwrap();
         }
@@ -422,6 +417,7 @@ mod tests {
         let cfg = AppConfig {
             data_dir: data_dir.clone(),
             event_log_path: format!("{data_dir}/events.jsonl"),
+            views_log_path: format!("{data_dir}/views.jsonl"),
             port: 0,
         };
         let second = AppState::new(cfg).await;

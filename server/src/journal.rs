@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    entity_store::EntityStore, event_log::EventLog, events::Event, projection_apply,
-    projection_store::ProjectionStore, views::ViewStore,
+    entity_store::EntityStore, event_log::EventLog, events::{event_timestamp, Event, EventRecord},
+    projection_apply, projection_store::ProjectionStore,
 };
 
 pub struct JournalCommand {
@@ -24,7 +24,6 @@ impl JournalClient {
         event_log: Arc<EventLog>,
         entity_store: EntityStore,
         projection_store: ProjectionStore,
-        view_store: ViewStore,
     ) -> Self {
         let (tx, rx) = mpsc::channel(256);
         tokio::spawn(journal_worker(
@@ -32,7 +31,6 @@ impl JournalClient {
             event_log,
             entity_store,
             projection_store,
-            view_store,
         ));
         Self { tx }
     }
@@ -53,7 +51,6 @@ async fn journal_worker(
     event_log: Arc<EventLog>,
     entity_store: EntityStore,
     projection_store: ProjectionStore,
-    view_store: ViewStore,
 ) {
     while let Some(first) = rx.recv().await {
         let mut batch = vec![first];
@@ -66,7 +63,6 @@ async fn journal_worker(
                 &event_log,
                 &projection_store,
                 &entity_store,
-                &view_store,
                 &cmd.event,
             )
             .await;
@@ -79,15 +75,15 @@ async fn append_and_project(
     event_log: &EventLog,
     projection_store: &ProjectionStore,
     entity_store: &EntityStore,
-    view_store: &ViewStore,
     event: &Event,
 ) -> Result<(), String> {
-    event_log
-        .append(event)
-        .await
-        .map_err(|e| e.to_string())?;
-    projection_apply::apply_next_event(projection_store, entity_store, view_store, event)
-        .map(|_| ())
+    let seq = projection_store
+        .last_applied_event_count()
+        .map_err(|e| e.to_string())?
+        + 1;
+    let record = EventRecord::new(seq, event_timestamp(event), event.clone());
+    event_log.append(&record).await.map_err(|e| e.to_string())?;
+    projection_apply::apply_event(projection_store, entity_store, seq, event)
         .map_err(|e| e.to_string())
 }
 
@@ -104,13 +100,11 @@ mod tests {
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
         let entity_store = EntityStore::from_db(&db).unwrap();
         let projection_store = ProjectionStore::from_db(&db).unwrap();
-        let view_store = ViewStore::from_db(&db).unwrap();
 
         let journal = JournalClient::spawn(
             event_log,
             entity_store,
             projection_store.clone(),
-            view_store,
         );
 
         let j1 = journal.clone();
