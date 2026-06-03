@@ -18,6 +18,7 @@ pub mod reducer;
 pub mod render;
 pub mod state;
 pub mod ui_action;
+pub mod view_log;
 pub mod views;
 
 use axum::{

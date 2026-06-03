@@ -35,7 +35,6 @@ pub fn apply_event(
                 tree.apply_vote(&parent, vote);
             }
         }
-        Event::ViewRecorded { .. } => {}
         Event::NodeEnsured { id } => {
             if let Some(parsed) = ItemId::parse(&id).or_else(|| ItemId::from_url(&id)) {
                 tree.ensure_path(&parsed);
