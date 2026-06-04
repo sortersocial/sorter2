@@ -8,11 +8,12 @@ use std::{
 
 use tokio::sync::mpsc;
 
-use durable::{Db, DurableMap};
+use durable::Db;
 
 use crate::{
     events::{ViewEvent, ViewRecord},
     fetch::now_ms,
+    storage_schema::{Store, StoreFields},
     view_log::{ViewLog, ViewLogError},
 };
 
@@ -24,7 +25,7 @@ pub enum ViewStoreError {
     #[error("view log error: {0}")]
     Log(#[from] ViewLogError),
     #[error("durable error: {0}")]
-    Durable(#[from] durable::DurableError),
+    Durable(#[from] durable::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("store lock poisoned")]
@@ -40,8 +41,6 @@ struct MemState {
 
 struct ViewStoreInner {
     db: Db,
-    counts: DurableMap<String, u64>,
-    meta: DurableMap<String, u64>,
 }
 
 struct ViewCommand {
@@ -68,15 +67,14 @@ impl ViewStore {
     }
 
     pub fn from_db(db: &Db) -> Result<Self, ViewStoreError> {
-        let counts = DurableMap::new(db, "view_counts")?;
-        let meta = DurableMap::new(db, "view_meta")?;
         let mut initial = HashMap::new();
-        for item in counts.iter() {
-            let (path, count) = item?;
+        for (path, count) in Store::root().view_counts().iter(db)? {
             initial.insert(path, count);
         }
-        let last_applied_seq = meta
-            .get(&META_LAST_APPLIED_SEQ.to_string())?
+        let last_applied_seq = Store::root()
+            .view_meta()
+            .key(&META_LAST_APPLIED_SEQ.to_string())
+            .get(db)?
             .unwrap_or(0);
 
         let (record_tx, record_rx) = mpsc::channel(4096);
@@ -87,11 +85,7 @@ impl ViewStore {
                 meta_dirty: false,
                 last_applied_seq,
             })),
-            inner: Arc::new(Mutex::new(ViewStoreInner {
-                db: db.clone(),
-                counts,
-                meta,
-            })),
+            inner: Arc::new(Mutex::new(ViewStoreInner { db: db.clone() })),
             record_tx,
             record_rx: Arc::new(Mutex::new(Some(record_rx))),
         })
@@ -252,14 +246,17 @@ fn flush_dirty(memory: &MemStateLock, inner: &Arc<Mutex<ViewStoreInner>>) -> Res
     }
 
     let inner = inner.lock().map_err(|_| ViewStoreError::Poisoned)?;
+    let root = Store::root();
     let mut batch = inner.db.batch();
     for (path, count) in &counts {
-        inner.counts.put_in_batch(&mut batch, path, count)?;
+        batch.write(root.view_counts().key(path).set(count));
     }
     if meta_dirty {
-        inner
-            .meta
-            .put_in_batch(&mut batch, &META_LAST_APPLIED_SEQ.to_string(), &seq)?;
+        batch.write(
+            root.view_meta()
+                .key(&META_LAST_APPLIED_SEQ.to_string())
+                .set(&seq),
+        );
     }
     batch.commit()?;
     Ok(())

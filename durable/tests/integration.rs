@@ -328,6 +328,24 @@ fn deque_supports_capped_recent_window() {
 }
 
 #[test]
+fn deque_truncate_back_caps_length_keeping_front() {
+    let (_dir, db) = open();
+    let dq = Store::root().scopes().key(&"s".to_string()).recent_votes();
+    for n in 0..10 {
+        dq.push_back(&db, &Vote { a: format!("{n}"), b: "x".into(), ratio: n })
+            .unwrap();
+    }
+    // Keep only the 3 oldest at front (drop the back/newest beyond cap).
+    dq.truncate_back(&db, 3, Durability::SyncWal).unwrap();
+    let kept = dq.iter(&db).unwrap();
+    assert_eq!(kept.iter().map(|v| v.ratio).collect::<Vec<_>>(), vec![0, 1, 2]);
+
+    // Truncating to a larger-or-equal cap is a no-op.
+    dq.truncate_back(&db, 10, Durability::SyncWal).unwrap();
+    assert_eq!(dq.len(&db).unwrap(), 3);
+}
+
+#[test]
 fn one_batch_commits_all_or_nothing_and_persists() {
     let dir = TempDir::new().unwrap();
     let rust_key = "rust".to_string();

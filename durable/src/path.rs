@@ -546,4 +546,30 @@ impl<T: Serialize + DeserializeOwned> Path<Deque<Leaf<T>>> {
         }
         Ok(out)
     }
+
+    /// Drop elements from the back until the length is at most `max_len`,
+    /// committing with the given durability. A no-op when already short enough.
+    pub fn truncate_back(
+        &self,
+        db: &Db,
+        max_len: u64,
+        durability: crate::Durability,
+    ) -> Result<()> {
+        let head = self.head(db)?;
+        let tail = self.tail(db)?;
+        let len = (tail - head).max(0) as u64;
+        if len <= max_len {
+            return Ok(());
+        }
+        let new_tail = tail - (len - max_len) as i64;
+        let mut batch = db.batch();
+        for idx in new_tail..tail {
+            batch.write(self.child::<Leaf<T>>(&codec::order_i64(idx)).delete());
+        }
+        batch.raw_put(
+            codec::meta_key(&self.prefix, b"tail"),
+            new_tail.to_le_bytes().to_vec(),
+        );
+        batch.commit_with(durability)
+    }
 }
