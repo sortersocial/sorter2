@@ -381,42 +381,42 @@ mod tests {
 
     #[test]
     fn suggest_prefers_unvoted_pair() {
-        let parent = ItemId::parse("reddit.com/r/rust").unwrap();
+        let parent = ItemId::parse("https://reddit.com/r/rust").unwrap();
         let mut tree = seed_children(
             &parent,
             &[
-                "reddit.com/r/rust/a",
-                "reddit.com/r/rust/b",
-                "reddit.com/r/rust/c",
+                "https://reddit.com/r/rust/a",
+                "https://reddit.com/r/rust/b",
+                "https://reddit.com/r/rust/c",
             ],
         );
         let vote =
-            VoteData::from_recorded(1, "reddit.com/r/rust/a", "reddit.com/r/rust/b", 2, 1).unwrap();
+            VoteData::from_recorded(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1).unwrap();
         tree.apply_vote(&parent, vote);
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);
         let (l, r) = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
-        let voted_ab = (l.as_str() == "reddit.com/r/rust/a" && r.as_str() == "reddit.com/r/rust/b")
-            || (l.as_str() == "reddit.com/r/rust/b" && r.as_str() == "reddit.com/r/rust/a");
+        let voted_ab = (l.as_str() == "https://reddit.com/r/rust/a" && r.as_str() == "https://reddit.com/r/rust/b")
+            || (l.as_str() == "https://reddit.com/r/rust/b" && r.as_str() == "https://reddit.com/r/rust/a");
         assert!(!voted_ab);
     }
 
     #[test]
     fn suggest_bridges_separate_components() {
-        let parent = ItemId::parse("reddit.com/r/rust").unwrap();
+        let parent = ItemId::parse("https://reddit.com/r/rust").unwrap();
         let mut tree = seed_children(
             &parent,
             &[
-                "reddit.com/r/rust/a",
-                "reddit.com/r/rust/b",
-                "reddit.com/r/rust/c",
-                "reddit.com/r/rust/d",
+                "https://reddit.com/r/rust/a",
+                "https://reddit.com/r/rust/b",
+                "https://reddit.com/r/rust/c",
+                "https://reddit.com/r/rust/d",
             ],
         );
         let ab =
-            VoteData::from_recorded(1, "reddit.com/r/rust/a", "reddit.com/r/rust/b", 2, 1).unwrap();
+            VoteData::from_recorded(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1).unwrap();
         let cd =
-            VoteData::from_recorded(2, "reddit.com/r/rust/c", "reddit.com/r/rust/d", 2, 1).unwrap();
+            VoteData::from_recorded(2, "https://reddit.com/r/rust/c", "https://reddit.com/r/rust/d", 2, 1).unwrap();
         tree.apply_vote(&parent, ab);
         tree.apply_vote(&parent, cd);
         let group = tree.get(&parent).unwrap().local_ranking.clone();
@@ -424,37 +424,37 @@ mod tests {
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);
         let from_ab =
-            chosen.contains("reddit.com/r/rust/a") || chosen.contains("reddit.com/r/rust/b");
+            chosen.contains("https://reddit.com/r/rust/a") || chosen.contains("https://reddit.com/r/rust/b");
         let from_cd =
-            chosen.contains("reddit.com/r/rust/c") || chosen.contains("reddit.com/r/rust/d");
+            chosen.contains("https://reddit.com/r/rust/c") || chosen.contains("https://reddit.com/r/rust/d");
         assert!(from_ab && from_cd, "expected bridge pair, got {:?}", chosen);
     }
 
     #[test]
     fn suggest_prefers_attach_over_isolate_pair_among_many_unranked() {
-        let parent = ItemId::parse("reddit.com/r/rust").unwrap();
+        let parent = ItemId::parse("https://reddit.com/r/rust").unwrap();
         let mut tree = seed_children(
             &parent,
             &[
-                "reddit.com/r/rust/a",
-                "reddit.com/r/rust/b",
-                "reddit.com/r/rust/c",
-                "reddit.com/r/rust/d",
-                "reddit.com/r/rust/e",
+                "https://reddit.com/r/rust/a",
+                "https://reddit.com/r/rust/b",
+                "https://reddit.com/r/rust/c",
+                "https://reddit.com/r/rust/d",
+                "https://reddit.com/r/rust/e",
             ],
         );
         let ab =
-            VoteData::from_recorded(1, "reddit.com/r/rust/a", "reddit.com/r/rust/b", 2, 1).unwrap();
+            VoteData::from_recorded(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1).unwrap();
         tree.apply_vote(&parent, ab);
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);
         let from_ab =
-            chosen.contains("reddit.com/r/rust/a") || chosen.contains("reddit.com/r/rust/b");
-        let from_cde = chosen.contains("reddit.com/r/rust/c")
-            || chosen.contains("reddit.com/r/rust/d")
-            || chosen.contains("reddit.com/r/rust/e");
+            chosen.contains("https://reddit.com/r/rust/a") || chosen.contains("https://reddit.com/r/rust/b");
+        let from_cde = chosen.contains("https://reddit.com/r/rust/c")
+            || chosen.contains("https://reddit.com/r/rust/d")
+            || chosen.contains("https://reddit.com/r/rust/e");
         assert!(
             from_ab && from_cde,
             "expected ranked+unranked attach, got {:?}",
@@ -464,40 +464,40 @@ mod tests {
 
     #[test]
     fn suggest_connects_isolate_to_existing_component() {
-        let parent = ItemId::parse("reddit.com/r/rust").unwrap();
+        let parent = ItemId::parse("https://reddit.com/r/rust").unwrap();
         let mut tree = seed_children(
             &parent,
             &[
-                "reddit.com/r/rust/a",
-                "reddit.com/r/rust/b",
-                "reddit.com/r/rust/c",
+                "https://reddit.com/r/rust/a",
+                "https://reddit.com/r/rust/b",
+                "https://reddit.com/r/rust/c",
             ],
         );
         let ab =
-            VoteData::from_recorded(1, "reddit.com/r/rust/a", "reddit.com/r/rust/b", 2, 1).unwrap();
+            VoteData::from_recorded(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1).unwrap();
         tree.apply_vote(&parent, ab);
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);
-        assert!(chosen.contains("reddit.com/r/rust/c"));
-        assert!(chosen.contains("reddit.com/r/rust/a") || chosen.contains("reddit.com/r/rust/b"));
+        assert!(chosen.contains("https://reddit.com/r/rust/c"));
+        assert!(chosen.contains("https://reddit.com/r/rust/a") || chosen.contains("https://reddit.com/r/rust/b"));
     }
 
     #[test]
     fn suggest_zips_adjacent_ranks_when_tree_complete() {
-        let parent = ItemId::parse("reddit.com/r/rust").unwrap();
+        let parent = ItemId::parse("https://reddit.com/r/rust").unwrap();
         let mut tree = seed_children(
             &parent,
             &[
-                "reddit.com/r/rust/a",
-                "reddit.com/r/rust/b",
-                "reddit.com/r/rust/c",
+                "https://reddit.com/r/rust/a",
+                "https://reddit.com/r/rust/b",
+                "https://reddit.com/r/rust/c",
             ],
         );
         for (a, b, l, r) in [
-            ("reddit.com/r/rust/a", "reddit.com/r/rust/b", 3, 1),
-            ("reddit.com/r/rust/a", "reddit.com/r/rust/c", 2, 1),
+            ("https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 3, 1),
+            ("https://reddit.com/r/rust/a", "https://reddit.com/r/rust/c", 2, 1),
         ] {
             let v = VoteData::from_recorded(1, a, b, l, r).unwrap();
             tree.apply_vote(&parent, v);
@@ -506,26 +506,26 @@ mod tests {
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);
-        assert!(chosen.contains("reddit.com/r/rust/b"));
-        assert!(chosen.contains("reddit.com/r/rust/c"));
+        assert!(chosen.contains("https://reddit.com/r/rust/b"));
+        assert!(chosen.contains("https://reddit.com/r/rust/c"));
     }
 
     #[test]
     fn suggest_zip_prefers_1v2_before_2v3_when_both_unvoted() {
-        let parent = ItemId::parse("reddit.com/r/rust").unwrap();
+        let parent = ItemId::parse("https://reddit.com/r/rust").unwrap();
         let mut tree = seed_children(
             &parent,
             &[
-                "reddit.com/r/rust/a",
-                "reddit.com/r/rust/b",
-                "reddit.com/r/rust/c",
-                "reddit.com/r/rust/d",
+                "https://reddit.com/r/rust/a",
+                "https://reddit.com/r/rust/b",
+                "https://reddit.com/r/rust/c",
+                "https://reddit.com/r/rust/d",
             ],
         );
         for (a, b, l, r) in [
-            ("reddit.com/r/rust/c", "reddit.com/r/rust/d", 3, 1),
-            ("reddit.com/r/rust/b", "reddit.com/r/rust/c", 2, 1),
-            ("reddit.com/r/rust/a", "reddit.com/r/rust/c", 2, 1),
+            ("https://reddit.com/r/rust/c", "https://reddit.com/r/rust/d", 3, 1),
+            ("https://reddit.com/r/rust/b", "https://reddit.com/r/rust/c", 2, 1),
+            ("https://reddit.com/r/rust/a", "https://reddit.com/r/rust/c", 2, 1),
         ] {
             let v = VoteData::from_recorded(1, a, b, l, r).unwrap();
             tree.apply_vote(&parent, v);
@@ -534,16 +534,16 @@ mod tests {
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);
-        assert!(chosen.contains("reddit.com/r/rust/a"));
-        assert!(chosen.contains("reddit.com/r/rust/b"));
+        assert!(chosen.contains("https://reddit.com/r/rust/a"));
+        assert!(chosen.contains("https://reddit.com/r/rust/b"));
     }
 
     #[test]
     fn resolve_pair_picks_from_pool() {
-        let parent = ItemId::parse("reddit.com/r/rust").unwrap();
-        let tree = seed_children(&parent, &["reddit.com/r/rust/a", "reddit.com/r/rust/b"]);
+        let parent = ItemId::parse("https://reddit.com/r/rust").unwrap();
+        let tree = seed_children(&parent, &["https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b"]);
         let pair = resolve_pair(&tree, &parent, None, None).unwrap();
-        let pool: HashSet<_> = ["reddit.com/r/rust/a", "reddit.com/r/rust/b"]
+        let pool: HashSet<_> = ["https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b"]
             .into_iter()
             .collect();
         assert!(pool.contains(pair.0.as_str()));

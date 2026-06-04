@@ -23,7 +23,7 @@ mod tests {
     fn parses_short_path() {
         assert_eq!(
             parse_reddit_url("r/rust").unwrap().as_str(),
-            "reddit.com/r/rust"
+            "https://reddit.com/r/rust"
         );
     }
 
@@ -33,7 +33,7 @@ mod tests {
             parse_reddit_url("https://www.reddit.com/r/programming/hot")
                 .unwrap()
                 .as_str(),
-            "reddit.com/r/programming"
+            "https://reddit.com/r/programming"
         );
     }
 
@@ -43,7 +43,10 @@ mod tests {
             "https://old.reddit.com/r/AmItheAsshole/comments/1trnvdl/aita_for_cancelling/",
         )
         .unwrap();
-        assert_eq!(id.as_str(), "reddit.com/r/amitheasshole/comments/1trnvdl");
+        assert_eq!(
+            id.as_str(),
+            "https://reddit.com/r/amitheasshole/comments/1trnvdl"
+        );
     }
 
     #[test]

@@ -199,7 +199,7 @@ mod tests {
         log.append(&sample_record(
             1,
             Event::NodeEnsured {
-                id: "reddit.com/r/rust".into(),
+                id: "https://reddit.com/r/rust".into(),
             },
         ))
         .await
@@ -237,7 +237,7 @@ mod tests {
         let path = tmp.path().join("events.jsonl");
         let log = EventLog::new(&path);
         let event = Event::NodeEnsured {
-            id: "reddit.com/r/rust".into(),
+            id: "https://reddit.com/r/rust".into(),
         };
         log.append(&sample_record(1, event)).await.unwrap();
 
@@ -255,7 +255,7 @@ mod tests {
         let path = tmp.path().join("events.jsonl");
         std::fs::write(
             &path,
-            r#"{"type":"node_ensured","id":"reddit.com/r/rust"}
+            r#"{"type":"node_ensured","id":"https://reddit.com/r/rust"}
 {"schema":1,"seq":1,"ts":1,"event":{"type":"vote_recorded","ts":1,"a":"a","b":"b","ratio_left":2,"ratio_right":1,"scope":""}}
 "#,
         )
@@ -295,7 +295,7 @@ mod tests {
         log.append(&sample_record(
             1,
             Event::NodeEnsured {
-                id: "reddit.com/r/rust".into(),
+                id: "https://reddit.com/r/rust".into(),
             },
         ))
         .await
@@ -303,7 +303,7 @@ mod tests {
         log.append(&sample_record(
             3,
             Event::NodeEnsured {
-                id: "reddit.com/r/python".into(),
+                id: "https://reddit.com/r/python".into(),
             },
         ))
         .await

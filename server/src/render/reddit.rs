@@ -9,7 +9,7 @@ use crate::{
 };
 
 pub fn is_reddit_post(id: &ItemId) -> bool {
-    id.as_str().starts_with("reddit.com/") && id.as_str().contains("/comments/")
+    id.as_str().contains("reddit.com/") && id.as_str().contains("/comments/")
 }
 
 /// Post detail card (inside [`crate::fetch::html::entity_panel`]).

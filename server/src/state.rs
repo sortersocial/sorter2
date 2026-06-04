@@ -217,15 +217,21 @@ impl AppState {
         ratio_right: i32,
     ) -> Result<(), String> {
         let ts = crate::html::now_ms();
-        let vote = VoteData::from_recorded(ts, a, b, ratio_left, ratio_right)
-            .ok_or_else(|| "invalid vote: need two distinct non-empty items".to_string())?;
+        let a_raw = a.trim();
+        let b_raw = b.trim();
+        if a_raw.is_empty() || b_raw.is_empty() || a_raw == b_raw {
+            return Err("invalid vote: need two distinct non-empty items".to_string());
+        }
+        // Validate items canonicalize (or are opaque keys) before append.
+        let _ = VoteData::from_recorded(ts, a_raw, b_raw, ratio_left, ratio_right)
+            .ok_or_else(|| "invalid vote: need two distinct parseable items".to_string())?;
 
         let event = Event::VoteRecorded {
             ts,
-            a: vote.a.as_str().to_string(),
-            b: vote.b.as_str().to_string(),
-            ratio_left: vote.ratio_left,
-            ratio_right: vote.ratio_right,
+            a: a_raw.to_string(),
+            b: b_raw.to_string(),
+            ratio_left,
+            ratio_right,
             scope: parent.as_str().to_string(),
         };
 
@@ -253,7 +259,7 @@ mod tests {
         let log = EventLog::new(log_path.to_string_lossy().into_owned());
         let payload = json!({"kind":"t5","data":{"title":"Rust","display_name":"rust"}});
         let event = Event::EntityImported {
-            id: "reddit.com/r/rust".into(),
+            id: "https://reddit.com/r/rust".into(),
             ts: 1,
             payload: payload.clone(),
         };
@@ -266,14 +272,14 @@ mod tests {
             .await
             .unwrap();
         let tree = projection_store
-            .scope_tree(&ItemId::parse("reddit.com/r/rust").unwrap())
+            .scope_tree(&ItemId::parse("https://reddit.com/r/rust").unwrap())
             .unwrap();
         let node = tree
-            .get(&ItemId::parse("reddit.com/r/rust").unwrap())
+            .get(&ItemId::parse("https://reddit.com/r/rust").unwrap())
             .unwrap();
         assert_eq!(node.data.as_ref().unwrap().title, "Rust");
         let stored = entity_store
-            .get(&ItemId::parse("reddit.com/r/rust").unwrap())
+            .get(&ItemId::parse("https://reddit.com/r/rust").unwrap())
             .unwrap()
             .unwrap();
         assert_eq!(stored["data"]["display_name"], "rust");
@@ -289,13 +295,13 @@ mod tests {
             event_record(
                 1,
                 Event::NodeEnsured {
-                    id: "reddit.com/r/rust".into(),
+                    id: "https://reddit.com/r/rust".into(),
                 },
             ),
             event_record(
                 2,
                 Event::EntityImported {
-                    id: "reddit.com/r/rust".into(),
+                    id: "https://reddit.com/r/rust".into(),
                     ts: 2,
                     payload: payload.clone(),
                 },
@@ -325,7 +331,7 @@ mod tests {
                 &[event_record(
                     1,
                     Event::NodeEnsured {
-                        id: "reddit.com/r/stale".into(),
+                        id: "https://reddit.com/r/stale".into(),
                     },
                 )],
             )
@@ -352,11 +358,11 @@ mod tests {
         let root = tree.get(&ItemId::root()).unwrap();
         assert!(root.children.contains(&ItemId::parse("alpha").unwrap()));
         assert!(projection_store
-            .load_node(&ItemId::parse("reddit.com/r/stale").unwrap())
+            .load_node(&ItemId::parse("https://reddit.com/r/stale").unwrap())
             .unwrap()
             .is_none());
         let stored = entity_store
-            .get(&ItemId::parse("reddit.com/r/rust").unwrap())
+            .get(&ItemId::parse("https://reddit.com/r/rust").unwrap())
             .unwrap()
             .unwrap();
         assert_eq!(stored["data"]["display_name"], "rust");
@@ -370,7 +376,7 @@ mod tests {
         log.append(&event_record(
             1,
             Event::NodeEnsured {
-                id: "reddit.com/r/rust".into(),
+                id: "https://reddit.com/r/rust".into(),
             },
         ))
         .await
@@ -387,7 +393,7 @@ mod tests {
                 &[event_record(
                     2,
                     Event::NodeEnsured {
-                        id: "reddit.com/r/rust".into(),
+                        id: "https://reddit.com/r/rust".into(),
                     },
                 )],
             )
@@ -454,7 +460,7 @@ mod tests {
             port: 0,
         })
         .await;
-        let id = ItemId::parse("reddit.com/r/rust").unwrap();
+        let id = ItemId::parse("https://reddit.com/r/rust").unwrap();
 
         state.ensure_node(&id).await.unwrap();
 
@@ -465,11 +471,11 @@ mod tests {
         let projected = state.projection_store.load_tree().unwrap();
         assert!(projected.get(&id).is_some());
         let reddit = projected
-            .get(&ItemId::parse("reddit.com").unwrap())
+            .get(&ItemId::from_url("https://reddit.com").unwrap())
             .unwrap();
         assert!(reddit
             .children
-            .contains(&ItemId::parse("reddit.com/r").unwrap()));
+            .contains(&ItemId::from_url("https://reddit.com/r").unwrap()));
     }
 
     #[tokio::test]
@@ -510,7 +516,7 @@ mod tests {
         log.append(&event_record(
             1,
             Event::NodeEnsured {
-                id: "reddit.com/r/rust".into(),
+                id: "https://reddit.com/r/rust".into(),
             },
         ))
         .await
@@ -518,7 +524,7 @@ mod tests {
         log.append(&event_record(
             2,
             Event::NodeEnsured {
-                id: "reddit.com/r/python".into(),
+                id: "https://reddit.com/r/python".into(),
             },
         ))
         .await
@@ -544,13 +550,13 @@ mod tests {
             2
         );
         let tree = second
-            .scope_tree(&ItemId::parse("reddit.com/r/rust").unwrap())
+            .scope_tree(&ItemId::parse("https://reddit.com/r/rust").unwrap())
             .unwrap();
         assert!(tree
-            .get(&ItemId::parse("reddit.com/r/rust").unwrap())
+            .get(&ItemId::parse("https://reddit.com/r/rust").unwrap())
             .is_some());
         assert!(tree
-            .get(&ItemId::parse("reddit.com/r/python").unwrap())
+            .get(&ItemId::parse("https://reddit.com/r/python").unwrap())
             .is_none());
     }
 
@@ -611,7 +617,7 @@ mod tests {
     #[test]
     fn parse_item_param_from_url() {
         let id = parse_item_param("https://reddit.com/r/rust");
-        assert_eq!(id.as_str(), "reddit.com/r/rust");
+        assert_eq!(id.as_str(), "https://reddit.com/r/rust");
     }
 
     #[test]

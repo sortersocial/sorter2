@@ -124,7 +124,7 @@ mod tests {
     fn round_trip_payload() {
         let tmp = tempfile::tempdir().unwrap();
         let store = EntityStore::open(tmp.path()).unwrap();
-        let id = ItemId::parse("reddit.com/r/rust").unwrap();
+        let id = ItemId::from_url("https://reddit.com/r/rust").unwrap();
         let payload = json!({"kind": "t5", "data": {"display_name": "rust"}});
 
         store.put(&id, &payload).unwrap();

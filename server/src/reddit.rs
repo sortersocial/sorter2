@@ -183,7 +183,7 @@ pub fn entity_view_from_payload(
     id: &ItemId,
     payload: &Value,
 ) -> Option<crate::reducer::EntityData> {
-    if id.as_str().starts_with("reddit.com") {
+    if id.as_str().contains("reddit.com") {
         return parse_reddit_view(id, payload);
     }
     None
@@ -495,41 +495,59 @@ fn rate_limit_reset_secs(resp: &reqwest::Response) -> u64 {
         .unwrap_or(5)
 }
 
+fn reddit_path_segments(id: &ItemId) -> Option<Vec<String>> {
+    let s = id.as_str();
+    let rest = s
+        .strip_prefix("https://reddit.com/")
+        .or_else(|| s.strip_prefix("http://reddit.com/"))
+        .or_else(|| s.strip_prefix("reddit.com/"))?;
+    let segments: Vec<String> = rest
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    Some(segments)
+}
+
 pub fn map_item_to_reddit_api(id: &ItemId, api_base: &str) -> String {
-    let path = id.as_str();
-    if !path.starts_with("reddit.com/") && path != "reddit.com" {
-        return String::new();
-    }
+    let segments = match reddit_path_segments(id) {
+        Some(s) => s,
+        None if matches!(
+            id.as_str(),
+            "https://reddit.com" | "http://reddit.com" | "reddit.com"
+        ) =>
+        {
+            return String::new();
+        }
+        None => return String::new(),
+    };
 
     let base = api_base.trim_end_matches('/');
 
-    let segments: Vec<&str> = path.split('/').collect();
-
-    if let Some(i) = segments.iter().position(|&p| p == "comments") {
+    if let Some(i) = segments.iter().position(|p| p == "comments") {
         if segments.len() > i + 1 {
-            let api_path = segments[1..=i + 1].join("/");
+            let api_path = segments[..=i + 1].join("/");
             return format!("{base}/{api_path}.json?raw_json=1");
         }
     }
 
-    if segments.len() == 3 && segments[1] == "r" {
-        return format!("{base}/r/{}/about.json?raw_json=1", segments[2]);
+    if segments.len() == 2 && segments[0] == "r" {
+        return format!("{base}/r/{}/about.json?raw_json=1", segments[1]);
     }
 
     String::new()
 }
 
 /// Listing URL for a node's children. Currently only subreddits
-/// (`reddit.com/r/<sub>` → `/r/<sub>.json`) expose a child listing.
+/// (`https://reddit.com/r/<sub>` → `/r/<sub>.json`) expose a child listing.
 pub fn map_children_url(id: &ItemId, api_base: &str) -> String {
-    let path = id.as_str();
-    if !path.starts_with("reddit.com/") {
-        return String::new();
-    }
+    let segments = match reddit_path_segments(id) {
+        Some(s) => s,
+        None => return String::new(),
+    };
     let base = api_base.trim_end_matches('/');
-    let segments: Vec<&str> = path.split('/').collect();
-    if segments.len() == 3 && segments[1] == "r" {
-        return format!("{base}/r/{}.json?raw_json=1&limit=25", segments[2]);
+    if segments.len() == 2 && segments[0] == "r" {
+        return format!("{base}/r/{}.json?raw_json=1&limit=25", segments[1]);
     }
     String::new()
 }
@@ -548,8 +566,8 @@ fn parse_children(_parent: &ItemId, payload: &Value) -> Vec<(ItemId, Value)> {
             Some(p) if !p.is_empty() => p,
             _ => continue,
         };
-        let path = format!("reddit.com{}", permalink.trim_end_matches('/'));
-        if let Some(id) = ItemId::from_storage(&path) {
+        let raw = format!("https://reddit.com{}", permalink.trim_end_matches('/'));
+        if let Some(id) = ItemId::from_url(&raw) {
             out.push((id, child.clone()));
         }
     }
@@ -683,7 +701,7 @@ mod tests {
 
     #[test]
     fn map_subreddit_about_url() {
-        let id = ItemId::parse("reddit.com/r/rust").unwrap();
+        let id = ItemId::from_url("https://reddit.com/r/rust").unwrap();
         assert_eq!(
             map_item_to_reddit_api(&id, "https://www.reddit.com"),
             "https://www.reddit.com/r/rust/about.json?raw_json=1"
@@ -699,7 +717,8 @@ mod tests {
         let json = include_str!("../../test/fixtures/reddit/r_rust_about.json");
         let v: Value = serde_json::from_str(json).unwrap();
         let entity =
-            entity_view_from_payload(&ItemId::parse("reddit.com/r/rust").unwrap(), &v).unwrap();
+            entity_view_from_payload(&ItemId::from_url("https://reddit.com/r/rust").unwrap(), &v)
+                .unwrap();
         assert_eq!(entity.title, "The Rust Programming Language");
     }
 
@@ -707,7 +726,8 @@ mod tests {
     fn parse_post_listing_extracts_thumb_and_full_preview() {
         let json = include_str!("../../test/fixtures/reddit/post_preview.json");
         let v: Value = serde_json::from_str(json).unwrap();
-        let id = ItemId::parse("reddit.com/r/nsfw/comments/1tpy6a1/angel_eyes").unwrap();
+        let id =
+            ItemId::from_url("https://reddit.com/r/nsfw/comments/1tpy6a1/angel_eyes").unwrap();
         let entity = entity_view_from_payload(&id, &v).unwrap();
         assert_eq!(entity.title, "Angel Eyes");
         assert!(entity.thumb_url.as_ref().unwrap().contains("width=140"));

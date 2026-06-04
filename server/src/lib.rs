@@ -9,6 +9,7 @@ pub mod journal;
 pub mod pair;
 pub mod parser;
 pub mod path_types;
+pub mod url_rules;
 pub mod projection_apply;
 pub mod projection_store;
 pub mod ranking;

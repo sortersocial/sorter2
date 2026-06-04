@@ -58,3 +58,4 @@ Use **tmux** for `cargo run --package sorter2-server` (dev server). Rebuild afte
 
 - First `cargo test` / `cargo build --release` is slow; Clojure smoke test always does a release build.
 - `legacy/` and `ideas/` are not part of the workspace build.
+- **ItemId** for web URLs is a canonical full URL (`https://reddit.com/r/rust`). Rules live in [`server/src/url_rules/`](server/src/url_rules/) (composable Rust, not a config DSL). After changing canonicalization rules, rebuild the projection: `cargo run --package sorter2-server -- replay-index`.

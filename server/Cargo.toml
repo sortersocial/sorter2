@@ -24,6 +24,7 @@ async-stream = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 rand = "0.8"
 urlencoding = "2"
+url = "2"
 durable = { path = "../durable" }
 
 [dev-dependencies]

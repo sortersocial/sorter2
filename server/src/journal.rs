@@ -141,10 +141,10 @@ mod tests {
         let j2 = journal.clone();
         let (r1, r2) = tokio::join!(
             j1.append(Event::NodeEnsured {
-                id: "reddit.com/r/rust".into(),
+                id: "https://reddit.com/r/rust".into(),
             }),
             j2.append(Event::NodeEnsured {
-                id: "reddit.com/r/python".into(),
+                id: "https://reddit.com/r/python".into(),
             }),
         );
         r1.unwrap();
@@ -153,10 +153,10 @@ mod tests {
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 2);
         let tree = projection_store.load_tree().unwrap();
         assert!(tree
-            .get(&ItemId::parse("reddit.com/r/rust").unwrap())
+            .get(&ItemId::parse("https://reddit.com/r/rust").unwrap())
             .is_some());
         assert!(tree
-            .get(&ItemId::parse("reddit.com/r/python").unwrap())
+            .get(&ItemId::parse("https://reddit.com/r/python").unwrap())
             .is_some());
     }
 
@@ -170,7 +170,7 @@ mod tests {
                 1,
                 1,
                 Event::NodeEnsured {
-                    id: "reddit.com/r/rust".into(),
+                    id: "https://reddit.com/r/rust".into(),
                 },
             ))
             .await
@@ -186,7 +186,7 @@ mod tests {
                 1,
                 1,
                 Event::NodeEnsured {
-                    id: "reddit.com/r/rust".into(),
+                    id: "https://reddit.com/r/rust".into(),
                 },
             )],
         )
@@ -202,7 +202,7 @@ mod tests {
         );
         journal
             .append(Event::NodeEnsured {
-                id: "reddit.com/r/python".into(),
+                id: "https://reddit.com/r/python".into(),
             })
             .await
             .unwrap();
@@ -227,13 +227,13 @@ mod tests {
         journal
             .append_many(vec![
                 Event::NodeEnsured {
-                    id: "reddit.com/r/rust".into(),
+                    id: "https://reddit.com/r/rust".into(),
                 },
                 Event::NodeEnsured {
-                    id: "reddit.com/r/python".into(),
+                    id: "https://reddit.com/r/python".into(),
                 },
                 Event::NodeEnsured {
-                    id: "reddit.com/r/clojure".into(),
+                    id: "https://reddit.com/r/clojure".into(),
                 },
             ])
             .await
@@ -245,7 +245,7 @@ mod tests {
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 3);
         let tree = projection_store.load_tree().unwrap();
         assert!(tree
-            .get(&ItemId::parse("reddit.com/r/clojure").unwrap())
+            .get(&ItemId::parse("https://reddit.com/r/clojure").unwrap())
             .is_some());
     }
 }

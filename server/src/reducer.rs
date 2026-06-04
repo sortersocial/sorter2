@@ -248,16 +248,18 @@ mod from_recorded_tests {
     #[test]
     fn ensure_path_wires_children() {
         let mut tree = GlobalTree::new();
-        let id = ItemId::parse("reddit.com/r/rust").unwrap();
+        let id = ItemId::from_url("https://reddit.com/r/rust").unwrap();
         tree.ensure_path(&id);
         let root = tree.get(&ItemId::root()).unwrap();
         assert!(root
             .children
-            .contains(&ItemId::parse("reddit.com").unwrap()));
-        let reddit = tree.get(&ItemId::parse("reddit.com").unwrap()).unwrap();
+            .contains(&ItemId::from_url("https://reddit.com").unwrap()));
+        let reddit = tree
+            .get(&ItemId::from_url("https://reddit.com").unwrap())
+            .unwrap();
         assert!(reddit
             .children
-            .contains(&ItemId::parse("reddit.com/r").unwrap()));
+            .contains(&ItemId::from_url("https://reddit.com/r").unwrap()));
         let sub = tree.get(&id).unwrap();
         assert_eq!(sub.id, id);
     }

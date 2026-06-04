@@ -19,13 +19,21 @@ use crate::{
     storage_schema::{ensure_path_writes, entity_view_writes, vote_writes},
 };
 
-/// Legacy-compatible scope parsing for persisted vote events.
+fn parse_event_id(id: &str) -> Result<ItemId, EventLogError> {
+    ItemId::from_storage(id)
+        .or_else(|| ItemId::parse(id))
+        .ok_or_else(|| EventLogError::Apply(format!("invalid id: {id}")))
+}
+
+/// Scope key from a vote event (canonicalized at apply time).
 fn parent_from_event_scope(scope: &str) -> ItemId {
-    if scope.contains('/') {
-        ItemId::parse(scope).unwrap_or_else(|| ItemId::from_legacy_scope(scope))
-    } else {
-        ItemId::from_legacy_scope(scope)
+    let s = scope.trim();
+    if s.is_empty() {
+        return ItemId::root();
     }
+    ItemId::from_storage(s)
+        .or_else(|| ItemId::parse(s))
+        .unwrap_or_else(|| ItemId::from_legacy_scope(s))
 }
 
 pub fn apply_records(
@@ -68,15 +76,11 @@ pub fn apply_records(
                 vote_parents.insert(parent);
             }
             Event::NodeEnsured { id } => {
-                let parsed = ItemId::parse(id)
-                    .or_else(|| ItemId::from_url(id))
-                    .ok_or_else(|| EventLogError::Apply(format!("invalid node id: {id}")))?;
+                let parsed = parse_event_id(id)?;
                 ensure_path_writes(&mut batch, &parsed);
             }
             Event::EntityImported { id, payload, .. } => {
-                let parsed = ItemId::parse(id)
-                    .or_else(|| ItemId::from_url(id))
-                    .ok_or_else(|| EventLogError::Apply(format!("invalid entity id: {id}")))?;
+                let parsed = parse_event_id(id)?;
                 let view = entity_view_from_payload(&parsed, payload);
                 entity_view_writes(&mut batch, &parsed, view.as_ref());
                 entity_store
@@ -92,7 +96,6 @@ pub fn apply_records(
         .commit_with(durable::Durability::DisableWal)
         .map_err(|e| EventLogError::Apply(e.to_string()))?;
 
-    // Cap recent-vote windows (idempotent, blind; not part of the cursor batch).
     for parent in vote_parents {
         projection_store
             .trim_recent_votes(&parent)
