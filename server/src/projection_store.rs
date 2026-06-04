@@ -94,7 +94,8 @@ impl ProjectionStore {
             .map_err(|_| ProjectionStoreError::Poisoned)?;
         let mut tree = GlobalTree::default();
         for item in inner.nodes.iter() {
-            let (_, node) = item?;
+            let (_, record) = item?;
+            let node = decode_node(record).map_err(ProjectionStoreError::Storage)?;
             tree.nodes.insert(node.id.clone(), node);
         }
         if tree.nodes.is_empty() {

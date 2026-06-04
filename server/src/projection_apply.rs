@@ -44,7 +44,7 @@ pub fn apply_records(
         return Ok(());
     }
 
-    let mut tree = GlobalTree::new();
+    let mut tree = GlobalTree::default();
     let mut affected = BTreeSet::<ItemId>::new();
     let mut entity_payloads = Vec::<(ItemId, Value)>::new();
     let mut last_seq = 0;

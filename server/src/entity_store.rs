@@ -31,7 +31,7 @@ pub enum EntityStoreError {
 struct EntityStoreInner {
     _db: Db,
     payloads: DurableMap<String, StoredEntityRecord>,
-    meta: DurableMap<String, u64>,
+    _meta: DurableMap<String, u64>,
 }
 
 const ENTITY_SCHEMA_META_KEY: &str = "entity_schema_version";
@@ -67,7 +67,7 @@ impl EntityStore {
             inner: Arc::new(Mutex::new(EntityStoreInner {
                 _db: db.clone(),
                 payloads,
-                meta,
+                _meta: meta,
             })),
         })
     }
