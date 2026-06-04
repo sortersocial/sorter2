@@ -92,6 +92,9 @@ impl GroupState {
         if vote.ratio_right < 0 {
             vote.ratio_right = 0;
         }
+        if vote.ratio_left == 0 && vote.ratio_right == 0 {
+            return;
+        }
         let a_idx = self.ensure_item(&vote.a);
         let b_idx = self.ensure_item(&vote.b);
 
@@ -100,11 +103,11 @@ impl GroupState {
         } else {
             (b_idx, a_idx)
         };
-        self.voted_pairs.insert((i, j));
 
         let w_a = vote.ratio_left as f64;
         let w_b = vote.ratio_right as f64;
 
+        self.voted_pairs.insert((i, j));
         self.add_edge_weight(b_idx, a_idx, w_a);
         self.add_edge_weight(a_idx, b_idx, w_b);
 
@@ -243,6 +246,25 @@ mod from_recorded_tests {
     #[test]
     fn rejects_empty_pair() {
         assert!(VoteData::from_recorded(1, "", "b", 2, 1).is_none());
+    }
+
+    #[test]
+    fn zero_weight_vote_does_not_mark_pair_or_edges() {
+        let mut g = GroupState::new();
+        g.apply_vote(VoteData {
+            ts: 1,
+            a: ItemId::opaque("a"),
+            b: ItemId::opaque("b"),
+            ratio_left: 0,
+            ratio_right: 0,
+            body: String::new(),
+            principal: "test".to_string(),
+            delegate: None,
+            thread_tag: "untagged".to_string(),
+        });
+        assert!(g.voted_pairs.is_empty());
+        assert!(g.edges.is_empty());
+        assert!(g.recent_votes.is_empty());
     }
 
     #[test]
