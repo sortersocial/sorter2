@@ -87,6 +87,21 @@ impl ProjectionStore {
             .unwrap_or(0))
     }
 
+    /// Clear rebuildable projection data and reset storage schema metadata.
+    pub fn reset(&self) -> Result<(), ProjectionStoreError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| ProjectionStoreError::Poisoned)?;
+        inner.nodes.clear()?;
+        inner.meta.clear()?;
+        inner.meta.put(
+            META_PROJECTION_SCHEMA_VERSION.to_string(),
+            PROJECTION_SCHEMA_VERSION,
+        )?;
+        Ok(())
+    }
+
     pub fn load_tree(&self) -> Result<GlobalTree, ProjectionStoreError> {
         let inner = self
             .inner

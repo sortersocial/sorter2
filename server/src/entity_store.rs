@@ -31,7 +31,7 @@ pub enum EntityStoreError {
 struct EntityStoreInner {
     _db: Db,
     payloads: DurableMap<String, StoredEntityRecord>,
-    _meta: DurableMap<String, u64>,
+    meta: DurableMap<String, u64>,
 }
 
 const ENTITY_SCHEMA_META_KEY: &str = "entity_schema_version";
@@ -67,9 +67,20 @@ impl EntityStore {
             inner: Arc::new(Mutex::new(EntityStoreInner {
                 _db: db.clone(),
                 payloads,
-                _meta: meta,
+                meta,
             })),
         })
+    }
+
+    /// Clear rebuildable entity payloads and reset storage schema metadata.
+    pub fn reset(&self) -> Result<(), EntityStoreError> {
+        let mut inner = self.inner.lock().map_err(|_| EntityStoreError::Poisoned)?;
+        inner.payloads.clear()?;
+        inner.meta.clear()?;
+        inner
+            .meta
+            .put(ENTITY_SCHEMA_META_KEY.to_string(), ENTITY_SCHEMA_VERSION)?;
+        Ok(())
     }
 
     /// Persist a payload for `id` (overwrites any existing entry).

@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub struct JournalCommand {
-    pub event: Event,
+    pub events: Vec<Event>,
     pub reply: oneshot::Sender<Result<(), String>>,
 }
 
@@ -42,9 +42,17 @@ impl JournalClient {
 
     /// Append one event to the log and apply it to all projections (sole write path).
     pub async fn append(&self, event: Event) -> Result<(), String> {
+        self.append_many(vec![event]).await
+    }
+
+    /// Append multiple events as one journal command.
+    pub async fn append_many(&self, events: Vec<Event>) -> Result<(), String> {
+        if events.is_empty() {
+            return Ok(());
+        }
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(JournalCommand { event, reply })
+            .send(JournalCommand { events, reply })
             .await
             .map_err(|_| "journal worker stopped".to_string())?;
         rx.await.map_err(|_| "journal worker stopped".to_string())?
@@ -98,12 +106,10 @@ async fn append_and_project_batch(
     let mut records = Vec::with_capacity(commands.len());
     let mut seq = *next_seq;
     for cmd in commands {
-        records.push(EventRecord::new(
-            seq,
-            event_timestamp(&cmd.event),
-            cmd.event.clone(),
-        ));
-        seq += 1;
+        for event in &cmd.events {
+            records.push(EventRecord::new(seq, event_timestamp(event), event.clone()));
+            seq += 1;
+        }
     }
 
     event_log
@@ -205,5 +211,41 @@ mod tests {
         let seqs: Vec<u64> = records.into_iter().map(|record| record.seq).collect();
         assert_eq!(seqs, vec![1, 2]);
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn append_many_assigns_contiguous_sequences_and_projects_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("events.jsonl");
+        let event_log = Arc::new(EventLog::new(log_path));
+        let db = durable::Db::open(tmp.path().join("store")).unwrap();
+        let entity_store = EntityStore::from_db(&db).unwrap();
+        let projection_store = ProjectionStore::from_db(&db).unwrap();
+        let journal =
+            JournalClient::spawn(event_log.clone(), entity_store, projection_store.clone(), 1);
+
+        journal
+            .append_many(vec![
+                Event::NodeEnsured {
+                    id: "reddit.com/r/rust".into(),
+                },
+                Event::NodeEnsured {
+                    id: "reddit.com/r/python".into(),
+                },
+                Event::NodeEnsured {
+                    id: "reddit.com/r/clojure".into(),
+                },
+            ])
+            .await
+            .unwrap();
+
+        let (records, _) = event_log.load_all().await.unwrap();
+        let seqs: Vec<u64> = records.into_iter().map(|record| record.seq).collect();
+        assert_eq!(seqs, vec![1, 2, 3]);
+        assert_eq!(projection_store.last_applied_event_count().unwrap(), 3);
+        let tree = projection_store.load_tree().unwrap();
+        assert!(tree
+            .get(&ItemId::parse("reddit.com/r/clojure").unwrap())
+            .is_some());
     }
 }
