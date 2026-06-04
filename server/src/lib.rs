@@ -1,7 +1,6 @@
 pub mod api;
 pub mod entity_store;
 pub mod event_log;
-pub mod event_reducer;
 pub mod events;
 pub mod fetch;
 pub mod form_template;
@@ -18,6 +17,7 @@ pub mod reducer;
 pub mod render;
 pub mod state;
 pub mod storage_dto;
+pub mod storage_schema;
 pub mod ui_action;
 pub mod view_log;
 pub mod views;

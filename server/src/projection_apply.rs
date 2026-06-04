@@ -1,38 +1,31 @@
-use std::collections::BTreeSet;
+//! Apply event-log records to the durable projection as precise point updates.
+//!
+//! Each batch of records lowers to reified durable writes (edge merges, child
+//! links, voted-pair flags, recent-vote pushes, entity payloads) plus a cursor
+//! advance, all committed in one atomic `DisableWal` batch. The cursor moving in
+//! the same batch as the (non-idempotent) edge merges guarantees exactly-once
+//! application across replay.
 
-use serde_json::Value;
+use std::collections::BTreeSet;
 
 use crate::{
     entity_store::EntityStore,
     event_log::EventLogError,
-    event_reducer,
     events::{Event, EventRecord},
     path_types::ItemId,
-    projection_store::{self, ProjectionStore},
-    reducer::GlobalTree,
+    projection_store::ProjectionStore,
+    reddit::entity_view_from_payload,
+    reducer::VoteData,
+    storage_schema::{ensure_path_writes, entity_view_writes, vote_writes},
 };
 
-pub fn apply_event(
-    projection_store: &ProjectionStore,
-    entity_store: &EntityStore,
-    event_seq: u64,
-    ev: &Event,
-) -> Result<(), EventLogError> {
-    let record = EventRecord::new(event_seq, crate::events::event_timestamp(ev), ev.clone());
-    apply_records(projection_store, entity_store, &[record])
-}
-
-pub fn apply_next_event(
-    projection_store: &ProjectionStore,
-    entity_store: &EntityStore,
-    ev: &Event,
-) -> Result<u64, EventLogError> {
-    let event_seq = projection_store
-        .last_applied_event_count()
-        .map_err(|e| EventLogError::Apply(e.to_string()))?
-        + 1;
-    apply_event(projection_store, entity_store, event_seq, ev)?;
-    Ok(event_seq)
+/// Legacy-compatible scope parsing for persisted vote events.
+fn parent_from_event_scope(scope: &str) -> ItemId {
+    if scope.contains('/') {
+        ItemId::parse(scope).unwrap_or_else(|| ItemId::from_legacy_scope(scope))
+    } else {
+        ItemId::from_legacy_scope(scope)
+    }
 }
 
 pub fn apply_records(
@@ -44,28 +37,67 @@ pub fn apply_records(
         return Ok(());
     }
 
-    let mut tree = GlobalTree::default();
-    let mut affected = BTreeSet::<ItemId>::new();
-    let mut entity_payloads = Vec::<(ItemId, Value)>::new();
-    let mut last_seq = 0;
+    let db = projection_store.db();
+    let mut batch = db.batch();
+    let mut vote_parents: BTreeSet<ItemId> = BTreeSet::new();
+    let mut last_seq = 0u64;
 
     for record in records {
-        projection_store
-            .hydrate_event(&mut tree, &record.event)
-            .map_err(|e| EventLogError::Apply(e.to_string()))?;
-        let effects = event_reducer::apply_event(&record.event, &mut tree)?;
-        affected.extend(projection_store::affected_nodes(&record.event));
-        entity_payloads.extend(effects.entity_payloads);
+        match &record.event {
+            Event::VoteRecorded {
+                ts,
+                a,
+                b,
+                ratio_left,
+                ratio_right,
+                scope,
+            } => {
+                let vote = VoteData::from_recorded(*ts, a, b, *ratio_left, *ratio_right)
+                    .ok_or_else(|| EventLogError::Apply(format!("invalid vote event: {a} vs {b}")))?;
+                let parent = parent_from_event_scope(scope);
+                vote_writes(
+                    &mut batch,
+                    &parent,
+                    vote.a.as_str(),
+                    vote.b.as_str(),
+                    *ratio_left,
+                    *ratio_right,
+                    *ts,
+                )
+                .map_err(|e| EventLogError::Apply(e.to_string()))?;
+                vote_parents.insert(parent);
+            }
+            Event::NodeEnsured { id } => {
+                let parsed = ItemId::parse(id)
+                    .or_else(|| ItemId::from_url(id))
+                    .ok_or_else(|| EventLogError::Apply(format!("invalid node id: {id}")))?;
+                ensure_path_writes(&mut batch, &parsed);
+            }
+            Event::EntityImported { id, payload, .. } => {
+                let parsed = ItemId::parse(id)
+                    .or_else(|| ItemId::from_url(id))
+                    .ok_or_else(|| EventLogError::Apply(format!("invalid entity id: {id}")))?;
+                let view = entity_view_from_payload(&parsed, payload);
+                entity_view_writes(&mut batch, &parsed, view.as_ref());
+                entity_store
+                    .put_in_batch(&mut batch, &parsed, payload)
+                    .map_err(|e| EventLogError::Apply(e.to_string()))?;
+            }
+        }
         last_seq = record.seq;
     }
 
-    projection_store
-        .persist_batch(
-            &tree,
-            last_seq,
-            affected,
-            &entity_payloads,
-            Some(entity_store),
-        )
-        .map_err(|e| EventLogError::Apply(e.to_string()))
+    batch.write(projection_store.cursor_write(last_seq));
+    batch
+        .commit_with(durable::Durability::DisableWal)
+        .map_err(|e| EventLogError::Apply(e.to_string()))?;
+
+    // Cap recent-vote windows (idempotent, blind; not part of the cursor batch).
+    for parent in vote_parents {
+        projection_store
+            .trim_recent_votes(&parent)
+            .map_err(|e| EventLogError::Apply(e.to_string()))?;
+    }
+
+    Ok(())
 }

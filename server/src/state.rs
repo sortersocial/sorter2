@@ -238,7 +238,7 @@ mod tests {
     use super::{normalize_scope, parse_item_param, AppConfig, AppState};
     use crate::{
         entity_store::EntityStore, event_log::EventLog, events::Event, path_types::ItemId,
-        projection_apply, projection_store::ProjectionStore, reducer::GlobalTree,
+        projection_apply, projection_store::ProjectionStore,
     };
     use serde_json::json;
 
@@ -380,17 +380,18 @@ mod tests {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
             let entity_store = EntityStore::from_db(&db).unwrap();
             let projection_store = ProjectionStore::from_db(&db).unwrap();
-            let mut tree = GlobalTree::new();
-            tree.ensure_path(&ItemId::parse("reddit.com/r/rust").unwrap());
-            projection_store
-                .persist_event(
-                    &tree,
+            // Advance the projection cursor to 2 while the log tail is only 1.
+            projection_apply::apply_records(
+                &projection_store,
+                &entity_store,
+                &[event_record(
                     2,
-                    &Event::NodeEnsured {
+                    Event::NodeEnsured {
                         id: "reddit.com/r/rust".into(),
                     },
-                )
-                .unwrap();
+                )],
+            )
+            .unwrap();
             let err = super::catch_up_projection(&log, &entity_store, &projection_store)
                 .await
                 .unwrap_err();
