@@ -1,7 +1,7 @@
 //! Pick two children of a parent scope for pairwise voting.
 //!
 //! Before the pool is one connected voted component, prefer an unvoted edge from
-//! a never-voted child into an established group (spanning tree growth).
+//! a never-voted child into a random member of the largest voted group.
 //!
 //! Once connected, run rank centrality once and **zip** adjacent ranks (1 vs 2,
 //! 2 vs 3, …), skipping pairs that already have a vote.
@@ -101,6 +101,26 @@ fn item_in_established(layout: &ComponentLayout, item: &ItemId) -> bool {
         .is_some_and(|id| layout.established.contains(id))
 }
 
+/// Established (multi-node voted) components among pool children, largest first.
+fn established_groups_in_pool<'a>(
+    layout: &ComponentLayout,
+    pool: &'a [ItemId],
+) -> Vec<Vec<&'a ItemId>> {
+    let mut by_comp: HashMap<usize, Vec<&'a ItemId>> = HashMap::new();
+    for item in pool {
+        if !item_in_established(layout, item) {
+            continue;
+        }
+        let Some(&cid) = layout.ids.get(item) else {
+            continue;
+        };
+        by_comp.entry(cid).or_default().push(item);
+    }
+    let mut groups: Vec<Vec<&'a ItemId>> = by_comp.into_values().collect();
+    groups.sort_by_key(|g| std::cmp::Reverse(g.len()));
+    groups
+}
+
 fn ranked_pool_order(group: &GroupState, pool: &[ItemId]) -> Vec<ItemId> {
     let pool_set: HashSet<_> = pool.iter().collect();
     ranked_items(group)
@@ -138,34 +158,43 @@ fn suggest_grow_pair(
     layout: &ComponentLayout,
     exclude: Option<(&ItemId, &ItemId)>,
 ) -> Option<(ItemId, ItemId)> {
-    let established: Vec<&ItemId> = pool
-        .iter()
-        .filter(|item| item_in_established(layout, item))
-        .collect();
-    let isolates: Vec<&ItemId> = pool
+    let mut rng = rand::thread_rng();
+    let groups = established_groups_in_pool(layout, pool);
+    let mut isolates: Vec<&ItemId> = pool
         .iter()
         .filter(|item| !item_in_established(layout, item))
         .collect();
+    isolates.shuffle(&mut rng);
 
-    // Attach a never-voted child to the established mass.
+    // Attach a never-voted child to a random member of the largest voted group.
     for iso in &isolates {
-        for est in &established {
-            if !pair_is_voted(group, iso, est) && !pair_excluded(iso, est, exclude) {
-                return Some(((*iso).clone(), (*est).clone()));
+        for comp in &groups {
+            let candidates: Vec<&ItemId> = comp
+                .iter()
+                .copied()
+                .filter(|est| {
+                    !pair_is_voted(group, iso, est) && !pair_excluded(iso, est, exclude)
+                })
+                .collect();
+            if let Some(&est) = candidates.choose(&mut rng) {
+                return Some(((*iso).clone(), est.clone()));
             }
         }
     }
 
-    // Bridge two established components.
-    for i in 0..established.len() {
-        for j in (i + 1)..established.len() {
-            let a = established[i];
-            let b = established[j];
-            if layout.ids.get(a) == layout.ids.get(b) {
-                continue;
+    // Bridge two established components (random endpoints, larger groups first).
+    for i in 0..groups.len() {
+        for j in (i + 1)..groups.len() {
+            let mut pairs: Vec<(&ItemId, &ItemId)> = Vec::new();
+            for a in &groups[i] {
+                for b in &groups[j] {
+                    if !pair_is_voted(group, a, b) && !pair_excluded(a, b, exclude) {
+                        pairs.push((a, b));
+                    }
+                }
             }
-            if !pair_is_voted(group, a, b) && !pair_excluded(a, b, exclude) {
-                return Some((a.clone(), b.clone()));
+            if let Some((a, b)) = pairs.choose(&mut rng) {
+                return Some(((*a).clone(), (*b).clone()));
             }
         }
     }
