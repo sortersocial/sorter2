@@ -1,207 +1,168 @@
-# Durable
+# durable
 
-RocksDB-backed persistent data structures for Rust. Think `std::collections` but on disk!
+Deeply nested, precisely updatable RocksDB-backed data structures for Rust,
+built around **paths as data**.
 
-## Features
+Most embedded-storage wrappers make you serialize a whole struct into one blob.
+Updating one field means reading, deserializing, mutating, re-serializing, and
+rewriting the entire value. `durable` takes the opposite approach: you describe
+your data as a *schema* of composable types, and address any location with a
+typed **path**. A path lowers to a deterministic RocksDB key with no I/O, so a
+mutation touches exactly the keys it names — nothing else.
 
-- **Persistent Collections**: `DurableVec`, `DurableMap`, `DurableSet` (coming soon)
-- **Type-Safe**: Full Rust type safety with serde serialization
-- **ACID Guarantees**: All operations are atomic and crash-safe
-- **Zero-Copy Capable**: Efficient iteration without loading entire collections
-- **Embedded**: No external services required - just a directory on disk
-
-## Quick Start
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-durable = "0.1.0"
-```
-
-## Example
-
-### DurableVec
 ```rust
-use durable::{Db, DurableVec};
-use serde::{Serialize, Deserialize};
+use durable::{Db, Durable, Durability, Leaf, Map, Sum};
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Task {
-    id: u64,
-    title: String,
-    completed: bool,
+#[derive(Durable)]
+struct Store {
+    scores: Map<String, Sum<i64>>,
+    title: Leaf<String>,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Open or create a database
-    let db = Db::open("my_db")?;
-    
-    // Create a persistent vector
-    let mut tasks = DurableVec::<Task>::new(&db, "tasks")?;
-    
-    // Use it like a normal Vec!
-    tasks.push(Task {
-        id: 1,
-        title: "Build something amazing".to_string(),
-        completed: false,
-    })?;
-    
-    // Data persists across program restarts
-    println!("Total tasks: {}", tasks.len()?);
-    
+fn main() -> durable::Result<()> {
+    let db = Db::open("scores.db")?;
+    let root = Store::root();
+    let alice = "alice".to_string();
+
+    // Three precise writes, one atomic batch, one WAL flush.
+    db.apply(
+        &[
+            root.scores().key(&alice).add(10), // blind merge — no read
+            root.scores().key(&alice).add(5),
+            root.title().set(&"leaderboard".to_string()),
+        ],
+        Durability::SyncWal,
+    )?;
+
+    assert_eq!(root.scores().key(&alice).get(&db)?, 15);
     Ok(())
 }
 ```
 
-### DurableMap
-```rust
-use durable::{Db, DurableMap};
+## The model
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = Db::open("my_db")?;
-    
-    // Create a persistent map
-    let mut scores = DurableMap::<String, u32>::new(&db, "scores")?;
-    
-    // Use it like a HashMap!
-    // Use put() when you don't need the old value (more efficient)
-    scores.put("Alice".to_string(), 100)?;
-    scores.put("Bob".to_string(), 85)?;
-    
-    // Use insert() when you need to know the old value
-    if let Some(old_score) = scores.insert("Alice".to_string(), 120)? {
-        println!("Alice's previous score was: {}", old_score);
-    }
-    
-    // Get values
-    if let Some(score) = scores.get(&"Alice".to_string())? {
-        println!("Alice's score: {}", score);
-    }
-    
-    // Iterate over entries
-    for (name, score) in scores.iter()? {
-        println!("{}: {}", name, score);
-    }
-    
-    Ok(())
+### Schema types
+
+A *schema* is a type-level description of a location's shape. Compose them
+freely:
+
+| Type | Meaning | Key terminal ops |
+|------|---------|------------------|
+| `Leaf<T>` | one CBOR-encoded value | `get`, `set`, `delete` |
+| `Map<K, V>` | keys `K` → sub-schema `V` | `key`, `keys`, `entries`, `len`, `contains`, `clear` |
+| `List<V>` | index-addressed sequence | `at`, `push`, `pop`, `iter`, `len`, `clear` |
+| `Deque<V>` | double-ended queue (O(1) ends) | `push_back`, `push_front`, `pop_front`, `pop_back`, `front`, `back`, `iter` |
+| `Sum<N>` | numeric accumulator | `add` (blind merge), `get`, `set` |
+| `#[derive(Durable)] struct` | fixed named fields | one navigator method per field |
+
+Leaf- and `Sum`-valued maps additionally get `get`, `iter`, and
+`transform_values` (a one-scan bulk rewrite that yields reified writes — e.g.
+"decay every edge weight").
+
+Nest them arbitrarily:
+
+```rust
+use durable::{Deque, Durable, Leaf, Map, Sum};
+# use serde::{Serialize, Deserialize};
+# #[derive(Serialize, Deserialize)] struct Vote;
+#[derive(Durable)]
+#[allow(dead_code)]
+struct GroupState {
+    edges: Map<(u32, u32), Sum<f64>>,
+    recent_votes: Deque<Leaf<Vote>>,
+    item_count: Sum<i64>,
+}
+
+#[derive(Durable)]
+#[allow(dead_code)]
+struct Store {
+    scopes: Map<String, GroupState>,
 }
 ```
 
-### Nested Collections
+Now `Store::root().scopes().key(&scope).edges().key(&(i, j)).add(1.0)` updates a
+single edge weight without reading or rewriting anything else in the scope.
 
-Durable supports nesting collections within each other for complex data structures:
+### Paths are data
 
-```rust
-use durable::{Db, DurableMap, DurableVec};
+`Path<S>` is just a byte prefix plus a phantom schema type. Navigation is pure
+and allocation-light; nothing hits the database until you read or apply. Because
+paths are values you can build them once and reuse them, pass them around, and
+compose them.
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = Db::open("my_db")?;
-    
-    // Create a map where each user has a list of posts
-    let user_posts: DurableMap<String, DurableVec<String>> = 
-        DurableMap::new_nested(&db, "user_posts");
-    
-    // Add posts for a user
-    let mut alice_posts = user_posts.entry("alice".to_string())?.or_default()?;
-    alice_posts.push("Hello, world!".to_string())?;
-    alice_posts.push("Rust is awesome!".to_string())?;
-    
-    // Or use chained calls for convenience
-    user_posts.entry("bob".to_string())?.or_default()?.push("First post!".to_string())?;
-    
-    // Access nested data
-    let alice_posts = user_posts.entry("alice".to_string())?.or_default()?;
-    println!("Alice has {} posts", alice_posts.len()?);
-    
-    Ok(())
-}
+### Mutations are reified
+
+Terminal mutating operations don't perform side effects — they return a
+[`Write`], a typed wrapper around a plain-data [`Op`] (`Put` / `Delete` /
+`DeletePrefix` / `Merge`). Collect several and apply them atomically:
+
+```rust,ignore
+let writes = vec![
+    edges.key(&(0, 1)).add(2.0),
+    edges.key(&(1, 0)).add(1.0),
+    voted_pairs.key(&(0, 1)).set(&true),
+];
+db.apply(&writes, Durability::DisableWal)?;
 ```
 
-The entry API automatically creates nested collections when they don't exist, providing ergonomic access patterns similar to `std::collections::HashMap::entry().or_default()`.
+Reified writes are inspectable and testable — you can assert on the `Op` a path
+produces, log it, or serialize it.
 
-## Current Status
+### Blind vs. read-modify-write
 
-### Implemented
+The cost model is explicit, not hidden:
 
-- ✅ `DurableVec<T>` with full test coverage including:
-  - Basic operations: `push`, `pop`, `get`, `len`, `clear`
-  - Batch operations: `extend`
-  - Iteration: `iter()` returns a streaming iterator, `to_vec()` loads into memory
-  - Property-based testing with proptest
-  - Unicode string support
-  - Complex type support
+- **Blind** (no read): `Leaf::set`/`delete`, `Sum::add`/`set`, `Map::clear`.
+  These are pure `Op` data and compose freely in a batch.
+- **Read-modify-write**: `List::push`/`pop`, `Deque` pushes/pops (they read a
+  length/cursor). In a batch, appends are deferred and resolved at commit so
+  several land at contiguous indices in one atomic write.
+- **Scan**: `Map::keys`/`iter`/`len`, `transform_values`. Prefix range scans.
 
-- ✅ `DurableMap<K, V>` with full test coverage including:
-  - Basic operations: `insert`, `put`, `get`, `remove`, `contains_key`, `len`, `clear`
-  - Batch operations: `extend`
-  - Iteration: `iter()`, `keys()`, `values()` return streaming iterators
-  - Memory loading: `to_vec()`, `keys_vec()`, `values_vec()` for convenience
-  - Complex key and value types
-  - Property-based testing with proptest
+`Sum` deserves a special mention: it's backed by a RocksDB associative merge
+operator, so `add` is a blind O(1) write whose folding happens lazily during
+compaction — ideal for counters and edge weights.
 
-- ✅ **Nested Collections** with entry API:
-  - `DurableMap<K, DurableVec<T>>` - Maps to vectors
-  - `entry()` method with `or_default()` for ergonomic access
-  - Automatic collection creation and management
-  - Full persistence and isolation between nested collections
-  - Type-safe compile-time enforcement
+## Durability
 
-### Coming Soon
+Every batch commits with an explicit policy:
 
-- 🚧 `DurableSet<T>` - Persistent HashSet  
-- 🚧 Deep nesting (e.g., `DurableMap<String, DurableMap<String, DurableVec<T>>>`)
-- 🚧 Schema migration support
-- 🚧 Batch operations across multiple collections
+- `Durability::SyncWal` — write the WAL and fsync before returning (survives
+  power loss).
+- `Durability::WalOnly` — write the WAL without forcing an fsync.
+- `Durability::DisableWal` — skip the WAL. Use only for projections rebuildable
+  from another durable source of truth.
 
-## Performance
+## Key layout
 
-All operations are designed to be efficient:
+Every location lowers to a key built from length-prefixed segments
+(`uvarint(len) ++ bytes`), which makes segment sequences self-delimiting: a
+parent prefix only ever prefixes its own descendants, so sibling subtrees never
+collide. Within a location prefix `P`:
 
-- **DurableVec**:
-  - `push`: Single atomic write with WAL flush
-  - `get`: Direct key lookup, O(1) 
-  - `len`: Metadata lookup, O(1)
-  - `extend`: Batched writes for efficiency
-  - `clear`: Atomic batch deletion
+- `P` (exact) holds a `Leaf`/`Sum` value;
+- `P ++ [0x01] ++ seg` holds child data (map entries, struct fields, elements);
+- `P ++ [0x00] ++ seg` holds collection metadata (lengths, deque cursors).
 
-- **DurableMap**:
-  - `insert`: Returns old value (2 ops: get + put), O(1) average
-  - `put`: No return value (1 op: existence check + put), O(1) average
-  - `get`: Direct key lookup, O(1) average
-  - `remove`: Single delete with WAL flush
-  - `len`: Metadata lookup, O(1)
-  - `extend`: Batched writes for efficiency
+Deleting a subtree is a single RocksDB range delete over `[P, upper_bound(P))`.
+
+## What this is not
+
+- Not multi-process safe. One writer process; serialize writes at the app layer.
+- Not distributed, not SQL.
+- Map iteration order is encoded-byte order, not logical key order.
+- On-disk struct field ids come from declaration order — add new fields at the
+  end; reordering changes the layout.
+- Schema evolution is your responsibility. Because durable shines as a
+  *rebuildable projection*, the simplest migration is often to drop the data and
+  replay from your canonical log.
 
 ## Testing
 
-Run the test suite:
-
 ```bash
-cargo test
+cargo test -p durable
 ```
 
-Run the examples:
-
-```bash
-cargo run --example vec_example
-cargo run --example map_example
-cargo run --example combined_example  # Shows both collections working together
-cargo run --example streaming_demo    # Demonstrates efficient streaming iteration
-cargo run --example nested_example   # Shows nested collections (Map -> Vec)
-cargo run --example simple_ranking   # Gaming leaderboard from docs/motivation.md
-cargo run --example ranking_history  # Complex ranking system with persistence
-```
-
-## License
-
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+Covers the codec, the merge operator, every collection kind end-to-end, atomic
+batches, durability modes, persistence across reopen, and property tests against
+`BTreeMap`/`VecDeque`/sum-of-deltas models.

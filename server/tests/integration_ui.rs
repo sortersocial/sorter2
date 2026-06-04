@@ -14,6 +14,7 @@ async fn start_test_server() -> (SocketAddr, TempDir) {
     let cfg = AppConfig {
         data_dir: data.clone(),
         event_log_path: format!("{data}/events.jsonl"),
+        views_log_path: format!("{data}/views.jsonl"),
         port: 0,
     };
     let state = create_app_state(cfg).await;
@@ -125,6 +126,7 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
     let cfg = AppConfig {
         data_dir: replay_data.clone(),
         event_log_path: format!("{replay_data}/events.jsonl"),
+        views_log_path: format!("{replay_data}/views.jsonl"),
         port: 0,
     };
     let state = create_app_state(cfg).await;

@@ -1,7 +1,6 @@
 pub mod api;
 pub mod entity_store;
 pub mod event_log;
-pub mod event_reducer;
 pub mod events;
 pub mod fetch;
 pub mod form_template;
@@ -17,7 +16,10 @@ pub mod reddit;
 pub mod reducer;
 pub mod render;
 pub mod state;
+pub mod storage_dto;
+pub mod storage_schema;
 pub mod ui_action;
+pub mod view_log;
 pub mod views;
 
 use axum::{
@@ -45,7 +47,7 @@ pub fn create_app(state: AppState) -> Router {
 }
 
 pub async fn run(cfg: AppConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let state = create_app_state(cfg.clone()).await;
+    let state = AppState::try_new(cfg.clone()).await?;
     let app = create_app(state);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port));
