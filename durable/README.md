@@ -13,11 +13,16 @@ explicit write batches, and configurable durability for rebuildable indexes.
 - **Collections:** `DurableMap<K, V>` and `DurableVec<T>`.
 - **Writer model:** one writer process. Serialize writes at the app layer.
 - **Atomicity:** a `Batch` commits its RocksDB `WriteBatch` atomically.
-- **Durability modes:**
+- **Durability modes** (via [`Batch::commit_with`] only):
   - `Durability::SyncWal` writes the WAL and fsyncs it before returning.
   - `Durability::WalOnly` writes through RocksDB WAL without forcing fsync.
   - `Durability::DisableWal` skips RocksDB WAL; use only when another durable
     source of truth can rebuild the data.
+
+**Important:** convenience methods on `DurableMap` / `DurableVec` (`put`,
+`insert`, `remove`, `clear`, nested `entry().or_default()`, etc.) always commit
+with a WAL **fsync** (`flush_wal(true)`). They do not accept a durability
+argument. Use explicit batches when you need `WalOnly` or `DisableWal`.
 
 Sorter uses `DisableWal` for projection writes after fsyncing `events.jsonl`,
 because the projection is rebuildable from the event log.
@@ -78,6 +83,17 @@ struct Versioned<T> {
 
 For rebuildable projections, prefer deleting the projection and replaying the
 canonical log when the DTO version changes.
+
+## Prefix scans vs sorted keys
+
+Collections store keys under a fixed RocksDB prefix (`map:{name}:entry:…`).
+[`DurableMap::iter`], [`DurableMap::clear`], and [`Db::scan_prefix`] perform
+cheap prefix scans **within one collection**.
+
+Keys are CBOR-encoded Serde values, so lexicographic order is **not** semantic
+sort order for arbitrary structs or URL paths. There is no `DurableIndex` or
+`.range()` API yet — nested collections (via `entry().or_default()`) are the
+supported way to group related keys for prefix iteration.
 
 ## What this is not
 

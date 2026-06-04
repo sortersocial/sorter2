@@ -20,8 +20,33 @@ use crate::{
 };
 
 const META_LAST_APPLIED_EVENT_COUNT: &str = "last_applied_event_count";
-const META_PROJECTION_SCHEMA_VERSION: &str = "projection_schema_version";
-const PROJECTION_SCHEMA_VERSION: u64 = 1;
+/// Raw RocksDB prefix for parent→child scope index (`map:scope_children:entry:{parent}\xff{child}`).
+const SCOPE_CHILDREN_ENTRY_PREFIX: &[u8] = b"map:scope_children:entry:";
+
+fn scope_child_key(parent: &str, child: &str) -> Vec<u8> {
+    let mut key = SCOPE_CHILDREN_ENTRY_PREFIX.to_vec();
+    key.extend_from_slice(parent.as_bytes());
+    key.push(0xff);
+    key.extend_from_slice(child.as_bytes());
+    key
+}
+
+fn scope_parent_prefix(parent: &str) -> Vec<u8> {
+    let mut key = SCOPE_CHILDREN_ENTRY_PREFIX.to_vec();
+    key.extend_from_slice(parent.as_bytes());
+    key.push(0xff);
+    key
+}
+
+fn clear_scope_children_index(db: &Db) -> Result<(), ProjectionStoreError> {
+    let mut batch = db.batch();
+    for item in db.scan_prefix(SCOPE_CHILDREN_ENTRY_PREFIX) {
+        let (key, _) = item?;
+        batch.delete(&key);
+    }
+    batch.commit_with(Durability::DisableWal)?;
+    Ok(())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectionStoreError {
@@ -53,20 +78,12 @@ impl ProjectionStore {
         Self::from_db(&db)
     }
 
+    /// Create a projection store backed by an already-open database.
+    ///
+    /// Schema validation and coupled reset are handled by [`crate::store::open`].
     pub fn from_db(db: &Db) -> Result<Self, ProjectionStoreError> {
-        let mut nodes = DurableMap::new(db, "nodes")?;
-        let mut meta = DurableMap::new(db, "projection_meta")?;
-        match meta.get(&META_PROJECTION_SCHEMA_VERSION.to_string())? {
-            Some(PROJECTION_SCHEMA_VERSION) => {}
-            Some(_) | None => {
-                nodes.clear()?;
-                meta.clear()?;
-                meta.put(
-                    META_PROJECTION_SCHEMA_VERSION.to_string(),
-                    PROJECTION_SCHEMA_VERSION,
-                )?;
-            }
-        }
+        let nodes = DurableMap::new(db, "nodes")?;
+        let meta = DurableMap::new(db, "projection_meta")?;
         Ok(Self {
             inner: Arc::new(Mutex::new(ProjectionStoreInner {
                 _db: db.clone(),
@@ -74,6 +91,16 @@ impl ProjectionStore {
                 meta,
             })),
         })
+    }
+
+    /// Clear rebuildable projection data (called by [`crate::store::reset`]).
+    pub(crate) fn clear_data(db: &Db) -> Result<(), ProjectionStoreError> {
+        let mut nodes = DurableMap::<String, StoredNodeRecord>::new(db, "nodes")?;
+        let mut meta = DurableMap::<String, u64>::new(db, "projection_meta")?;
+        nodes.clear()?;
+        meta.clear()?;
+        clear_scope_children_index(db)?;
+        Ok(())
     }
 
     pub fn last_applied_event_count(&self) -> Result<u64, ProjectionStoreError> {
@@ -87,19 +114,13 @@ impl ProjectionStore {
             .unwrap_or(0))
     }
 
-    /// Clear rebuildable projection data and reset storage schema metadata.
+    /// Clear rebuildable projection data and reset storage metadata.
     pub fn reset(&self) -> Result<(), ProjectionStoreError> {
-        let mut inner = self
+        let inner = self
             .inner
             .lock()
             .map_err(|_| ProjectionStoreError::Poisoned)?;
-        inner.nodes.clear()?;
-        inner.meta.clear()?;
-        inner.meta.put(
-            META_PROJECTION_SCHEMA_VERSION.to_string(),
-            PROJECTION_SCHEMA_VERSION,
-        )?;
-        Ok(())
+        Self::clear_data(&inner._db)
     }
 
     pub fn load_tree(&self) -> Result<GlobalTree, ProjectionStoreError> {
@@ -134,24 +155,64 @@ impl ProjectionStore {
             .map_err(ProjectionStoreError::Storage)
     }
 
+    fn load_scope_children_prefix(
+        db: &Db,
+        parent: &ItemId,
+    ) -> Result<Vec<NodeState>, ProjectionStoreError> {
+        let prefix = scope_parent_prefix(parent.as_str());
+        let mut children = Vec::new();
+        for item in db.scan_prefix(&prefix) {
+            let (_, value_bytes) = item?;
+            let record = durable::from_bytes::<StoredNodeRecord>(&value_bytes)
+                .map_err(ProjectionStoreError::Durable)?;
+            children.push(decode_node(record).map_err(ProjectionStoreError::Storage)?);
+        }
+        Ok(children)
+    }
+
+    fn load_scope_children_legacy(
+        nodes: &DurableMap<String, StoredNodeRecord>,
+        parent: &NodeState,
+    ) -> Result<Vec<NodeState>, ProjectionStoreError> {
+        let mut children = Vec::with_capacity(parent.children.len());
+        for child in &parent.children {
+            if let Some(record) = nodes.get(&child.as_str().to_string())? {
+                children.push(decode_node(record).map_err(ProjectionStoreError::Storage)?);
+            }
+        }
+        Ok(children)
+    }
+
     pub fn hydrate_scope(
         &self,
         tree: &mut GlobalTree,
         id: &ItemId,
     ) -> Result<(), ProjectionStoreError> {
-        let Some(node) = self.load_node(id)? else {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| ProjectionStoreError::Poisoned)?;
+        let Some(record) = inner.nodes.get(&id.as_str().to_string())? else {
             tree.ensure_path(id);
             return Ok(());
         };
 
-        let children: Vec<ItemId> = node.children.iter().cloned().collect();
-        tree.nodes.insert(node.id.clone(), node);
+        let node = decode_node(record).map_err(ProjectionStoreError::Storage)?;
+        tree.nodes.insert(node.id.clone(), node.clone());
+
+        let children = Self::load_scope_children_prefix(&inner._db, id)?;
+        let children = if children.is_empty() && !node.children.is_empty() {
+            Self::load_scope_children_legacy(&inner.nodes, &node)?
+        } else {
+            children
+        };
 
         for child in children {
-            if let Some(child_node) = self.load_node(&child)? {
-                tree.nodes.insert(child_node.id.clone(), child_node);
-            } else {
-                tree.ensure_node(&child);
+            tree.nodes.insert(child.id.clone(), child);
+        }
+        for child_id in &node.children {
+            if tree.get(child_id).is_none() {
+                tree.ensure_node(child_id);
             }
         }
         Ok(())
@@ -162,11 +223,22 @@ impl ProjectionStore {
         tree: &mut GlobalTree,
         event: &Event,
     ) -> Result<(), ProjectionStoreError> {
-        for id in affected_nodes(event) {
-            if tree.get(&id).is_none() {
-                if let Some(node) = self.load_node(&id)? {
-                    tree.nodes.insert(node.id.clone(), node);
-                }
+        let missing: Vec<ItemId> = affected_nodes(event)
+            .into_iter()
+            .filter(|id| tree.get(id).is_none())
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| ProjectionStoreError::Poisoned)?;
+        for id in missing {
+            if let Some(record) = inner.nodes.get(&id.as_str().to_string())? {
+                let node = decode_node(record).map_err(ProjectionStoreError::Storage)?;
+                tree.nodes.insert(node.id.clone(), node);
             }
         }
         Ok(())
@@ -213,11 +285,19 @@ impl ProjectionStore {
 
         for id in ids {
             if let Some(node) = tree.get(&id) {
+                let record = encode_node(node);
                 inner.nodes.put_in_batch(
                     &mut batch,
                     &id.as_str().to_string(),
-                    &encode_node(node),
+                    &record,
                 )?;
+                let parent = node.id.parent().unwrap_or_else(ItemId::root);
+                if parent.as_str() != id.as_str() {
+                    batch.put(
+                        scope_child_key(parent.as_str(), id.as_str()),
+                        durable::to_bytes(&record).map_err(ProjectionStoreError::Durable)?,
+                    );
+                }
             }
         }
 
@@ -315,6 +395,34 @@ mod tests {
         let root = loaded.get(&ItemId::root()).unwrap();
         assert_eq!(root.local_ranking.idx_to_item.len(), 2);
         assert!(root.children.contains(&ItemId::parse("alpha").unwrap()));
+    }
+
+    #[test]
+    fn hydrate_scope_uses_prefix_index_for_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = durable::Db::open(tmp.path()).unwrap();
+        let store = ProjectionStore::from_db(&db).unwrap();
+        let parent = ItemId::root();
+        let vote = VoteData::from_recorded(1, "alpha", "beta", 2, 1).unwrap();
+        let mut tree = GlobalTree::new();
+        tree.apply_vote(&parent, vote);
+        let event = Event::VoteRecorded {
+            ts: 1,
+            a: "alpha".into(),
+            b: "beta".into(),
+            ratio_left: 2,
+            ratio_right: 1,
+            scope: String::new(),
+        };
+        store.persist_event(&tree, 1, &event).unwrap();
+
+        let prefix = scope_parent_prefix("");
+        assert_eq!(db.scan_prefix(&prefix).count(), 2);
+
+        let mut hydrated = GlobalTree::new();
+        store.hydrate_scope(&mut hydrated, &ItemId::root()).unwrap();
+        assert!(hydrated.get(&ItemId::parse("alpha").unwrap()).is_some());
+        assert!(hydrated.get(&ItemId::parse("beta").unwrap()).is_some());
     }
 
     #[test]

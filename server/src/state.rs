@@ -10,6 +10,7 @@ use crate::{
     projection_store::ProjectionStore,
     reddit::{RedditApiConfig, RedditBroker},
     reducer::{GlobalTree, VoteData},
+    store::{self, RebuildableStores},
     view_log::ViewLog,
     views::ViewStore,
 };
@@ -73,11 +74,11 @@ pub async fn rebuild_projection(
     let event_log = EventLog::new(cfg.event_log_path.clone());
     let store_path = format!("{}/store", cfg.data_dir);
     let db = durable::Db::open(std::path::Path::new(&store_path))?;
-    let entity_store = EntityStore::from_db(&db)?;
-    let projection_store = ProjectionStore::from_db(&db)?;
-
-    entity_store.reset()?;
-    projection_store.reset()?;
+    store::reset(&db)?;
+    let RebuildableStores {
+        entity: entity_store,
+        projection: projection_store,
+    } = store::open(&db)?;
 
     let stats = event_log
         .replay(|record| {
@@ -145,8 +146,10 @@ impl AppState {
         let view_log = Arc::new(ViewLog::new(cfg.views_log_path.clone()));
         let store_path = format!("{}/store", cfg.data_dir);
         let db = durable::Db::open(std::path::Path::new(&store_path))?;
-        let entity_store = EntityStore::from_db(&db)?;
-        let projection_store = ProjectionStore::from_db(&db)?;
+        let RebuildableStores {
+            entity: entity_store,
+            projection: projection_store,
+        } = store::open(&db)?;
         let views = ViewStore::from_db(&db)?;
 
         if let Err(e) = views.catch_up(&view_log).await {
@@ -237,8 +240,8 @@ impl AppState {
 mod tests {
     use super::{normalize_scope, parse_item_param, AppConfig, AppState};
     use crate::{
-        entity_store::EntityStore, event_log::EventLog, events::Event, path_types::ItemId,
-        projection_apply, projection_store::ProjectionStore, reducer::GlobalTree,
+        event_log::EventLog, events::Event, path_types::ItemId, projection_apply, reducer::GlobalTree,
+        store,
     };
     use serde_json::json;
 
@@ -260,19 +263,20 @@ mod tests {
         log.append(&event_record(1, event)).await.unwrap();
 
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
-        let projection_store = ProjectionStore::from_db(&db).unwrap();
-        super::catch_up_projection(&log, &entity_store, &projection_store)
+        let stores = store::open(&db).unwrap();
+        super::catch_up_projection(&log, &stores.entity, &stores.projection)
             .await
             .unwrap();
-        let tree = projection_store
+        let tree = stores
+            .projection
             .scope_tree(&ItemId::parse("reddit.com/r/rust").unwrap())
             .unwrap();
         let node = tree
             .get(&ItemId::parse("reddit.com/r/rust").unwrap())
             .unwrap();
         assert_eq!(node.data.as_ref().unwrap().title, "Rust");
-        let stored = entity_store
+        let stored = stores
+            .entity
             .get(&ItemId::parse("reddit.com/r/rust").unwrap())
             .unwrap()
             .unwrap();
@@ -317,11 +321,10 @@ mod tests {
 
         {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
-            let entity_store = EntityStore::from_db(&db).unwrap();
-            let projection_store = ProjectionStore::from_db(&db).unwrap();
+            let stores = store::open(&db).unwrap();
             projection_apply::apply_records(
-                &projection_store,
-                &entity_store,
+                &stores.projection,
+                &stores.entity,
                 &[event_record(
                     1,
                     Event::NodeEnsured {
@@ -330,7 +333,7 @@ mod tests {
                 )],
             )
             .unwrap();
-            assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
+            assert_eq!(stores.projection.last_applied_event_count().unwrap(), 1);
         }
 
         let stats = super::rebuild_projection(&AppConfig {
@@ -345,17 +348,18 @@ mod tests {
         assert_eq!(stats.last_seq, 3);
 
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
-        let projection_store = ProjectionStore::from_db(&db).unwrap();
-        assert_eq!(projection_store.last_applied_event_count().unwrap(), 3);
-        let tree = projection_store.scope_tree(&ItemId::root()).unwrap();
+        let stores = store::open(&db).unwrap();
+        assert_eq!(stores.projection.last_applied_event_count().unwrap(), 3);
+        let tree = stores.projection.scope_tree(&ItemId::root()).unwrap();
         let root = tree.get(&ItemId::root()).unwrap();
         assert!(root.children.contains(&ItemId::parse("alpha").unwrap()));
-        assert!(projection_store
+        assert!(stores
+            .projection
             .load_node(&ItemId::parse("reddit.com/r/stale").unwrap())
             .unwrap()
             .is_none());
-        let stored = entity_store
+        let stored = stores
+            .entity
             .get(&ItemId::parse("reddit.com/r/rust").unwrap())
             .unwrap()
             .unwrap();
@@ -378,11 +382,10 @@ mod tests {
 
         {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
-            let entity_store = EntityStore::from_db(&db).unwrap();
-            let projection_store = ProjectionStore::from_db(&db).unwrap();
+            let stores = store::open(&db).unwrap();
             let mut tree = GlobalTree::new();
             tree.ensure_path(&ItemId::parse("reddit.com/r/rust").unwrap());
-            projection_store
+            stores.projection
                 .persist_event(
                     &tree,
                     2,
@@ -391,7 +394,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-            let err = super::catch_up_projection(&log, &entity_store, &projection_store)
+            let err = super::catch_up_projection(&log, &stores.entity, &stores.projection)
                 .await
                 .unwrap_err();
             assert!(err
@@ -420,23 +423,22 @@ mod tests {
         .unwrap();
 
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
-        let projection_store = ProjectionStore::from_db(&db).unwrap();
+        let stores = store::open(&db).unwrap();
 
-        super::catch_up_projection(&log, &entity_store, &projection_store)
+        super::catch_up_projection(&log, &stores.entity, &stores.projection)
             .await
             .unwrap();
-        assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
-        let first = projection_store.scope_tree(&ItemId::root()).unwrap();
+        assert_eq!(stores.projection.last_applied_event_count().unwrap(), 1);
+        let first = stores.projection.scope_tree(&ItemId::root()).unwrap();
         let first_root = first.get(&ItemId::root()).unwrap();
         let first_edge_total: f64 = first_root.local_ranking.edges.values().sum();
         assert_eq!(first_edge_total, 3.0);
 
-        super::catch_up_projection(&log, &entity_store, &projection_store)
+        super::catch_up_projection(&log, &stores.entity, &stores.projection)
             .await
             .unwrap();
-        assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
-        let second = projection_store.scope_tree(&ItemId::root()).unwrap();
+        assert_eq!(stores.projection.last_applied_event_count().unwrap(), 1);
+        let second = stores.projection.scope_tree(&ItemId::root()).unwrap();
         let second_root = second.get(&ItemId::root()).unwrap();
         let second_edge_total: f64 = second_root.local_ranking.edges.values().sum();
         assert_eq!(second_edge_total, first_edge_total);
@@ -524,9 +526,8 @@ mod tests {
         .unwrap();
         {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
-            let entity_store = EntityStore::from_db(&db).unwrap();
-            let projection_store = ProjectionStore::from_db(&db).unwrap();
-            super::catch_up_projection(&log, &entity_store, &projection_store)
+            let stores = store::open(&db).unwrap();
+            super::catch_up_projection(&log, &stores.entity, &stores.projection)
                 .await
                 .unwrap();
         }
@@ -573,9 +574,8 @@ mod tests {
         .unwrap();
         {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
-            let entity_store = EntityStore::from_db(&db).unwrap();
-            let projection_store = ProjectionStore::from_db(&db).unwrap();
-            super::catch_up_projection(&log, &entity_store, &projection_store)
+            let stores = store::open(&db).unwrap();
+            super::catch_up_projection(&log, &stores.entity, &stores.projection)
                 .await
                 .unwrap();
         }

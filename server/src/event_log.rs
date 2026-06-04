@@ -103,7 +103,42 @@ impl EventLog {
         }
         f.flush().await?;
         f.sync_data().await?;
+        if let Some(last) = records.last() {
+            self.write_tail(last.seq).await?;
+        }
         Ok(())
+    }
+
+    fn tail_path(&self) -> PathBuf {
+        self.path.with_extension("jsonl.tail")
+    }
+
+    async fn write_tail(&self, seq: u64) -> Result<(), EventLogError> {
+        self.ensure_parent_dir().await?;
+        let path = self.tail_path();
+        let tmp = path.with_extension("tail.tmp");
+        tokio::fs::write(&tmp, seq.to_le_bytes()).await?;
+        tokio::fs::rename(&tmp, &path).await?;
+        Ok(())
+    }
+
+    async fn read_tail(&self) -> Result<Option<u64>, EventLogError> {
+        let path = self.tail_path();
+        if !fs::try_exists(&path).await? {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path).await?;
+        if bytes.len() != 8 {
+            return Err(EventLogError::Apply(format!(
+                "corrupt event log tail file {} (expected 8 bytes, got {})",
+                path.display(),
+                bytes.len()
+            )));
+        }
+        let arr: [u8; 8] = bytes[..8]
+            .try_into()
+            .map_err(|_| EventLogError::Apply("corrupt event log tail file".into()))?;
+        Ok(Some(u64::from_le_bytes(arr)))
     }
 
     /// Stream the log one line at a time — parse each record, apply, drop before the next line.
@@ -163,7 +198,14 @@ impl EventLog {
     }
 
     pub async fn last_sequence(&self) -> Result<u64, EventLogError> {
-        Ok(self.replay_from(u64::MAX, |_| Ok(())).await?.last_seq)
+        if let Some(seq) = self.read_tail().await? {
+            return Ok(seq);
+        }
+        let stats = self.replay_from(u64::MAX, |_| Ok(())).await?;
+        if stats.last_seq > 0 {
+            self.write_tail(stats.last_seq).await?;
+        }
+        Ok(stats.last_seq)
     }
 
     /// Load every event into memory. Prefer [`Self::replay`] for startup.
@@ -285,6 +327,41 @@ mod tests {
                 detail: ref d,
             } if d.contains("unsupported event schema: 99")
         ));
+    }
+
+    #[tokio::test]
+    async fn last_sequence_reads_tail_sidecar_without_scanning_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("events.jsonl");
+        let log = EventLog::new(&path);
+        log.append(&sample_record(
+            1,
+            Event::NodeEnsured {
+                id: "reddit.com/r/rust".into(),
+            },
+        ))
+        .await
+        .unwrap();
+        log.append(&sample_record(
+            2,
+            Event::VoteRecorded {
+                ts: 1,
+                a: "a".into(),
+                b: "b".into(),
+                ratio_left: 2,
+                ratio_right: 1,
+                scope: String::new(),
+            },
+        ))
+        .await
+        .unwrap();
+
+        assert_eq!(log.last_sequence().await.unwrap(), 2);
+        assert!(path.with_extension("jsonl.tail").exists());
+
+        // Corrupt the log body; tail sidecar should still answer without reading JSONL.
+        tokio::fs::write(&path, b"not jsonl\n").await.unwrap();
+        assert_eq!(log.last_sequence().await.unwrap(), 2);
     }
 
     #[tokio::test]

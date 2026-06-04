@@ -32,6 +32,16 @@ pub enum DurableError {
 
 pub type Result<T> = std::result::Result<T, DurableError>;
 
+/// Serialize a value to CBOR bytes using the same codec as collections.
+pub fn to_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    encode(value)
+}
+
+/// Deserialize a value from CBOR bytes using the same codec as collections.
+pub fn from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    decode(bytes)
+}
+
 pub(crate) fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(value, &mut bytes)
@@ -120,6 +130,42 @@ impl Db {
         self.rocks().flush_wal(true)?;
 
         Ok(current_id)
+    }
+
+    /// Iterate raw key/value pairs whose keys begin with `prefix`.
+    pub fn scan_prefix(
+        &self,
+        prefix: &[u8],
+    ) -> impl Iterator<Item = std::result::Result<(Box<[u8]>, Box<[u8]>), DurableError>> + '_ {
+        use rocksdb::{Direction, IteratorMode};
+
+        let iter = self
+            .rocks()
+            .iterator(IteratorMode::From(prefix, Direction::Forward));
+        PrefixScan {
+            inner: iter,
+            prefix: prefix.to_vec(),
+        }
+    }
+}
+
+struct PrefixScan<'a> {
+    inner: rocksdb::DBIterator<'a>,
+    prefix: Vec<u8>,
+}
+
+impl Iterator for PrefixScan<'_> {
+    type Item = std::result::Result<(Box<[u8]>, Box<[u8]>), DurableError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.inner.next() {
+            Some(Ok((key, value))) if key.starts_with(&self.prefix) => {
+                Some(Ok((key, value)))
+            }
+            Some(Ok(_)) => None,
+            Some(Err(e)) => Some(Err(e.into())),
+            None => None,
+        }
     }
 }
 

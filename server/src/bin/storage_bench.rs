@@ -7,7 +7,7 @@ use std::{
 
 use sorter2_server::{
     entity_store::EntityStore, event_log::EventLog, events::Event, journal::JournalClient,
-    projection_apply, projection_store::ProjectionStore,
+    projection_apply, projection_store::ProjectionStore, store,
 };
 
 #[tokio::main]
@@ -46,8 +46,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     drop(journal);
 
     let rebuild_start = Instant::now();
-    entity_store.reset()?;
-    projection_store.reset()?;
+    store::reset(&db)?;
     let rebuild = event_log
         .replay(|record| {
             projection_apply::apply_records(&projection_store, &entity_store, &[record])

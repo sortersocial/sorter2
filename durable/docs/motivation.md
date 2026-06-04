@@ -219,12 +219,16 @@ if versions.values().unique().count() > 1 {
 // Metrics by source by minute
 let metrics = DurableMap::<Source, DurableMap<UnixMinute, DurableVec<Metric>>>::new(&db, "metrics")?;
 
-// Natural windowing
-let last_hour: Vec<Metric> = metrics
-    .get(&source)?
-    .range(now - 3600..=now)?
-    .flat_map(|(_, minute_metrics)| minute_metrics.iter())
-    .collect();
+// Prefix-scan a nested minute bucket (no `.range()` API — iterate the inner map)
+let mut last_hour = Vec::new();
+if let Some(by_minute) = metrics.get(&source)? {
+    for item in by_minute.iter() {
+        let (minute, minute_metrics) = item?;
+        if minute >= now - 3600 && minute <= now {
+            last_hour.extend(minute_metrics.iter().filter_map(Result::ok));
+        }
+    }
+}
 ```
 
 ### Feature Flag System with History

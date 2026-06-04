@@ -31,11 +31,7 @@ pub enum EntityStoreError {
 struct EntityStoreInner {
     _db: Db,
     payloads: DurableMap<String, StoredEntityRecord>,
-    meta: DurableMap<String, u64>,
 }
-
-const ENTITY_SCHEMA_META_KEY: &str = "entity_schema_version";
-const ENTITY_SCHEMA_VERSION: u64 = 1;
 
 /// Disk-backed map of entity id → raw JSON payload.
 #[derive(Clone)]
@@ -52,35 +48,31 @@ impl EntityStore {
     }
 
     /// Create an entity store backed by an already-open database.
+    ///
+    /// Schema validation and coupled reset are handled by [`crate::store::open`].
     pub fn from_db(db: &Db) -> Result<Self, EntityStoreError> {
-        let mut payloads = DurableMap::new(db, "entity_payloads")?;
-        let mut meta = DurableMap::new(db, "entity_meta")?;
-        match meta.get(&ENTITY_SCHEMA_META_KEY.to_string())? {
-            Some(ENTITY_SCHEMA_VERSION) => {}
-            Some(_) | None => {
-                payloads.clear()?;
-                meta.clear()?;
-                meta.put(ENTITY_SCHEMA_META_KEY.to_string(), ENTITY_SCHEMA_VERSION)?;
-            }
-        }
+        let payloads = DurableMap::new(db, "entity_payloads")?;
         Ok(Self {
             inner: Arc::new(Mutex::new(EntityStoreInner {
                 _db: db.clone(),
                 payloads,
-                meta,
             })),
         })
     }
 
-    /// Clear rebuildable entity payloads and reset storage schema metadata.
-    pub fn reset(&self) -> Result<(), EntityStoreError> {
-        let mut inner = self.inner.lock().map_err(|_| EntityStoreError::Poisoned)?;
-        inner.payloads.clear()?;
-        inner.meta.clear()?;
-        inner
-            .meta
-            .put(ENTITY_SCHEMA_META_KEY.to_string(), ENTITY_SCHEMA_VERSION)?;
+    /// Clear rebuildable entity payloads (called by [`crate::store::reset`]).
+    pub(crate) fn clear_data(db: &Db) -> Result<(), EntityStoreError> {
+        let mut payloads = DurableMap::<String, StoredEntityRecord>::new(db, "entity_payloads")?;
+        payloads.clear()?;
+        let mut meta = DurableMap::<String, u64>::new(db, "entity_meta")?;
+        meta.clear()?;
         Ok(())
+    }
+
+    /// Clear rebuildable entity payloads.
+    pub fn reset(&self) -> Result<(), EntityStoreError> {
+        let inner = self.inner.lock().map_err(|_| EntityStoreError::Poisoned)?;
+        Self::clear_data(&inner._db)
     }
 
     /// Persist a payload for `id` (overwrites any existing entry).
