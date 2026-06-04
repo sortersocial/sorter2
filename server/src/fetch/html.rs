@@ -4,6 +4,7 @@ use maud::{html, Markup};
 
 use crate::{
     form_template::template_json_compact,
+    html::sanitize::entity_body_html,
     path_types::ItemId,
     reddit::{is_children_fetchable, is_fetchable},
     reducer::NodeState,
@@ -27,7 +28,7 @@ pub fn entity_panel(node: &NodeState) -> Markup {
                     p class="muted small" { "by " (author) }
                 }
                 @if let Some(body) = &data.body_html {
-                    div class="entity-body" { (maud::PreEscaped(body)) }
+                    div class="entity-body" { (maud::PreEscaped(entity_body_html(body))) }
                 }
             }
         }

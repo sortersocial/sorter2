@@ -3,6 +3,7 @@
 use maud::{html, Markup};
 
 use crate::{
+    html::sanitize::entity_body_html,
     path_types::ItemId,
     reducer::{EntityData, GlobalTree, NodeState},
 };
@@ -57,7 +58,7 @@ fn post_entity_card(data: &EntityData) -> Markup {
                 }
             }
             @if let Some(body) = &data.body_html {
-                div class="entity-body" { (maud::PreEscaped(body)) }
+                div class="entity-body" { (maud::PreEscaped(entity_body_html(body))) }
             }
         }
     }

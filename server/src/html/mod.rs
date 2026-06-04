@@ -20,6 +20,7 @@ use crate::{
     ui_action::UI_RPC_FIELD,
 };
 
+pub mod sanitize;
 pub mod vote;
 
 const SORTER_CSS: &str = include_str!("../../static/sorter.css");
