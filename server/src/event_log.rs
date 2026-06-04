@@ -11,6 +11,7 @@ use crate::events::{EventRecord, CURRENT_LOG_SCHEMA};
 pub struct ReplayStats {
     pub applied: usize,
     pub skipped: usize,
+    pub last_seq: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +74,21 @@ impl EventLog {
     }
 
     pub async fn append(&self, record: &EventRecord) -> Result<(), EventLogError> {
+        self.append_batch(std::slice::from_ref(record)).await
+    }
+
+    pub async fn append_batch(&self, records: &[EventRecord]) -> Result<(), EventLogError> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        for pair in records.windows(2) {
+            if pair[1].seq != pair[0].seq + 1 {
+                return Err(EventLogError::Apply(format!(
+                    "event batch sequence gap: {} followed by {}",
+                    pair[0].seq, pair[1].seq
+                )));
+            }
+        }
         self.ensure_parent_dir().await?;
         let mut f: tokio::fs::File = OpenOptions::new()
             .create(true)
@@ -80,9 +96,11 @@ impl EventLog {
             .open(&self.path)
             .await?;
 
-        let mut line = serde_json::to_string(record)?;
-        line.push('\n');
-        f.write_all(line.as_bytes()).await?;
+        for record in records {
+            let mut line = serde_json::to_string(record)?;
+            line.push('\n');
+            f.write_all(line.as_bytes()).await?;
+        }
         f.flush().await?;
         f.sync_data().await?;
         Ok(())
@@ -113,6 +131,7 @@ impl EventLog {
         let f = fs::File::open(&self.path).await?;
         let mut reader = BufReader::new(f).lines();
         let mut line_no = 0_usize;
+        let mut expected_seq = 1_u64;
 
         while let Some(line) = reader.next_line().await? {
             line_no += 1;
@@ -121,6 +140,17 @@ impl EventLog {
                 continue;
             }
             let record = parse_line(trimmed).map_err(|e| EventLogError::at_line(line_no, e))?;
+            if record.seq != expected_seq {
+                return Err(EventLogError::BadLine {
+                    line_no,
+                    detail: format!(
+                        "non-contiguous event sequence: expected {expected_seq}, got {}",
+                        record.seq
+                    ),
+                });
+            }
+            expected_seq += 1;
+            stats.last_seq = record.seq;
             if record.seq <= after_seq {
                 stats.skipped += 1;
                 continue;
@@ -132,8 +162,14 @@ impl EventLog {
         Ok(stats)
     }
 
+    pub async fn last_sequence(&self) -> Result<u64, EventLogError> {
+        Ok(self.replay_from(u64::MAX, |_| Ok(())).await?.last_seq)
+    }
+
     /// Load every event into memory. Prefer [`Self::replay`] for startup.
-    pub async fn load_all(&self) -> Result<(Vec<EventRecord>, Vec<(usize, String)>), EventLogError> {
+    pub async fn load_all(
+        &self,
+    ) -> Result<(Vec<EventRecord>, Vec<(usize, String)>), EventLogError> {
         let mut events = Vec::new();
         let stats = self
             .replay(|record| {
@@ -203,9 +239,7 @@ mod tests {
         let event = Event::NodeEnsured {
             id: "reddit.com/r/rust".into(),
         };
-        log.append(&sample_record(1, event))
-            .await
-            .unwrap();
+        log.append(&sample_record(1, event)).await.unwrap();
 
         let line = std::fs::read_to_string(&path).unwrap();
         let record: EventRecord = serde_json::from_str(line.trim()).unwrap();
@@ -243,16 +277,45 @@ mod tests {
         .unwrap();
 
         let log = EventLog::new(&path);
-        let err = log
-            .replay(|_| Ok(()))
-            .await
-            .unwrap_err();
+        let err = log.replay(|_| Ok(())).await.unwrap_err();
         assert!(matches!(
             err,
             EventLogError::BadLine {
                 line_no: 1,
                 detail: ref d,
             } if d.contains("unsupported event schema: 99")
+        ));
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_sequence_gaps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("events.jsonl");
+        let log = EventLog::new(&path);
+        log.append(&sample_record(
+            1,
+            Event::NodeEnsured {
+                id: "reddit.com/r/rust".into(),
+            },
+        ))
+        .await
+        .unwrap();
+        log.append(&sample_record(
+            3,
+            Event::NodeEnsured {
+                id: "reddit.com/r/python".into(),
+            },
+        ))
+        .await
+        .unwrap();
+
+        let err = log.replay(|_| Ok(())).await.unwrap_err();
+        assert!(matches!(
+            err,
+            EventLogError::BadLine {
+                line_no: 2,
+                detail: ref d,
+            } if d.contains("expected 2, got 3")
         ));
     }
 }

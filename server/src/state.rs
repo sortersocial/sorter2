@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{error::Error, sync::Arc};
 
 use crate::{
     entity_store::EntityStore,
@@ -46,16 +46,17 @@ async fn catch_up_projection(
         .last_applied_event_count()
         .map_err(|e| crate::event_log::EventLogError::Apply(e.to_string()))?;
 
-    event_log
+    let stats = event_log
         .replay_from(after_seq, |record| {
-            projection_apply::apply_event(
-                projection_store,
-                entity_store,
-                record.seq,
-                &record.event,
-            )
+            projection_apply::apply_records(projection_store, entity_store, &[record])
         })
         .await?;
+    if after_seq > stats.last_seq {
+        return Err(crate::event_log::EventLogError::Apply(format!(
+            "projection cursor {after_seq} is ahead of event log tail {}",
+            stats.last_seq
+        )));
+    }
 
     Ok(())
 }
@@ -101,14 +102,14 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub async fn new(cfg: AppConfig) -> Self {
+    pub async fn try_new(cfg: AppConfig) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
         let event_log = Arc::new(EventLog::new(cfg.event_log_path.clone()));
         let view_log = Arc::new(ViewLog::new(cfg.views_log_path.clone()));
         let store_path = format!("{}/store", cfg.data_dir);
-        let db = durable::Db::open(std::path::Path::new(&store_path)).expect("store db");
-        let entity_store = EntityStore::from_db(&db).expect("entity store");
-        let projection_store = ProjectionStore::from_db(&db).expect("projection store");
-        let views = ViewStore::from_db(&db).expect("view store");
+        let db = durable::Db::open(std::path::Path::new(&store_path))?;
+        let entity_store = EntityStore::from_db(&db)?;
+        let projection_store = ProjectionStore::from_db(&db)?;
+        let views = ViewStore::from_db(&db)?;
 
         if let Err(e) = views.catch_up(&view_log).await {
             tracing::warn!(err = %e, "view log replay failed");
@@ -118,18 +119,18 @@ impl AppState {
         }
         views.spawn_worker(view_log.clone());
 
-        if let Err(e) = catch_up_projection(&event_log, &entity_store, &projection_store).await {
-            tracing::warn!(err = %e, "event log replay failed");
-        }
+        catch_up_projection(&event_log, &entity_store, &projection_store).await?;
+        let next_seq = event_log.last_sequence().await? + 1;
 
         let journal = JournalClient::spawn(
             event_log.clone(),
             entity_store.clone(),
             projection_store.clone(),
+            next_seq,
         );
         let reddit = RedditBroker::spawn(journal.clone(), RedditApiConfig::from_env());
 
-        Self {
+        Ok(Self {
             cfg: Arc::new(cfg),
             event_log,
             view_log,
@@ -138,7 +139,11 @@ impl AppState {
             views,
             journal,
             reddit,
-        }
+        })
+    }
+
+    pub async fn new(cfg: AppConfig) -> Self {
+        Self::try_new(cfg).await.expect("app state")
     }
 
     pub async fn ensure_node(&self, id: &ItemId) -> Result<(), String> {
@@ -194,8 +199,8 @@ impl AppState {
 mod tests {
     use super::{normalize_scope, parse_item_param, AppConfig, AppState};
     use crate::{
-        entity_store::EntityStore, event_log::EventLog, event_reducer, events::Event,
-        path_types::ItemId, projection_store::ProjectionStore, reducer::GlobalTree,
+        entity_store::EntityStore, event_log::EventLog, events::Event, path_types::ItemId,
+        projection_store::ProjectionStore, reducer::GlobalTree,
     };
     use serde_json::json;
 
@@ -208,20 +213,22 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let log_path = tmp.path().join("events.jsonl");
         let log = EventLog::new(log_path.to_string_lossy().into_owned());
-        let entity_store = EntityStore::open(&tmp.path().join("entity_db")).unwrap();
         let payload = json!({"kind":"t5","data":{"title":"Rust","display_name":"rust"}});
         let event = Event::EntityImported {
             id: "reddit.com/r/rust".into(),
             ts: 1,
             payload: payload.clone(),
         };
-        log.append(&event_record(1, event))
+        log.append(&event_record(1, event)).await.unwrap();
+
+        let db = durable::Db::open(tmp.path().join("store")).unwrap();
+        let entity_store = EntityStore::from_db(&db).unwrap();
+        let projection_store = ProjectionStore::from_db(&db).unwrap();
+        super::catch_up_projection(&log, &entity_store, &projection_store)
             .await
             .unwrap();
-
-        let mut tree = GlobalTree::new();
-        log.replay(|record| event_reducer::apply_event(record.event, &mut tree, &entity_store))
-            .await
+        let tree = projection_store
+            .scope_tree(&ItemId::parse("reddit.com/r/rust").unwrap())
             .unwrap();
         let node = tree
             .get(&ItemId::parse("reddit.com/r/rust").unwrap())
@@ -232,6 +239,44 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored["data"]["display_name"], "rust");
+    }
+
+    #[tokio::test]
+    async fn startup_fails_when_projection_cursor_is_ahead_of_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let log = EventLog::new(format!("{data_dir}/events.jsonl"));
+        log.append(&event_record(
+            1,
+            Event::NodeEnsured {
+                id: "reddit.com/r/rust".into(),
+            },
+        ))
+        .await
+        .unwrap();
+
+        {
+            let db = durable::Db::open(tmp.path().join("store")).unwrap();
+            let entity_store = EntityStore::from_db(&db).unwrap();
+            let projection_store = ProjectionStore::from_db(&db).unwrap();
+            let mut tree = GlobalTree::new();
+            tree.ensure_path(&ItemId::parse("reddit.com/r/rust").unwrap());
+            projection_store
+                .persist_event(
+                    &tree,
+                    2,
+                    &Event::NodeEnsured {
+                        id: "reddit.com/r/rust".into(),
+                    },
+                )
+                .unwrap();
+            let err = super::catch_up_projection(&log, &entity_store, &projection_store)
+                .await
+                .unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("projection cursor 2 is ahead of event log tail 1"));
+        }
     }
 
     #[tokio::test]

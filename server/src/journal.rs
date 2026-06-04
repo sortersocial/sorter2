@@ -5,8 +5,11 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    entity_store::EntityStore, event_log::EventLog, events::{event_timestamp, Event, EventRecord},
-    projection_apply, projection_store::ProjectionStore,
+    entity_store::EntityStore,
+    event_log::EventLog,
+    events::{event_timestamp, Event, EventRecord},
+    projection_apply,
+    projection_store::ProjectionStore,
 };
 
 pub struct JournalCommand {
@@ -24,6 +27,7 @@ impl JournalClient {
         event_log: Arc<EventLog>,
         entity_store: EntityStore,
         projection_store: ProjectionStore,
+        next_seq: u64,
     ) -> Self {
         let (tx, rx) = mpsc::channel(256);
         tokio::spawn(journal_worker(
@@ -31,6 +35,7 @@ impl JournalClient {
             event_log,
             entity_store,
             projection_store,
+            next_seq,
         ));
         Self { tx }
     }
@@ -51,6 +56,7 @@ async fn journal_worker(
     event_log: Arc<EventLog>,
     entity_store: EntityStore,
     projection_store: ProjectionStore,
+    mut next_seq: u64,
 ) {
     while let Some(first) = rx.recv().await {
         let mut batch = vec![first];
@@ -58,33 +64,55 @@ async fn journal_worker(
             batch.push(more);
         }
 
+        let result = append_and_project_batch(
+            &event_log,
+            &projection_store,
+            &entity_store,
+            &mut next_seq,
+            &batch,
+        )
+        .await;
+        let is_projection_failure = result
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.starts_with("projection apply failed after durable append:"));
         for cmd in batch {
-            let result = append_and_project(
-                &event_log,
-                &projection_store,
-                &entity_store,
-                &cmd.event,
-            )
-            .await;
-            let _ = cmd.reply.send(result);
+            let _ = cmd.reply.send(result.clone());
+        }
+        if is_projection_failure {
+            tracing::error!(
+                "projection apply failed after durable append; terminating for replay repair"
+            );
+            std::process::exit(1);
         }
     }
 }
 
-async fn append_and_project(
+async fn append_and_project_batch(
     event_log: &EventLog,
     projection_store: &ProjectionStore,
     entity_store: &EntityStore,
-    event: &Event,
+    next_seq: &mut u64,
+    commands: &[JournalCommand],
 ) -> Result<(), String> {
-    let seq = projection_store
-        .last_applied_event_count()
-        .map_err(|e| e.to_string())?
-        + 1;
-    let record = EventRecord::new(seq, event_timestamp(event), event.clone());
-    event_log.append(&record).await.map_err(|e| e.to_string())?;
-    projection_apply::apply_event(projection_store, entity_store, seq, event)
-        .map_err(|e| e.to_string())
+    let mut records = Vec::with_capacity(commands.len());
+    let mut seq = *next_seq;
+    for cmd in commands {
+        records.push(EventRecord::new(
+            seq,
+            event_timestamp(&cmd.event),
+            cmd.event.clone(),
+        ));
+        seq += 1;
+    }
+
+    event_log
+        .append_batch(&records)
+        .await
+        .map_err(|e| e.to_string())?;
+    *next_seq = seq;
+    projection_apply::apply_records(projection_store, entity_store, &records)
+        .map_err(|e| format!("projection apply failed after durable append: {e}"))
 }
 
 #[cfg(test)]
@@ -101,11 +129,7 @@ mod tests {
         let entity_store = EntityStore::from_db(&db).unwrap();
         let projection_store = ProjectionStore::from_db(&db).unwrap();
 
-        let journal = JournalClient::spawn(
-            event_log,
-            entity_store,
-            projection_store.clone(),
-        );
+        let journal = JournalClient::spawn(event_log, entity_store, projection_store.clone(), 1);
 
         let j1 = journal.clone();
         let j2 = journal.clone();
@@ -122,9 +146,64 @@ mod tests {
 
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 2);
         let tree = projection_store.load_tree().unwrap();
-        assert!(tree.get(&ItemId::parse("reddit.com/r/rust").unwrap()).is_some());
+        assert!(tree
+            .get(&ItemId::parse("reddit.com/r/rust").unwrap())
+            .is_some());
         assert!(tree
             .get(&ItemId::parse("reddit.com/r/python").unwrap())
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn journal_allocates_sequences_from_log_tail_not_projection_cursor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("events.jsonl");
+        let event_log = Arc::new(EventLog::new(log_path));
+        event_log
+            .append(&EventRecord::new(
+                1,
+                1,
+                Event::NodeEnsured {
+                    id: "reddit.com/r/rust".into(),
+                },
+            ))
+            .await
+            .unwrap();
+
+        let db = durable::Db::open(tmp.path().join("store")).unwrap();
+        let entity_store = EntityStore::from_db(&db).unwrap();
+        let projection_store = ProjectionStore::from_db(&db).unwrap();
+        projection_apply::apply_records(
+            &projection_store,
+            &entity_store,
+            &[EventRecord::new(
+                1,
+                1,
+                Event::NodeEnsured {
+                    id: "reddit.com/r/rust".into(),
+                },
+            )],
+        )
+        .unwrap();
+        let next_seq = event_log.last_sequence().await.unwrap() + 1;
+        assert_eq!(next_seq, 2);
+
+        let journal = JournalClient::spawn(
+            event_log.clone(),
+            entity_store,
+            projection_store.clone(),
+            next_seq,
+        );
+        journal
+            .append(Event::NodeEnsured {
+                id: "reddit.com/r/python".into(),
+            })
+            .await
+            .unwrap();
+
+        let (records, _) = event_log.load_all().await.unwrap();
+        let seqs: Vec<u64> = records.into_iter().map(|record| record.seq).collect();
+        assert_eq!(seqs, vec![1, 2]);
+        assert_eq!(projection_store.last_applied_event_count().unwrap(), 2);
     }
 }
