@@ -1,7 +1,11 @@
-//! URL canonicalization and hierarchy rules for [`crate::path_types::ItemId`].
+//! URL canonicalization and hierarchy via a semantic graph (DFA + generic fallback).
 
-mod engine;
+mod graph;
+mod parse;
 mod registry;
+
+#[cfg(test)]
+mod registry_tests;
 
 pub use registry::{
     canonicalize_raw, looks_like_url, navigable_breadcrumbs, parent_url, resolve_id, CanonicalResult,
