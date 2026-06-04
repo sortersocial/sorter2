@@ -33,16 +33,21 @@
   [scope item-idx]
   (format "%s/post-%05d" scope item-idx))
 
+(def current-log-schema 1)
+
 (defn vote-line
-  [{:keys [ts scope a b ratio-left ratio-right]}]
-  (str "{\"type\":\"vote_recorded\""
+  [{:keys [seq ts scope a b ratio-left ratio-right]}]
+  (str "{\"schema\":" current-log-schema
+       ",\"seq\":" seq
+       ",\"ts\":" ts
+       ",\"event\":{\"type\":\"vote_recorded\""
        ",\"ts\":" ts
        ",\"a\":" (json-string a)
        ",\"b\":" (json-string b)
        ",\"ratio_left\":" ratio-left
        ",\"ratio_right\":" ratio-right
        ",\"scope\":" (json-string scope)
-       "}\n"))
+       "}}\n"))
 
 (defn vote-for
   [scope-idx item-count vote-idx]
@@ -63,9 +68,12 @@
         started (System/nanoTime)]
     (.mkdirs (.getParentFile file))
     (with-open [w (java.io.BufferedWriter. (io/writer file))]
-      (doseq [scope-idx (range scope-count)
-              vote-idx (range votes-per-scope)]
-        (.write w (vote-line (vote-for scope-idx item-count vote-idx)))))
+      (let [seq (atom 0)]
+        (doseq [scope-idx (range scope-count)
+                vote-idx (range votes-per-scope)]
+          (swap! seq inc)
+          (.write w (vote-line (assoc (vote-for scope-idx item-count vote-idx)
+                                      :seq @seq))))))
     {:path (.getAbsolutePath file)
      :scope-count scope-count
      :item-count item-count
