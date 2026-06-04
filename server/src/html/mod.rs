@@ -264,12 +264,19 @@ pub fn scope_theme_style(parent: &ItemId) -> String {
     )
 }
 
-fn rank_row_style(parent: &ItemId, ordinal: usize, total: usize) -> String {
-    let t = if total <= 1 {
-        0.0
-    } else {
-        ordinal as f64 / (total - 1) as f64
-    };
+/// Map vote mass to gradient position using the group's score range, not raw mass or
+/// list position. Vote mass sums to 1 across the component, so absolute values dilute
+/// as N grows; min–max within the visible list preserves similar scores → similar colors.
+fn score_gradient_t(score: f64, min_score: f64, max_score: f64) -> f64 {
+    let spread = max_score - min_score;
+    if spread < 1e-9 {
+        return 0.5;
+    }
+    ((max_score - score) / spread).clamp(0.0, 1.0)
+}
+
+fn rank_row_style(parent: &ItemId, score: f64, min_score: f64, max_score: f64) -> String {
+    let t = score_gradient_t(score, min_score, max_score);
     let base_hue = scope_base_hue(parent);
     let hue = (base_hue + 118.0 * t) % 360.0;
     let lightness = 0.74 - 0.34 * t;
@@ -295,14 +302,15 @@ fn rank_list(
     highlighted: &HashSet<ItemId>,
     tree: &GlobalTree,
 ) -> Markup {
-    let group_len = items.len();
+    let min_score = items.iter().map(|r| r.score).fold(f64::INFINITY, f64::min);
+    let max_score = items.iter().map(|r| r.score).fold(f64::NEG_INFINITY, f64::max);
     html! {
         @if !items.is_empty() {
             h3 class="rank-heading muted small" { (label) }
             ol class="rank-list" {
                 @for (i, r) in items.iter().enumerate() {
                     @let href = item_href(&r.item);
-                    @let style = rank_row_style(parent, i, group_len);
+                    @let style = rank_row_style(parent, r.score, min_score, max_score);
                     @let class = rank_row_class(&r.item, highlighted);
                     li class=(class)
                         data-rank-item=(r.item.as_str())
@@ -517,19 +525,37 @@ pub async fn browse(State(state): State<AppState>, uri: Uri) -> impl IntoRespons
 
 #[cfg(test)]
 mod tests {
-    use super::{rank_row_style, SORTER_UI_JS};
+    use super::{rank_row_style, score_gradient_t, SORTER_UI_JS};
     use crate::path_types::ItemId;
 
     #[test]
-    fn rank_row_style_gradients_per_group_not_globally() {
+    fn score_gradient_t_uses_group_range_not_absolute_mass() {
+        assert!((score_gradient_t(0.12, 0.08, 0.12) - 0.0).abs() < 1e-9);
+        assert!((score_gradient_t(0.08, 0.08, 0.12) - 1.0).abs() < 1e-9);
+        // Raw 12% mass would map near the dark end globally; within this group it's the top.
+        assert!(score_gradient_t(0.12, 0.08, 0.12) < score_gradient_t(0.12, 0.0, 1.0));
+    }
+
+    #[test]
+    fn score_gradient_t_similar_scores_similar_t() {
+        let a = score_gradient_t(0.41, 0.20, 0.60);
+        let b = score_gradient_t(0.40, 0.20, 0.60);
+        assert!((a - b).abs() < 0.05);
+        assert!((a - score_gradient_t(0.60, 0.20, 0.60)).abs() > 0.3);
+    }
+
+    #[test]
+    fn score_gradient_t_tied_scores_neutral() {
+        assert!((score_gradient_t(0.25, 0.25, 0.25) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rank_row_style_same_inputs_same_color() {
         let parent = ItemId::opaque("test-scope");
-        let first_in_four = rank_row_style(&parent, 0, 4);
-        let last_in_four = rank_row_style(&parent, 3, 4);
-        let first_in_two = rank_row_style(&parent, 0, 2);
-        let last_in_two = rank_row_style(&parent, 1, 2);
-        assert_eq!(first_in_four, first_in_two);
-        assert_eq!(last_in_four, last_in_two);
-        assert_ne!(first_in_four, last_in_four);
+        assert_eq!(
+            rank_row_style(&parent, 0.33, 0.20, 0.60),
+            rank_row_style(&parent, 0.33, 0.20, 0.60),
+        );
     }
 
     #[test]
