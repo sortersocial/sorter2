@@ -1,16 +1,10 @@
 //! Pick two children of a parent scope for pairwise voting.
 //!
-//! Pair selection prefers **bridge** votes — comparisons between items in
-//! different connected components of the voted-pairs graph — so the pool
-//! merges into one ranking group before refining within it.
+//! Before the pool is one connected voted component, prefer an unvoted edge from
+//! a never-voted child into an established group (spanning tree growth).
 //!
-//! Among unvoted bridges, prefer merging established voted components, then
-//! attaching a never-voted child to an established component, and only then
-//! comparing two never-voted children (so the voted graph grows as one tree).
-//!
-//! Once every pool child sits in one voted component, refinement **zips** down
-//! the rank-centrality order: prefer 1 vs 2, then 2 vs 3, and so on, skipping
-//! pairs that already have a vote.
+//! Once connected, run rank centrality once and **zip** adjacent ranks (1 vs 2,
+//! 2 vs 3, …), skipping pairs that already have a vote.
 
 use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
@@ -25,6 +19,10 @@ fn pairs_match(a: &ItemId, b: &ItemId, x: &ItemId, y: &ItemId) -> bool {
     (a == x && b == y) || (a == y && b == x)
 }
 
+fn pair_excluded(a: &ItemId, b: &ItemId, exclude: Option<(&ItemId, &ItemId)>) -> bool {
+    exclude.is_some_and(|(x, y)| pairs_match(a, b, x, y))
+}
+
 fn pair_is_voted(group: &GroupState, a: &ItemId, b: &ItemId) -> bool {
     let Some(&ai) = group.item_to_idx.get(a) else {
         return false;
@@ -36,8 +34,6 @@ fn pair_is_voted(group: &GroupState, a: &ItemId, b: &ItemId) -> bool {
     group.voted_pairs.contains(&(i, j))
 }
 
-/// Voted-pairs layout for pool items: component id per item plus which ids are
-/// multi-node voted components (ranked groups in the UI).
 struct ComponentLayout {
     ids: HashMap<ItemId, usize>,
     established: HashSet<usize>,
@@ -77,7 +73,6 @@ fn component_layout(group: &GroupState, pool: &[ItemId]) -> ComponentLayout {
     ComponentLayout { ids, established }
 }
 
-/// Every pool child shares one multi-node voted component (spanning tree phase done).
 fn pool_fully_connected(layout: &ComponentLayout, pool: &[ItemId]) -> bool {
     if pool.len() < 2 {
         return false;
@@ -99,7 +94,13 @@ fn pool_fully_connected(layout: &ComponentLayout, pool: &[ItemId]) -> bool {
     comp_id.is_some()
 }
 
-/// Pool children that appear in `group`, sorted best rank first.
+fn item_in_established(layout: &ComponentLayout, item: &ItemId) -> bool {
+    layout
+        .ids
+        .get(item)
+        .is_some_and(|id| layout.established.contains(id))
+}
+
 fn ranked_pool_order(group: &GroupState, pool: &[ItemId]) -> Vec<ItemId> {
     let pool_set: HashSet<_> = pool.iter().collect();
     ranked_items(group)
@@ -109,170 +110,126 @@ fn ranked_pool_order(group: &GroupState, pool: &[ItemId]) -> Vec<ItemId> {
         .collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum PairPriority {
-    /// Unvoted edge between two components — grows the ranking group.
-    BridgeUnvoted = 0,
-    /// Unvoted edge inside one component — refines order.
-    WithinUnvoted = 1,
-    /// Re-vote across components (rare once merged).
-    BridgeVoted = 2,
-    /// Re-vote within a component.
-    WithinVoted = 3,
-}
-
-/// Tie-break among unvoted bridge pairs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum BridgeSubPriority {
-    /// Both endpoints lie in established (multi-node) voted components.
-    MergeEstablished = 0,
-    /// One established component member and one never-voted child.
-    AttachIsolate = 1,
-    /// Two never-voted children (separate singleton components).
-    IsolatePair = 2,
-}
-
-/// Tie-break among within-component pairs once the pool is one connected group.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct WithinSubPriority {
-    /// 1 = adjacent ranks (i vs i+1); larger = farther apart in the order.
-    rank_gap: usize,
-    /// min rank index of the two — zip from the top (1 vs 2 before 2 vs 3).
-    zip_index: usize,
-}
-
-const WITHIN_SUB_WORST: WithinSubPriority = WithinSubPriority {
-    rank_gap: usize::MAX,
-    zip_index: usize::MAX,
-};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct PairSortKey {
-    priority: PairPriority,
-    bridge_sub: BridgeSubPriority,
-    within_sub: WithinSubPriority,
-}
-
-fn item_in_established(layout: &ComponentLayout, item: &ItemId) -> bool {
-    layout
-        .ids
-        .get(item)
-        .is_some_and(|id| layout.established.contains(id))
-}
-
-fn bridge_sub_priority(layout: &ComponentLayout, a: &ItemId, b: &ItemId) -> BridgeSubPriority {
-    let a_est = item_in_established(layout, a);
-    let b_est = item_in_established(layout, b);
-    match (a_est, b_est) {
-        (true, true) => BridgeSubPriority::MergeEstablished,
-        (true, false) | (false, true) => BridgeSubPriority::AttachIsolate,
-        (false, false) => BridgeSubPriority::IsolatePair,
+/// Walk 1↔2, 2↔3, …; optional `require_unvoted` skips voted edges.
+fn zip_adjacent_pair(
+    group: &GroupState,
+    order: &[ItemId],
+    exclude: Option<(&ItemId, &ItemId)>,
+    require_unvoted: bool,
+) -> Option<(ItemId, ItemId)> {
+    for w in order.windows(2) {
+        let a = &w[0];
+        let b = &w[1];
+        if pair_excluded(a, b, exclude) {
+            continue;
+        }
+        if require_unvoted && pair_is_voted(group, a, b) {
+            continue;
+        }
+        return Some((a.clone(), b.clone()));
     }
+    None
 }
 
-fn within_sub_priority(
+/// Grow the voted graph toward one component (no rank centrality).
+fn suggest_grow_pair(
     group: &GroupState,
     pool: &[ItemId],
     layout: &ComponentLayout,
-    a: &ItemId,
-    b: &ItemId,
-) -> WithinSubPriority {
-    if !pool_fully_connected(layout, pool) {
-        return WITHIN_SUB_WORST;
-    }
-    let order = ranked_pool_order(group, pool);
-    let (Some(i), Some(j)) = (order.iter().position(|x| x == a), order.iter().position(|x| x == b))
-    else {
-        return WITHIN_SUB_WORST;
-    };
-    WithinSubPriority {
-        rank_gap: i.abs_diff(j),
-        zip_index: i.min(j),
-    }
-}
+    exclude: Option<(&ItemId, &ItemId)>,
+) -> Option<(ItemId, ItemId)> {
+    let established: Vec<&ItemId> = pool
+        .iter()
+        .filter(|item| item_in_established(layout, item))
+        .collect();
+    let isolates: Vec<&ItemId> = pool
+        .iter()
+        .filter(|item| !item_in_established(layout, item))
+        .collect();
 
-fn pair_sort_key(
-    group: &GroupState,
-    pool: &[ItemId],
-    layout: &ComponentLayout,
-    a: &ItemId,
-    b: &ItemId,
-) -> PairSortKey {
-    let voted = pair_is_voted(group, a, b);
-    let bridge = layout.ids.get(a) != layout.ids.get(b);
-    let priority = match (bridge, voted) {
-        (true, false) => PairPriority::BridgeUnvoted,
-        (false, false) => PairPriority::WithinUnvoted,
-        (true, true) => PairPriority::BridgeVoted,
-        (false, true) => PairPriority::WithinVoted,
-    };
-    let bridge_sub = if priority == PairPriority::BridgeUnvoted {
-        bridge_sub_priority(layout, a, b)
-    } else {
-        BridgeSubPriority::MergeEstablished
-    };
-    let within_sub = if matches!(
-        priority,
-        PairPriority::WithinUnvoted | PairPriority::WithinVoted
-    ) {
-        within_sub_priority(group, pool, layout, a, b)
-    } else {
-        WITHIN_SUB_WORST
-    };
-    PairSortKey {
-        priority,
-        bridge_sub,
-        within_sub,
+    // Attach a never-voted child to the established mass.
+    for iso in &isolates {
+        for est in &established {
+            if !pair_is_voted(group, iso, est) && !pair_excluded(iso, est, exclude) {
+                return Some(((*iso).clone(), (*est).clone()));
+            }
+        }
     }
-}
 
-/// All unordered pairs from `pool`, optionally skipping `exclude`.
-fn candidate_pairs(pool: &[ItemId], exclude: Option<(&ItemId, &ItemId)>) -> Vec<(ItemId, ItemId)> {
-    let mut out = Vec::new();
+    // Bridge two established components.
+    for i in 0..established.len() {
+        for j in (i + 1)..established.len() {
+            let a = established[i];
+            let b = established[j];
+            if layout.ids.get(a) == layout.ids.get(b) {
+                continue;
+            }
+            if !pair_is_voted(group, a, b) && !pair_excluded(a, b, exclude) {
+                return Some((a.clone(), b.clone()));
+            }
+        }
+    }
+
+    // Any other unvoted pair (e.g. two isolates).
     for i in 0..pool.len() {
         for j in (i + 1)..pool.len() {
             let a = &pool[i];
             let b = &pool[j];
-            if a == b {
+            if pair_is_voted(group, a, b) || pair_excluded(a, b, exclude) {
                 continue;
             }
-            if exclude.is_some_and(|(x, y)| pairs_match(a, b, x, y)) {
-                continue;
-            }
-            out.push((a.clone(), b.clone()));
+            return Some((a.clone(), b.clone()));
         }
     }
-    out
+
+    None
 }
 
 /// Pick the next pair to vote on within `pool`.
-///
-/// 1. Prefer unvoted **bridge** pairs (connect separate ranking components),
-///    with sub-priority: merge established components, attach an isolate to
-///    established, then compare two isolates.
-/// 2. Then unvoted within-component pairs; when the pool is one connected group,
-///    prefer adjacent ranks (1 vs 2, 2 vs 3, …) in order, skipping voted pairs.
-/// 3. Then already-voted pairs (re-compare), with the same zip ordering.
 pub fn suggest_next_pair_in_pool(
     group: &GroupState,
     pool: &[ItemId],
     exclude: Option<(&ItemId, &ItemId)>,
 ) -> Option<(ItemId, ItemId)> {
-    let candidates = candidate_pairs(pool, exclude);
-    if candidates.is_empty() {
+    if pool.len() < 2 {
         return None;
     }
+
     let layout = component_layout(group, pool);
-    let best = candidates
-        .iter()
-        .map(|(a, b)| (pair_sort_key(group, pool, &layout, a, b), (a, b)))
-        .min_by_key(|(k, _)| *k)?
-        .0;
-    let best_pairs: Vec<(ItemId, ItemId)> = candidates
-        .into_iter()
-        .filter(|(a, b)| pair_sort_key(group, pool, &layout, a, b) == best)
-        .collect();
-    best_pairs.choose(&mut rand::thread_rng()).cloned()
+
+    if pool_fully_connected(&layout, pool) {
+        let order = ranked_pool_order(group, pool);
+        if let Some(pair) = zip_adjacent_pair(group, &order, exclude, true) {
+            return Some(pair);
+        }
+        if let Some(pair) = zip_adjacent_pair(group, &order, exclude, false) {
+            return Some(pair);
+        }
+    }
+
+    if let Some(pair) = suggest_grow_pair(group, pool, &layout, exclude) {
+        return Some(pair);
+    }
+
+    // Re-vote: zip order when connected, else any non-excluded pair.
+    if pool_fully_connected(&layout, pool) {
+        let order = ranked_pool_order(group, pool);
+        if let Some(pair) = zip_adjacent_pair(group, &order, exclude, false) {
+            return Some(pair);
+        }
+    }
+
+    for i in 0..pool.len() {
+        for j in (i + 1)..pool.len() {
+            let a = &pool[i];
+            let b = &pool[j];
+            if !pair_excluded(a, b, exclude) {
+                return Some((a.clone(), b.clone()));
+            }
+        }
+    }
+
+    None
 }
 
 /// Random distinct pair from `children` (legacy pair.rs behavior).
@@ -509,7 +466,6 @@ mod tests {
                 "reddit.com/r/rust/c",
             ],
         );
-        // Star at a connects all three; b-c is the only unvoted adjacent pair left.
         for (a, b, l, r) in [
             ("reddit.com/r/rust/a", "reddit.com/r/rust/b", 3, 1),
             ("reddit.com/r/rust/a", "reddit.com/r/rust/c", 2, 1),
@@ -521,7 +477,6 @@ mod tests {
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);
-        // a-b and a-c voted; b-c is the only unvoted adjacent pair in rank order.
         assert!(chosen.contains("reddit.com/r/rust/b"));
         assert!(chosen.contains("reddit.com/r/rust/c"));
     }
@@ -538,7 +493,6 @@ mod tests {
                 "reddit.com/r/rust/d",
             ],
         );
-        // Hub at c connects all four; leave rank-adjacent a-b and b-c unvoted.
         for (a, b, l, r) in [
             ("reddit.com/r/rust/c", "reddit.com/r/rust/d", 3, 1),
             ("reddit.com/r/rust/b", "reddit.com/r/rust/c", 2, 1),
@@ -549,10 +503,8 @@ mod tests {
         }
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);
-        assert!(pool_fully_connected(&component_layout(&group, &pool), &pool));
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);
-        // Top adjacent unvoted edge should be a-b (zip index 0), not b-c (index 1).
         assert!(chosen.contains("reddit.com/r/rust/a"));
         assert!(chosen.contains("reddit.com/r/rust/b"));
     }
