@@ -1,11 +1,28 @@
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use tokio::{
     fs::{self, OpenOptions},
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader},
 };
 
 use crate::events::{EventRecord, CURRENT_LOG_SCHEMA};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+struct EventLogMeta {
+    last_seq: u64,
+}
+
+fn meta_path(log_path: &Path) -> PathBuf {
+    let name = log_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("events.jsonl");
+    log_path
+        .parent()
+        .map(|p| p.join(format!("{name}.meta")))
+        .unwrap_or_else(|| PathBuf::from(format!("{name}.meta")))
+}
 
 #[derive(Debug, Default)]
 pub struct ReplayStats {
@@ -96,13 +113,16 @@ impl EventLog {
             .open(&self.path)
             .await?;
 
+        let mut last_seq = 0_u64;
         for record in records {
             let mut line = serde_json::to_string(record)?;
             line.push('\n');
             f.write_all(line.as_bytes()).await?;
+            last_seq = record.seq;
         }
         f.flush().await?;
         f.sync_data().await?;
+        write_meta(&self.path, last_seq).await?;
         Ok(())
     }
 
@@ -162,8 +182,34 @@ impl EventLog {
         Ok(stats)
     }
 
+    async fn read_meta(&self) -> Result<Option<EventLogMeta>, EventLogError> {
+        let path = meta_path(&self.path);
+        if !fs::try_exists(&path).await? {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path).await?;
+        Ok(Some(serde_json::from_slice(&bytes)?))
+    }
+
     pub async fn last_sequence(&self) -> Result<u64, EventLogError> {
-        Ok(self.replay_from(u64::MAX, |_| Ok(())).await?.last_seq)
+        self.last_sequence_after_projection(0).await
+    }
+
+    pub async fn last_sequence_after_projection(
+        &self,
+        projection_tail: u64,
+    ) -> Result<u64, EventLogError> {
+        let mut tail = if let Some(meta) = self.read_meta().await? {
+            meta.last_seq
+        } else if fs::try_exists(&self.path).await? {
+            read_last_seq_from_tail(&self.path).await?
+        } else {
+            0
+        };
+        if projection_tail > tail {
+            tail = projection_tail;
+        }
+        Ok(tail)
     }
 
     /// Load every event into memory. Prefer [`Self::replay`] for startup.
@@ -288,6 +334,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn last_sequence_reads_meta_without_full_replay() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("events.jsonl");
+        let log = EventLog::new(&path);
+        for seq in 1..=50_u64 {
+            log.append(&sample_record(
+                seq,
+                Event::NodeEnsured {
+                    id: format!("item-{seq}"),
+                },
+            ))
+            .await
+            .unwrap();
+        }
+        assert_eq!(log.last_sequence().await.unwrap(), 50);
+    }
+
+    #[tokio::test]
     async fn replay_rejects_sequence_gaps() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("events.jsonl");
@@ -318,4 +382,40 @@ mod tests {
             } if d.contains("expected 2, got 3")
         ));
     }
+}
+
+async fn write_meta(log_path: &Path, last_seq: u64) -> Result<(), EventLogError> {
+    let meta = EventLogMeta { last_seq };
+    let path = meta_path(log_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    let bytes = serde_json::to_vec(&meta)?;
+    fs::write(&path, bytes).await?;
+    Ok(())
+}
+
+async fn read_last_seq_from_tail(path: &Path) -> Result<u64, EventLogError> {
+    use std::io::SeekFrom;
+    let mut f = fs::File::open(path).await?;
+    let len = f.metadata().await?.len();
+    if len == 0 {
+        return Ok(0);
+    }
+    const CHUNK: u64 = 64 * 1024;
+    let read_len = CHUNK.min(len);
+    f.seek(SeekFrom::End(-(read_len as i64))).await?;
+    let mut buf = vec![0_u8; read_len as usize];
+    f.read_exact(&mut buf).await?;
+    let text = String::from_utf8_lossy(&buf);
+    let last_line = text
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| EventLogError::BadLine {
+            line_no: 0,
+            detail: "event log has no parsable tail line".into(),
+        })?;
+    let record = parse_line(last_line.trim())?;
+    Ok(record.seq)
 }

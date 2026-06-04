@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
+    storage_init,
     entity_store::EntityStore,
     event_log::EventLog,
     events::{event_timestamp, Event, EventRecord},
@@ -132,8 +133,7 @@ mod tests {
         let log_path = tmp.path().join("events.jsonl");
         let event_log = Arc::new(EventLog::new(log_path));
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
-        let projection_store = ProjectionStore::from_db(&db).unwrap();
+        let (entity_store, projection_store) = storage_init::open_from_db(&db).unwrap();
 
         let journal = JournalClient::spawn(event_log, entity_store, projection_store.clone(), 1);
 
@@ -177,8 +177,7 @@ mod tests {
             .unwrap();
 
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
-        let projection_store = ProjectionStore::from_db(&db).unwrap();
+        let (entity_store, projection_store) = storage_init::open_from_db(&db).unwrap();
         projection_apply::apply_records(
             &projection_store,
             &entity_store,
@@ -219,8 +218,7 @@ mod tests {
         let log_path = tmp.path().join("events.jsonl");
         let event_log = Arc::new(EventLog::new(log_path));
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
-        let projection_store = ProjectionStore::from_db(&db).unwrap();
+        let (entity_store, projection_store) = storage_init::open_from_db(&db).unwrap();
         let journal =
             JournalClient::spawn(event_log.clone(), entity_store, projection_store.clone(), 1);
 

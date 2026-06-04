@@ -150,7 +150,8 @@ Deleting a subtree is a single RocksDB range delete over `[P, upper_bound(P))`.
 
 - Not multi-process safe. One writer process; serialize writes at the app layer.
 - Not distributed, not SQL.
-- Map iteration order is encoded-byte order, not logical key order.
+- Map iteration order is encoded-byte order, not logical key order (no sorted
+  logical-range API).
 - On-disk struct field ids come from declaration order — add new fields at the
   end; reordering changes the layout.
 - Schema evolution is your responsibility. Because durable shines as a

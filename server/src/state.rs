@@ -145,8 +145,7 @@ impl AppState {
         let view_log = Arc::new(ViewLog::new(cfg.views_log_path.clone()));
         let store_path = format!("{}/store", cfg.data_dir);
         let db = durable::Db::open(std::path::Path::new(&store_path))?;
-        let entity_store = EntityStore::from_db(&db)?;
-        let projection_store = ProjectionStore::from_db(&db)?;
+        let (entity_store, projection_store) = crate::storage_init::open_from_db(&db)?;
         let views = ViewStore::from_db(&db)?;
 
         if let Err(e) = views.catch_up(&view_log).await {
@@ -158,7 +157,10 @@ impl AppState {
         views.spawn_worker(view_log.clone());
 
         catch_up_projection(&event_log, &entity_store, &projection_store).await?;
-        let next_seq = event_log.last_sequence().await? + 1;
+        let next_seq = event_log
+            .last_sequence_after_projection(projection_store.last_applied_event_count()?)
+            .await?
+            + 1;
 
         let journal = JournalClient::spawn(
             event_log.clone(),

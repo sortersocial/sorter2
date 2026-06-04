@@ -182,6 +182,10 @@ impl Db {
     }
 
     /// Apply a single write with the given durability policy.
+    ///
+    /// With [`Durability::SyncWal`] (the common case), each `run` is one WAL
+    /// write and fsync. Prefer [`Self::apply`] or [`Batch::commit_with`] to batch
+    /// many updates into one flush.
     pub fn run(&self, write: Write, durability: Durability) -> Result<()> {
         self.apply(std::slice::from_ref(&write), durability)
     }

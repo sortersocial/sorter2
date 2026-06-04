@@ -88,6 +88,19 @@ fsync; `DisableWal` skips it. `DisableWal` is intended for projections that can
 be rebuilt from another durable source of truth — its writes may be lost on an
 unclean crash.
 
+**Per-call fsync:** `Db::run` and `Batch::commit` (without `commit_with`) use
+`SyncWal`. Convenience helpers on paths (`List::push`, `Deque::push_back`, …)
+commit their own batch. Batching via `Db::apply` / `Batch::commit_with` is how
+you get one WAL flush for many ops.
+
+**Map scans:** Iteration is a single forward prefix scan over `P ++ [DATA]`, but
+keys are ordered by encoded segments (CBOR for map keys), not by the type's
+`Ord`. Do not assume string or numeric sort order matches logical order.
+
+**Range delete:** `DeletePrefix` lowers to RocksDB `delete_range` when
+`prefix_upper_bound(P)` exists. Otherwise the batch resolver scans from `P` and
+deletes matching keys one by one.
+
 `durable` is deliberately not a recovery plan on its own. Pair it with a
 canonical log if you need crash recovery, and prefer "drop and replay" over
 in-place migration when a schema changes.

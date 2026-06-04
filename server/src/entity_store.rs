@@ -14,8 +14,8 @@ use crate::{
     storage_schema::{Store, StoreFields},
 };
 
-const ENTITY_SCHEMA_KEY: &str = "schema_version";
-const ENTITY_SCHEMA_VERSION: u64 = 2;
+pub(crate) const ENTITY_SCHEMA_KEY: &str = "schema_version";
+pub(crate) const ENTITY_SCHEMA_VERSION: u64 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EntityStoreError {
@@ -44,16 +44,10 @@ impl EntityStore {
     }
 
     /// Create an entity store backed by an already-open database.
+    ///
+    /// Schema migration is handled by [`crate::storage_init::open_from_db`].
     pub fn from_db(db: &Db) -> Result<Self, EntityStoreError> {
-        let store = Self { db: db.clone() };
-        let version = Store::root()
-            .entity_meta()
-            .key(&ENTITY_SCHEMA_KEY.to_string())
-            .get(db)?;
-        if version != Some(ENTITY_SCHEMA_VERSION) {
-            store.reset()?;
-        }
-        Ok(store)
+        Ok(Self { db: db.clone() })
     }
 
     /// Clear rebuildable entity payloads and reset storage schema metadata.

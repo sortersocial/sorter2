@@ -58,7 +58,7 @@ pub struct Store {
 /// Cap on the per-node recent-vote window (matches the in-memory reducer).
 pub const RECENT_VOTES_CAP: u64 = 200;
 
-fn id_key(id: &ItemId) -> String {
+pub(crate) fn id_key(id: &ItemId) -> String {
     id.as_str().to_string()
 }
 
@@ -70,6 +70,26 @@ pub fn node(id: &ItemId) -> durable::Path<NodeSchema> {
 // ---------------------------------------------------------------------------
 // Reconstruction (durable -> in-memory)
 // ---------------------------------------------------------------------------
+
+
+pub fn load_node_states_for_keys(
+    db: &Db,
+    keys: &HashSet<String>,
+) -> durable::Result<HashMap<String, NodeState>> {
+    let mut out = HashMap::with_capacity(keys.len());
+    if keys.is_empty() {
+        return Ok(out);
+    }
+    for key in Store::root().nodes().keys(db)? {
+        if keys.contains(&key) {
+            let id = parse_storage_id(&key)?;
+            if let Some(ns) = load_node_state(db, &id)? {
+                out.insert(key, ns);
+            }
+        }
+    }
+    Ok(out)
+}
 
 /// Reconstruct a node's in-memory state, or `None` if the node does not exist.
 pub fn load_node_state(db: &Db, id: &ItemId) -> durable::Result<Option<NodeState>> {

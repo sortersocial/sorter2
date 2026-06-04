@@ -167,6 +167,30 @@ impl<K: Serialize, V: Schema> Path<Map<K, V>> {
         self.child(&encoded)
     }
 
+    /// Prefix for a forward scan over every child-data key in this map.
+    pub fn child_data_prefix(&self) -> Vec<u8> {
+        codec::child_scan_prefix(&self.prefix)
+    }
+
+    /// Visit every `(rocksdb_key, value)` under [`Self::child_data_prefix`].
+    pub fn visit_child_kv<F>(&self, db: &Db, mut visit: F) -> Result<()>
+    where
+        F: FnMut(&[u8], &[u8]) -> Result<()>,
+    {
+        let scan = self.child_data_prefix();
+        let iter = db
+            .raw()
+            .iterator(rocksdb::IteratorMode::From(&scan, rocksdb::Direction::Forward));
+        for item in iter {
+            let (db_key, value) = item?;
+            if !db_key.starts_with(&scan) {
+                break;
+            }
+            visit(&db_key, &value)?;
+        }
+        Ok(())
+    }
+
     /// A reified write that deletes the entire map (all entries and metadata).
     pub fn clear(&self) -> Write {
         Write::new(Op::DeletePrefix {

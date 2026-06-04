@@ -17,6 +17,7 @@ pub mod reducer;
 pub mod render;
 pub mod state;
 pub mod storage_dto;
+pub mod storage_init;
 pub mod storage_schema;
 pub mod ui_action;
 pub mod view_log;

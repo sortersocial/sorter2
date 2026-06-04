@@ -10,12 +10,15 @@ use durable::{Db, Durability, Write};
 use crate::{
     path_types::ItemId,
     reducer::{GlobalTree, NodeState},
-    storage_schema::{load_node_state, node, NodeSchemaFields, Store, StoreFields},
+    storage_schema::{
+        id_key, load_node_state, load_node_states_for_keys, node, NodeSchemaFields, Store,
+        StoreFields,
+    },
 };
 
-const PROJECTION_CURSOR_KEY: &str = "cursor";
-const PROJECTION_SCHEMA_KEY: &str = "schema_version";
-const PROJECTION_SCHEMA_VERSION: u64 = 2;
+pub(crate) const PROJECTION_CURSOR_KEY: &str = "cursor";
+pub(crate) const PROJECTION_SCHEMA_KEY: &str = "schema_version";
+pub(crate) const PROJECTION_SCHEMA_VERSION: u64 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectionStoreError {
@@ -121,11 +124,22 @@ impl ProjectionStore {
         };
 
         let children: Vec<ItemId> = node_state.children.iter().cloned().collect();
-        tree.nodes.insert(node_state.id.clone(), node_state);
+        let mut want = std::collections::HashSet::new();
+        want.insert(id_key(id));
+        for child in &children {
+            want.insert(id_key(child));
+        }
+
+        let loaded =
+            load_node_states_for_keys(&self.db, &want).map_err(ProjectionStoreError::Durable)?;
+
+        if let Some(parent) = loaded.get(&id_key(id)) {
+            tree.nodes.insert(parent.id.clone(), parent.clone());
+        }
 
         for child in children {
-            if let Some(child_node) = self.load_node(&child)? {
-                tree.nodes.insert(child_node.id.clone(), child_node);
+            if let Some(child_node) = loaded.get(&id_key(&child)) {
+                tree.nodes.insert(child_node.id.clone(), child_node.clone());
             } else {
                 tree.ensure_node(&child);
             }
