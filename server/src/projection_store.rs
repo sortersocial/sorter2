@@ -8,15 +8,20 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use durable::{Db, DurableMap};
+use durable::{Db, Durability, DurableMap};
+use serde_json::Value;
 
 use crate::{
+    entity_store::EntityStore,
     events::Event,
     path_types::ItemId,
     reducer::{GlobalTree, NodeState},
+    storage_dto::{decode_node, encode_node, StoredNodeRecord},
 };
 
 const META_LAST_APPLIED_EVENT_COUNT: &str = "last_applied_event_count";
+const META_PROJECTION_SCHEMA_VERSION: &str = "projection_schema_version";
+const PROJECTION_SCHEMA_VERSION: u64 = 1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectionStoreError {
@@ -24,13 +29,15 @@ pub enum ProjectionStoreError {
     Durable(#[from] durable::DurableError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("storage decode error: {0}")]
+    Storage(String),
     #[error("projection lock poisoned")]
     Poisoned,
 }
 
 struct ProjectionStoreInner {
     _db: Db,
-    nodes: DurableMap<String, NodeState>,
+    nodes: DurableMap<String, StoredNodeRecord>,
     meta: DurableMap<String, u64>,
 }
 
@@ -47,8 +54,19 @@ impl ProjectionStore {
     }
 
     pub fn from_db(db: &Db) -> Result<Self, ProjectionStoreError> {
-        let nodes = DurableMap::new(db, "nodes")?;
-        let meta = DurableMap::new(db, "projection_meta")?;
+        let mut nodes = DurableMap::new(db, "nodes")?;
+        let mut meta = DurableMap::new(db, "projection_meta")?;
+        match meta.get(&META_PROJECTION_SCHEMA_VERSION.to_string())? {
+            Some(PROJECTION_SCHEMA_VERSION) => {}
+            Some(_) | None => {
+                nodes.clear()?;
+                meta.clear()?;
+                meta.put(
+                    META_PROJECTION_SCHEMA_VERSION.to_string(),
+                    PROJECTION_SCHEMA_VERSION,
+                )?;
+            }
+        }
         Ok(Self {
             inner: Arc::new(Mutex::new(ProjectionStoreInner {
                 _db: db.clone(),
@@ -69,6 +87,21 @@ impl ProjectionStore {
             .unwrap_or(0))
     }
 
+    /// Clear rebuildable projection data and reset storage schema metadata.
+    pub fn reset(&self) -> Result<(), ProjectionStoreError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| ProjectionStoreError::Poisoned)?;
+        inner.nodes.clear()?;
+        inner.meta.clear()?;
+        inner.meta.put(
+            META_PROJECTION_SCHEMA_VERSION.to_string(),
+            PROJECTION_SCHEMA_VERSION,
+        )?;
+        Ok(())
+    }
+
     pub fn load_tree(&self) -> Result<GlobalTree, ProjectionStoreError> {
         let inner = self
             .inner
@@ -76,7 +109,8 @@ impl ProjectionStore {
             .map_err(|_| ProjectionStoreError::Poisoned)?;
         let mut tree = GlobalTree::default();
         for item in inner.nodes.iter() {
-            let (_, node) = item?;
+            let (_, record) = item?;
+            let node = decode_node(record).map_err(ProjectionStoreError::Storage)?;
             tree.nodes.insert(node.id.clone(), node);
         }
         if tree.nodes.is_empty() {
@@ -92,7 +126,12 @@ impl ProjectionStore {
             .inner
             .lock()
             .map_err(|_| ProjectionStoreError::Poisoned)?;
-        Ok(inner.nodes.get(&id.as_str().to_string())?)
+        inner
+            .nodes
+            .get(&id.as_str().to_string())?
+            .map(decode_node)
+            .transpose()
+            .map_err(ProjectionStoreError::Storage)
     }
 
     pub fn hydrate_scope(
@@ -124,8 +163,10 @@ impl ProjectionStore {
         event: &Event,
     ) -> Result<(), ProjectionStoreError> {
         for id in affected_nodes(event) {
-            if let Some(node) = self.load_node(&id)? {
-                tree.nodes.insert(node.id.clone(), node);
+            if tree.get(&id).is_none() {
+                if let Some(node) = self.load_node(&id)? {
+                    tree.nodes.insert(node.id.clone(), node);
+                }
             }
         }
         Ok(())
@@ -143,7 +184,7 @@ impl ProjectionStore {
         event_count: u64,
         event: &Event,
     ) -> Result<(), ProjectionStoreError> {
-        self.persist_nodes(tree, event_count, affected_nodes(event))
+        self.persist_batch(tree, event_count, affected_nodes(event), &[], None)
     }
 
     pub fn persist_next_event(
@@ -156,11 +197,13 @@ impl ProjectionStore {
         Ok(event_count)
     }
 
-    fn persist_nodes(
+    pub fn persist_batch(
         &self,
         tree: &GlobalTree,
         event_count: u64,
         ids: BTreeSet<ItemId>,
+        entity_payloads: &[(ItemId, Value)],
+        entity_store: Option<&EntityStore>,
     ) -> Result<(), ProjectionStoreError> {
         let inner = self
             .inner
@@ -170,9 +213,24 @@ impl ProjectionStore {
 
         for id in ids {
             if let Some(node) = tree.get(&id) {
-                inner
-                    .nodes
-                    .put_in_batch(&mut batch, &id.as_str().to_string(), node)?;
+                inner.nodes.put_in_batch(
+                    &mut batch,
+                    &id.as_str().to_string(),
+                    &encode_node(node),
+                )?;
+            }
+        }
+
+        if !entity_payloads.is_empty() {
+            let entity_store = entity_store.ok_or_else(|| {
+                ProjectionStoreError::Storage("entity payloads require entity store".into())
+            })?;
+            for (id, payload) in entity_payloads {
+                entity_store
+                    .put_in_batch(&mut batch, id, payload)
+                    .map_err(|e| {
+                        ProjectionStoreError::Storage(format!("entity payload batch failed: {e}"))
+                    })?;
             }
         }
 
@@ -181,7 +239,7 @@ impl ProjectionStore {
             &META_LAST_APPLIED_EVENT_COUNT.to_string(),
             &event_count,
         )?;
-        batch.commit()?;
+        batch.commit_with(Durability::DisableWal)?;
         Ok(())
     }
 }
@@ -205,7 +263,7 @@ fn add_path_nodes(ids: &mut BTreeSet<ItemId>, id: &ItemId) {
     }
 }
 
-fn affected_nodes(event: &Event) -> BTreeSet<ItemId> {
+pub(crate) fn affected_nodes(event: &Event) -> BTreeSet<ItemId> {
     let mut ids = BTreeSet::new();
     match event {
         Event::VoteRecorded { a, b, scope, .. } => {

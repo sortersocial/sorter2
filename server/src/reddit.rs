@@ -287,25 +287,22 @@ async fn reddit_worker(
                     "reddit fetch got payload, importing"
                 );
 
-                let mut write_err: Option<String> = None;
-                let mut written = 0usize;
-                for (child_id, child_payload) in imports {
-                    let event = Event::EntityImported {
+                let events: Vec<Event> = imports
+                    .into_iter()
+                    .map(|(child_id, child_payload)| Event::EntityImported {
                         id: child_id.as_str().to_string(),
                         ts: now_ms(),
                         payload: child_payload,
-                    };
-                    if let Err(e) = journal.append(event).await {
-                        tracing::warn!(item = %child_id, err = %e, "reddit import journal failed");
-                        write_err = Some(e);
-                        break;
-                    }
-                    written += 1;
-                }
+                    })
+                    .collect();
+                let written = events.len();
 
-                match write_err {
-                    Some(e) => notify(done, FetchJobResult::Failed(e)),
-                    None => {
+                match journal.append_many(events).await {
+                    Err(e) => {
+                        tracing::warn!(item = %fetch_id, err = %e, "reddit import journal failed");
+                        notify(done, FetchJobResult::Failed(e));
+                    }
+                    Ok(()) => {
                         recently_fetched.insert(key.clone(), Instant::now());
                         current_delay = Duration::from_millis(600);
                         tracing::info!(item = %fetch_id, ?kind, written, "reddit import complete");

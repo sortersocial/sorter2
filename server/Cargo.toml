@@ -3,6 +3,7 @@ name = "sorter2-server"
 version = "0.0.1"
 edition = "2021"
 license = "MIT"
+default-run = "sorter2-server"
 
 [dependencies]
 axum = { version = "0.7", features = ["macros"] }
