@@ -6,8 +6,7 @@ use std::{
 };
 
 use sorter2_server::{
-    entity_store::EntityStore, event_log::EventLog, events::Event, journal::JournalClient,
-    projection_apply, projection_store::ProjectionStore,
+    event_log::EventLog, events::Event, journal::JournalClient, projection_apply, storage_init,
 };
 
 #[tokio::main]
@@ -18,9 +17,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let data_dir = opts.data_dir.to_string_lossy().into_owned();
     let event_log = Arc::new(EventLog::new(format!("{data_dir}/events.jsonl")));
     let db = durable::Db::open(opts.data_dir.join("store"))?;
-    let entity_store = EntityStore::from_db(&db)?;
-    let projection_store = ProjectionStore::from_db(&db)?;
-
+    let (entity_store, projection_store) = storage_init::open_from_db(&db)?;
     let journal = JournalClient::spawn(
         event_log.clone(),
         entity_store.clone(),
