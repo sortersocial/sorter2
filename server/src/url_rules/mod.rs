@@ -1,6 +1,7 @@
 //! URL canonicalization and hierarchy via a semantic graph (DFA + generic fallback).
 
 mod graph;
+mod graph_builder;
 mod parse;
 mod registry;
 
