@@ -380,6 +380,31 @@ mod tests {
     }
 
     #[test]
+    fn zero_weight_vote_leaves_pair_available_for_suggestion() {
+        let parent = ItemId::parse("https://reddit.com/r/rust").unwrap();
+        let mut tree = seed_children(
+            &parent,
+            &[
+                "https://reddit.com/r/rust/a",
+                "https://reddit.com/r/rust/b",
+            ],
+        );
+        let noop = VoteData::from_recorded(
+            1,
+            "https://reddit.com/r/rust/a",
+            "https://reddit.com/r/rust/b",
+            0,
+            0,
+        )
+        .unwrap();
+        tree.apply_vote(&parent, noop);
+        let group = tree.get(&parent).unwrap().local_ranking.clone();
+        let pool = children_of(&tree, &parent);
+        assert!(!pair_is_voted(&group, &pool[0], &pool[1]));
+        assert!(suggest_next_pair_in_pool(&group, &pool, None).is_some());
+    }
+
+    #[test]
     fn suggest_prefers_unvoted_pair() {
         let parent = ItemId::parse("https://reddit.com/r/rust").unwrap();
         let mut tree = seed_children(

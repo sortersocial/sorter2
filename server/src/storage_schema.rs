@@ -205,6 +205,12 @@ pub fn vote_writes(
     ratio_right: i32,
     ts: i64,
 ) -> durable::Result<()> {
+    let left = ratio_left.max(0);
+    let right = ratio_right.max(0);
+    if left == 0 && right == 0 {
+        return Ok(());
+    }
+
     let a_id = ItemId::from_storage(a).unwrap_or_else(|| ItemId::opaque(a));
     let b_id = ItemId::from_storage(b).unwrap_or_else(|| ItemId::opaque(b));
 
@@ -215,9 +221,6 @@ pub fn vote_writes(
     let pnode = node(parent);
     batch.write(pnode.children().key(&id_key(&a_id)).set(&true));
     batch.write(pnode.children().key(&id_key(&b_id)).set(&true));
-
-    let left = ratio_left.max(0);
-    let right = ratio_right.max(0);
 
     // Edge weights: edge (b,a) += left, edge (a,b) += right (positive only).
     if left > 0 {
@@ -291,6 +294,19 @@ mod tests {
         assert_eq!(g.recent_votes.len(), 1);
         assert!(node_state.children.contains(&ItemId::opaque("alpha")));
         assert!(node_state.children.contains(&ItemId::opaque("beta")));
+    }
+
+    #[test]
+    fn zero_weight_vote_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let parent = ItemId::root();
+
+        let mut batch = db.batch();
+        vote_writes(&mut batch, &parent, "alpha", "beta", 0, 0, 1).unwrap();
+        batch.commit().unwrap();
+
+        assert!(load_node_state(&db, &parent).unwrap().is_none());
     }
 
     #[test]

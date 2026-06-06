@@ -151,10 +151,7 @@ impl Graph {
                     ctx.vars.insert(name.to_string(), seg.to_string());
                     return Ok(edge.target);
                 }
-                EdgePattern::AbsorbAny
-                | EdgePattern::AbsorbIf(_)
-                | EdgePattern::Literal(_)
-                | EdgePattern::Variable(_) => {}
+                EdgePattern::AbsorbAny | EdgePattern::AbsorbIf(_) | EdgePattern::Literal(_) => {}
             }
         }
         Err(())

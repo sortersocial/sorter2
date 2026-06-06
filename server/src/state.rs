@@ -222,6 +222,11 @@ impl AppState {
         if a_raw.is_empty() || b_raw.is_empty() || a_raw == b_raw {
             return Err("invalid vote: need two distinct non-empty items".to_string());
         }
+        if ratio_left.max(0) == 0 && ratio_right.max(0) == 0 {
+            return Err(
+                "invalid vote: need a positive preference on at least one side".to_string(),
+            );
+        }
         // Validate items canonicalize (or are opaque keys) before append.
         let _ = VoteData::from_recorded(ts, a_raw, b_raw, ratio_left, ratio_right)
             .ok_or_else(|| "invalid vote: need two distinct parseable items".to_string())?;
@@ -476,6 +481,26 @@ mod tests {
         assert!(reddit
             .children
             .contains(&ItemId::from_url("https://reddit.com/r").unwrap()));
+    }
+
+    #[tokio::test]
+    async fn record_vote_rejects_zero_zero_ratios() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let state = AppState::new(AppConfig {
+            data_dir: data_dir.clone(),
+            event_log_path: format!("{data_dir}/events.jsonl"),
+            views_log_path: format!("{data_dir}/views.jsonl"),
+            port: 0,
+        })
+        .await;
+
+        let err = state
+            .record_vote(&ItemId::root(), "alpha", "beta", 0, 0)
+            .await
+            .unwrap_err();
+        assert!(err.contains("positive preference"));
+        assert_eq!(state.projection_store.last_applied_event_count().unwrap(), 0);
     }
 
     #[tokio::test]
