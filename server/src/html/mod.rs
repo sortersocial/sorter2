@@ -13,7 +13,7 @@ use crate::{
     form_template::template_json_compact,
     path_types::ItemId,
     ranking::{
-        connected_components_from_voted_pairs, ranked_items_subset, RankedItem, MAX_ITERS, TOL,
+        ranked_items_subset, scope_components, RankedItem, MAX_ITERS, TOL,
     },
     reducer::{GlobalTree, NodeState},
     state::AppState,
@@ -397,10 +397,9 @@ pub fn ranking_panel_with_highlights(
     tree: &GlobalTree,
     highlighted: &HashSet<ItemId>,
 ) -> Markup {
-    let group = &node.local_ranking;
-    let n = group.idx_to_item.len();
-    let (comps, _isolates) =
-        connected_components_from_voted_pairs(n, group.voted_pairs.iter().copied());
+    let scope = &node.votes;
+    let (comps, _isolates, _) =
+        scope_components(scope);
 
     // Each connected component of voted items is its own ranking; isolated and
     // never-voted children fall into the "unranked" bucket below.
@@ -410,7 +409,7 @@ pub fn ranking_panel_with_highlights(
         if comp.len() < 2 {
             continue;
         }
-        let ranked = ranked_items_subset(group, comp, MAX_ITERS, TOL);
+        let ranked = ranked_items_subset(scope, comp, MAX_ITERS, TOL);
         for r in &ranked {
             ranked_ids.insert(r.item.clone());
         }

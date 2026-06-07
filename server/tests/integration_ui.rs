@@ -132,7 +132,7 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
     let state = create_app_state(cfg).await;
     let tree = state.scope_tree(&ItemId::root()).unwrap();
     let root = tree.get(&ItemId::root()).expect("root node after replay");
-    let ranked = sorter2_server::ranking::ranked_items(&root.local_ranking);
+    let ranked = sorter2_server::ranking::ranked_items(&root.votes);
     assert_eq!(ranked.len(), 2);
     assert_eq!(ranked[0].item.as_str(), "alpha");
 }

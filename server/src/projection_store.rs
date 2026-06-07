@@ -214,7 +214,7 @@ mod tests {
 
         let loaded = store.load_tree().unwrap();
         let root = loaded.get(&ItemId::root()).unwrap();
-        assert_eq!(root.local_ranking.idx_to_item.len(), 2);
+        assert_eq!(crate::ranking::ranked_items(&root.votes).len(), 2);
         assert!(root.children.contains(&ItemId::opaque("alpha")));
     }
 

@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     path_types::ItemId,
-    ranking::{connected_components_from_voted_pairs, ranked_items},
-    reducer::{GlobalTree, GroupState},
+    ranking::{pair_is_voted, ranked_items, scope_components},
+    reducer::{GlobalTree, ScopeVotes},
 };
 
 fn pairs_match(a: &ItemId, b: &ItemId, x: &ItemId, y: &ItemId) -> bool {
@@ -23,26 +23,15 @@ fn pair_excluded(a: &ItemId, b: &ItemId, exclude: Option<(&ItemId, &ItemId)>) ->
     exclude.is_some_and(|(x, y)| pairs_match(a, b, x, y))
 }
 
-fn pair_is_voted(group: &GroupState, a: &ItemId, b: &ItemId) -> bool {
-    let Some(&ai) = group.item_to_idx.get(a) else {
-        return false;
-    };
-    let Some(&bi) = group.item_to_idx.get(b) else {
-        return false;
-    };
-    let (i, j) = if ai < bi { (ai, bi) } else { (bi, ai) };
-    group.voted_pairs.contains(&(i, j))
-}
 
 struct ComponentLayout {
     ids: HashMap<ItemId, usize>,
     established: HashSet<usize>,
 }
 
-fn component_layout(group: &GroupState, pool: &[ItemId]) -> ComponentLayout {
-    let n = group.idx_to_item.len();
-    let (comps, isolates) =
-        connected_components_from_voted_pairs(n, group.voted_pairs.iter().copied());
+fn component_layout(scope: &ScopeVotes, pool: &[ItemId]) -> ComponentLayout {
+    let (comps, isolates, idx_to_item) = scope_components(scope);
+    let n = idx_to_item.len();
 
     let mut established = HashSet::new();
     let mut ids: HashMap<ItemId, usize> = HashMap::new();
@@ -52,14 +41,14 @@ fn component_layout(group: &GroupState, pool: &[ItemId]) -> ComponentLayout {
         }
         for &idx in comp {
             if idx < n {
-                ids.insert(group.idx_to_item[idx].clone(), comp_idx);
+                ids.insert(idx_to_item[idx].clone(), comp_idx);
             }
         }
     }
     let mut next = comps.len();
     for &idx in &isolates {
         if idx < n {
-            ids.insert(group.idx_to_item[idx].clone(), next);
+            ids.insert(idx_to_item[idx].clone(), next);
             next += 1;
         }
     }
@@ -121,7 +110,7 @@ fn established_groups_in_pool<'a>(
     groups
 }
 
-fn ranked_pool_order(group: &GroupState, pool: &[ItemId]) -> Vec<ItemId> {
+fn ranked_pool_order(group: &ScopeVotes, pool: &[ItemId]) -> Vec<ItemId> {
     let pool_set: HashSet<_> = pool.iter().collect();
     ranked_items(group)
         .into_iter()
@@ -132,7 +121,7 @@ fn ranked_pool_order(group: &GroupState, pool: &[ItemId]) -> Vec<ItemId> {
 
 /// Walk 1↔2, 2↔3, …; optional `require_unvoted` skips voted edges.
 fn zip_adjacent_pair(
-    group: &GroupState,
+    group: &ScopeVotes,
     order: &[ItemId],
     exclude: Option<(&ItemId, &ItemId)>,
     require_unvoted: bool,
@@ -153,7 +142,7 @@ fn zip_adjacent_pair(
 
 /// Grow the voted graph toward one component (no rank centrality).
 fn suggest_grow_pair(
-    group: &GroupState,
+    group: &ScopeVotes,
     pool: &[ItemId],
     layout: &ComponentLayout,
     exclude: Option<(&ItemId, &ItemId)>,
@@ -216,7 +205,7 @@ fn suggest_grow_pair(
 
 /// Pick the next pair to vote on within `pool`.
 pub fn suggest_next_pair_in_pool(
-    group: &GroupState,
+    group: &ScopeVotes,
     pool: &[ItemId],
     exclude: Option<(&ItemId, &ItemId)>,
 ) -> Option<(ItemId, ItemId)> {
@@ -315,7 +304,7 @@ pub fn resolve_pair(
         (None, None) => {
             let group = tree
                 .get(parent)
-                .map(|n| &n.local_ranking)
+                .map(|n| &n.votes)
                 .cloned()
                 .unwrap_or_default();
             suggest_next_pair_in_pool(&group, &children, None).ok_or(PairError::NoPair)
@@ -398,7 +387,7 @@ mod tests {
                 "https://reddit.com/r/rust/b",
             ],
         );
-        let group = tree.get(&parent).unwrap().local_ranking.clone();
+        let group = tree.get(&parent).unwrap().votes.clone();
         let pool = children_of(&tree, &parent);
         assert!(!pair_is_voted(&group, &pool[0], &pool[1]));
         assert!(suggest_next_pair_in_pool(&group, &pool, None).is_some());
@@ -417,7 +406,7 @@ mod tests {
         );
         let vote = test_vote(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1);
         apply(&mut tree, &parent, vote);
-        let group = tree.get(&parent).unwrap().local_ranking.clone();
+        let group = tree.get(&parent).unwrap().votes.clone();
         let pool = children_of(&tree, &parent);
         let (l, r) = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let voted_ab = (l.as_str() == "https://reddit.com/r/rust/a" && r.as_str() == "https://reddit.com/r/rust/b")
@@ -441,7 +430,7 @@ mod tests {
         let cd = test_vote(2, "https://reddit.com/r/rust/c", "https://reddit.com/r/rust/d", 2, 1);
         apply(&mut tree, &parent, ab);
         apply(&mut tree, &parent, cd);
-        let group = tree.get(&parent).unwrap().local_ranking.clone();
+        let group = tree.get(&parent).unwrap().votes.clone();
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);
@@ -467,7 +456,7 @@ mod tests {
         );
         let ab = test_vote(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1);
         apply(&mut tree, &parent, ab);
-        let group = tree.get(&parent).unwrap().local_ranking.clone();
+        let group = tree.get(&parent).unwrap().votes.clone();
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);
@@ -496,7 +485,7 @@ mod tests {
         );
         let ab = test_vote(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1);
         apply(&mut tree, &parent, ab);
-        let group = tree.get(&parent).unwrap().local_ranking.clone();
+        let group = tree.get(&parent).unwrap().votes.clone();
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);
@@ -522,7 +511,7 @@ mod tests {
             let v = test_vote(1, a, b, l, r);
             apply(&mut tree, &parent, v);
         }
-        let group = tree.get(&parent).unwrap().local_ranking.clone();
+        let group = tree.get(&parent).unwrap().votes.clone();
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);
@@ -550,7 +539,7 @@ mod tests {
             let v = test_vote(1, a, b, l, r);
             apply(&mut tree, &parent, v);
         }
-        let group = tree.get(&parent).unwrap().local_ranking.clone();
+        let group = tree.get(&parent).unwrap().votes.clone();
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
         let chosen = pair_set(&pair);

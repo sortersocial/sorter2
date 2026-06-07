@@ -14,7 +14,7 @@ use crate::{
     html::{ranking_panel_with_highlights, scope_theme_style, JsBuilder},
     pair::{children_of, resolve_pair, suggest_next_pair_in_pool},
     path_types::ItemId,
-    reducer::{GlobalTree, GroupState, NodeState, VoteData},
+    reducer::{GlobalTree, NodeState, ScopeVotes, VoteData},
     state::{parse_item_param, AppState},
     ui_action::UI_RPC_FIELD,
 };
@@ -68,8 +68,8 @@ fn ratios_for_page(v: &VoteData, page_left: &ItemId, page_right: &ItemId) -> (i3
     }
 }
 
-fn edge_votes(group: &GroupState, left: &ItemId, right: &ItemId) -> Vec<VoteData> {
-    group
+fn edge_votes(scope: &ScopeVotes, left: &ItemId, right: &ItemId) -> Vec<VoteData> {
+    scope
         .recent_votes
         .iter()
         .filter(|v| {
@@ -113,11 +113,11 @@ fn slider_value_from_ratios(r_left: i32, r_right: i32) -> i32 {
 
 fn vote_edge_history(
     tree: &GlobalTree,
-    group: &GroupState,
+    scope: &ScopeVotes,
     left: &ItemId,
     right: &ItemId,
 ) -> Markup {
-    let mut votes = edge_votes(group, left, right);
+    let mut votes = edge_votes(scope, left, right);
     votes.sort_by(|a, b| b.ts.cmp(&a.ts));
     let legend_left = child_title(tree, left);
     let legend_right = child_title(tree, right);
@@ -228,9 +228,9 @@ pub(crate) fn vote_recorded_morph(
 ) -> JsBuilder {
     let pool = children_of(tree, parent);
     let empty = NodeState::default();
-    let group = tree.get(parent).unwrap_or(&empty).local_ranking.clone();
-    let edge_history = vote_edge_history(tree, &group, left, right);
-    let next_pair = suggest_next(&group, left, right, &pool);
+    let scope = tree.get(parent).unwrap_or(&empty).votes.clone();
+    let edge_history = vote_edge_history(tree, &scope, left, right);
+    let next_pair = suggest_next(&scope, left, right, &pool);
     let actions = vote_compare_actions(parent, next_pair.as_ref());
     let sidebar = vote_ranking_sidebar(tree, parent, left, right);
     JsBuilder::new()
@@ -252,12 +252,12 @@ fn vote_compare_item_card(tree: &GlobalTree, item: &ItemId, side_class: &str) ->
 }
 
 fn suggest_next(
-    group: &GroupState,
+    scope: &ScopeVotes,
     left: &ItemId,
     right: &ItemId,
     pool: &[ItemId],
 ) -> Option<(ItemId, ItemId)> {
-    suggest_next_pair_in_pool(group, pool, Some((left, right)))
+    suggest_next_pair_in_pool(scope, pool, Some((left, right)))
 }
 
 pub async fn vote_page(
@@ -284,9 +284,9 @@ pub async fn vote_page(
         };
 
     let pool = children_of(&tree, &parent);
-    let group = &parent_node.local_ranking;
-    let next_pair = suggest_next(group, &left, &right, &pool);
-    let edge_history = vote_edge_history(&tree, group, &left, &right);
+    let scope = &parent_node.votes;
+    let next_pair = suggest_next(&scope, &left, &right, &pool);
+    let edge_history = vote_edge_history(&tree, &scope, &left, &right);
 
     let rpc_json = template_json_compact(&serde_json::json!({
         "action": "record_vote",
@@ -388,8 +388,8 @@ mod polarity_tests {
         let mut tree = GlobalTree::new();
         tree.apply_vote(&parent, vote, TEST_ACTOR_UUID);
 
-        let group = &tree.get(&parent).unwrap().local_ranking;
-        let ranked = ranked_items(group);
+        let scope = &tree.get(&parent).unwrap().votes;
+        let ranked = ranked_items(scope);
         assert_eq!(
             ranked[0].item, left,
             "left item should rank first when ratio favours the left"

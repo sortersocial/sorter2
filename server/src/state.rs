@@ -269,7 +269,7 @@ mod tests {
     use super::{normalize_scope, parse_item_param, AppConfig, AppState};
     use crate::{
         event_log::EventLog, events::Event, path_types::ItemId, projection_apply,
-        projection_store::ProjectionStore, reducer::EntityData,
+        projection_store::ProjectionStore, ranking::edge_weight_sum, reducer::EntityData,
     };
 
     fn event_record(seq: u64, event: Event) -> crate::events::EventRecord {
@@ -442,7 +442,7 @@ mod tests {
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
         let first = projection_store.scope_tree(&ItemId::root()).unwrap();
         let first_root = first.get(&ItemId::root()).unwrap();
-        let first_edge_total: f64 = first_root.local_ranking.edges.values().sum();
+        let first_edge_total = edge_weight_sum(&first_root.votes);
         assert_eq!(first_edge_total, 3.0);
 
         super::catch_up_projection(&log, &projection_store)
@@ -451,7 +451,7 @@ mod tests {
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
         let second = projection_store.scope_tree(&ItemId::root()).unwrap();
         let second_root = second.get(&ItemId::root()).unwrap();
-        let second_edge_total: f64 = second_root.local_ranking.edges.values().sum();
+        let second_edge_total = edge_weight_sum(&second_root.votes);
         assert_eq!(second_edge_total, first_edge_total);
     }
 
@@ -529,9 +529,8 @@ mod tests {
         let root = projected.get(&ItemId::root()).unwrap();
         assert!(root.children.contains(&ItemId::parse("alpha").unwrap()));
         assert!(root.children.contains(&ItemId::parse("beta").unwrap()));
-        assert_eq!(root.local_ranking.idx_to_item.len(), 2);
-        let edge_total: f64 = root.local_ranking.edges.values().sum();
-        assert_eq!(edge_total, 3.0);
+        assert_eq!(crate::ranking::ranked_items(&root.votes).len(), 2);
+        assert_eq!(edge_weight_sum(&root.votes), 3.0);
     }
 
     #[tokio::test]
@@ -620,7 +619,7 @@ mod tests {
         let root = tree.get(&ItemId::root()).unwrap();
         assert!(root.children.contains(&ItemId::parse("beta").unwrap()));
         assert!(root.children.contains(&ItemId::parse("gamma").unwrap()));
-        assert_eq!(root.local_ranking.idx_to_item.len(), 3);
+        assert_eq!(crate::ranking::ranked_items(&root.votes).len(), 3);
     }
 
     #[test]

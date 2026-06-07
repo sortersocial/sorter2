@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::path_types::ItemId;
-use crate::reducer::GroupState;
+use crate::reducer::{canonical_pair_ids, ScopeVotes};
 
 #[derive(Debug, Clone)]
 pub struct RankedItem {
@@ -9,15 +9,76 @@ pub struct RankedItem {
     pub score: f64,
 }
 
-/// Power-iteration cap and convergence tolerance for rank centrality.
 pub const MAX_ITERS: usize = 10_000;
 pub const TOL: f64 = 1e-8;
 
-/// Compute connected components over the voted-pairs graph (treated as undirected).
-///
-/// Returns:
-/// - `components`: each component is a sorted list of node indices, excluding isolates.
-/// - `isolates`: sorted list of node indices with degree 0 (no voted pairs).
+pub fn item_index(scope: &ScopeVotes) -> (HashMap<ItemId, usize>, Vec<ItemId>) {
+    let mut item_strs: BTreeSet<String> = BTreeSet::new();
+    for vote in scope.uuid_votes.values() {
+        item_strs.insert(vote.a.as_str().to_string());
+        item_strs.insert(vote.b.as_str().to_string());
+    }
+    let mut idx_to_item: Vec<ItemId> = Vec::with_capacity(item_strs.len());
+    let mut item_to_idx: HashMap<ItemId, usize> = HashMap::with_capacity(item_strs.len());
+    for s in item_strs {
+        let id = ItemId::from_storage(&s).unwrap_or_else(|| ItemId::opaque(&s));
+        let idx = idx_to_item.len();
+        item_to_idx.insert(id.clone(), idx);
+        idx_to_item.push(id);
+    }
+    (item_to_idx, idx_to_item)
+}
+
+pub fn edges_from_scope(scope: &ScopeVotes) -> HashMap<(usize, usize), f64> {
+    let (item_to_idx, _) = item_index(scope);
+    let mut edges: HashMap<(usize, usize), f64> = HashMap::new();
+    for vote in scope.uuid_votes.values() {
+        let Some(&ai) = item_to_idx.get(&vote.a) else {
+            continue;
+        };
+        let Some(&bi) = item_to_idx.get(&vote.b) else {
+            continue;
+        };
+        let w_a = vote.ratio_left as f64 * vote.trust_weight;
+        let w_b = vote.ratio_right as f64 * vote.trust_weight;
+        if w_a > 0.0 {
+            *edges.entry((bi, ai)).or_insert(0.0) += w_a;
+        }
+        if w_b > 0.0 {
+            *edges.entry((ai, bi)).or_insert(0.0) += w_b;
+        }
+    }
+    edges
+}
+
+pub fn edge_weight_sum(scope: &ScopeVotes) -> f64 {
+    edges_from_scope(scope).values().sum()
+}
+
+pub fn voted_pair_indices(scope: &ScopeVotes) -> HashSet<(usize, usize)> {
+    let (item_to_idx, _) = item_index(scope);
+    let mut pairs = HashSet::new();
+    for vote in scope.uuid_votes.values() {
+        let Some(&ai) = item_to_idx.get(&vote.a) else {
+            continue;
+        };
+        let Some(&bi) = item_to_idx.get(&vote.b) else {
+            continue;
+        };
+        let (i, j) = if ai < bi { (ai, bi) } else { (bi, ai) };
+        pairs.insert((i, j));
+    }
+    pairs
+}
+
+pub fn pair_is_voted(scope: &ScopeVotes, a: &ItemId, b: &ItemId) -> bool {
+    let (lo, hi) = canonical_pair_ids(a, b);
+    scope
+        .uuid_votes
+        .keys()
+        .any(|(_, l, h)| l == &lo && h == &hi)
+}
+
 pub fn connected_components_from_voted_pairs(
     n: usize,
     voted_pairs: impl Iterator<Item = (usize, usize)>,
@@ -63,20 +124,25 @@ pub fn connected_components_from_voted_pairs(
     (comps, isolates)
 }
 
-/// Compute rank-centrality scores for the whole group and return items sorted
-/// by score (descending). Recomputed fresh from the edge set on every call —
-/// there is no score cache.
-pub fn ranked_items(group: &GroupState) -> Vec<RankedItem> {
-    let n = group.idx_to_item.len();
-    let scores =
-        compute_scores_from_edges(n, group.edges.iter().map(|(&k, &w)| (k, w)), MAX_ITERS, TOL);
+pub fn scope_components(scope: &ScopeVotes) -> (Vec<Vec<usize>>, Vec<usize>, Vec<ItemId>) {
+    let (_, idx_to_item) = item_index(scope);
+    let n = idx_to_item.len();
+    let pairs = voted_pair_indices(scope);
+    let (comps, isolates) = connected_components_from_voted_pairs(n, pairs.into_iter());
+    (comps, isolates, idx_to_item)
+}
 
-    let mut items: Vec<RankedItem> = group
-        .idx_to_item
-        .iter()
+pub fn ranked_items(scope: &ScopeVotes) -> Vec<RankedItem> {
+    let (_, idx_to_item) = item_index(scope);
+    let n = idx_to_item.len();
+    let edges = edges_from_scope(scope);
+    let scores = compute_scores_from_edges(n, edges.into_iter(), MAX_ITERS, TOL);
+
+    let mut items: Vec<RankedItem> = idx_to_item
+        .into_iter()
         .enumerate()
         .map(|(i, item)| RankedItem {
-            item: item.clone(),
+            item,
             score: *scores.get(i).unwrap_or(&0.0),
         })
         .collect();
@@ -89,11 +155,8 @@ pub fn ranked_items(group: &GroupState) -> Vec<RankedItem> {
     items
 }
 
-/// Highest- and lowest-ranked items for a group. Returns up to `k` items from
-/// each end with no overlap. If the group has `2*k` items or fewer, `top` holds
-/// the full ranking and `bottom` is empty (so nothing is shown twice).
-pub fn top_bottom(group: &GroupState, k: usize) -> (Vec<RankedItem>, Vec<RankedItem>) {
-    let items = ranked_items(group);
+pub fn top_bottom(scope: &ScopeVotes, k: usize) -> (Vec<RankedItem>, Vec<RankedItem>) {
+    let items = ranked_items(scope);
     if k == 0 || items.len() <= 2 * k {
         return (items, Vec::new());
     }
@@ -115,7 +178,6 @@ pub fn compute_scores_from_edges(
         return vec![1.0];
     }
 
-    // Collect raw edges into a map for pairwise normalization.
     let mut raw: HashMap<(usize, usize), f64> = HashMap::new();
     for ((src, dst), w) in edges {
         if src >= n || dst >= n || w <= 0.0 {
@@ -124,9 +186,6 @@ pub fn compute_scores_from_edges(
         *raw.entry((src, dst)).or_insert(0.0) += w;
     }
 
-    // Pairwise normalization: a_ij = A_ij / (A_ij + A_ji).
-    // This ensures repeated votes on the same pair don't inflate influence
-    // beyond what the ratio implies.
     let keys: Vec<(usize, usize)> = raw.keys().copied().collect();
     let mut normalized: HashMap<(usize, usize), f64> = HashMap::new();
     for (i, j) in keys {
@@ -145,17 +204,6 @@ pub fn compute_scores_from_edges(
         }
     }
 
-    // Rank Centrality (Negahban, Oh, Shah 2012, §3.1):
-    //   P_ij = (1/d_max) * A_ij           for i ≠ j compared
-    //   P_ii = 1 - (1/d_max) * Σ_k A_ik
-    // where d_i is the *degree* (number of distinct neighbors compared) and
-    // d_max = max_i d_i. Using the unweighted degree — not the sum of
-    // pairwise-normalized weights — is what guarantees aperiodicity: it
-    // forces P_ii > 0 for every non-maximum-degree node, and for max-degree
-    // nodes whenever any neighbor weight is below 1 (i.e. not a unanimous
-    // loss). Without this, regular comparison graphs (e.g. a pure star at
-    // ratio 2:1) produce a bipartite chain that oscillates instead of
-    // converging — see issue #146.
     let mut out_edges: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
     let mut neighbors: Vec<HashSet<usize>> = vec![HashSet::new(); n];
 
@@ -213,11 +261,8 @@ pub fn compute_scores_from_edges(
     scores
 }
 
-/// Rank-centrality within a subset of items (an induced subgraph), using the group's aggregated edges.
-///
-/// `idxs` are indices into `group.idx_to_item`. The returned items use the original item names.
 pub fn ranked_items_subset(
-    group: &GroupState,
+    scope: &ScopeVotes,
     idxs: &[usize],
     max_iters: usize,
     tol: f64,
@@ -226,13 +271,15 @@ pub fn ranked_items_subset(
         return vec![];
     }
 
-    // Map original idx -> compact idx [0..m)
+    let (_, idx_to_item) = item_index(scope);
+    let edges = edges_from_scope(scope);
+
     let mut map: HashMap<usize, usize> = HashMap::with_capacity(idxs.len());
     for (j, &i) in idxs.iter().enumerate() {
         map.insert(i, j);
     }
 
-    let edges_iter = group.edges.iter().filter_map(|(&(src, dst), &w)| {
+    let edges_iter = edges.into_iter().filter_map(|((src, dst), w)| {
         let s = *map.get(&src)?;
         let d = *map.get(&dst)?;
         Some(((s, d), w))
@@ -240,12 +287,11 @@ pub fn ranked_items_subset(
 
     let scores = compute_scores_from_edges(idxs.len(), edges_iter, max_iters, tol);
 
-    // Filter out entries where idx_to_item doesn't have the slot (shouldn't happen, but be safe).
     let mut items: Vec<RankedItem> = idxs
         .iter()
         .enumerate()
         .filter_map(|(j, &orig)| {
-            let item = group.idx_to_item.get(orig)?.clone();
+            let item = idx_to_item.get(orig)?.clone();
             Some(RankedItem {
                 item,
                 score: *scores.get(j).unwrap_or(&0.0),
@@ -261,8 +307,8 @@ pub fn ranked_items_subset(
     items
 }
 
-pub fn group_summary_scores(group: &GroupState) -> HashMap<ItemId, f64> {
-    ranked_items(group)
+pub fn group_summary_scores(scope: &ScopeVotes) -> HashMap<ItemId, f64> {
+    ranked_items(scope)
         .into_iter()
         .map(|r| (r.item, r.score))
         .collect()
@@ -274,32 +320,26 @@ mod tests {
     use crate::identity::{DEFAULT_PSEUDONYM, TEST_ACTOR_UUID};
     use crate::reducer::VoteData;
 
-    fn mk_group() -> GroupState {
-        GroupState::new()
+    fn mk_scope() -> ScopeVotes {
+        ScopeVotes::default()
     }
 
     fn vote(ts: i64, a: &str, b: &str, l: i32, r: i32) -> VoteData {
         VoteData::from_event(ts, a, b, l, r, DEFAULT_PSEUDONYM.to_string(), 1.0).unwrap()
     }
 
-    fn apply(g: &mut GroupState, v: VoteData) {
-        g.apply_vote(v, TEST_ACTOR_UUID);
+    fn apply(scope: &mut ScopeVotes, v: VoteData) {
+        scope.apply_vote(v, TEST_ACTOR_UUID);
     }
 
-    /// Regression for issue #146: pure forward star at default `>` ratio (2:1).
-    /// Under the old (sum-of-weights) divisor every node had P_ii = 0 and the
-    /// chain was bipartite; power iteration oscillated and returned the
-    /// uniform initial distribution after an even number of steps. Using the
-    /// paper's degree-based d_max gives every node a positive self-loop and
-    /// the chain converges to the correct stationary distribution.
     #[test]
     fn star_topology_winner_at_top_via_subset() {
-        let mut g = mk_group();
-        g.apply_vote(vote(1, "zebra", "alpha", 2, 1), TEST_ACTOR_UUID);
-        g.apply_vote(vote(2, "zebra", "beta", 2, 1), TEST_ACTOR_UUID);
+        let mut scope = mk_scope();
+        apply(&mut scope, vote(1, "zebra", "alpha", 2, 1));
+        apply(&mut scope, vote(2, "zebra", "beta", 2, 1));
 
-        let mut items: Vec<(usize, String)> = g
-            .idx_to_item
+        let (_, idx_to_item) = item_index(&scope);
+        let mut items: Vec<(usize, String)> = idx_to_item
             .iter()
             .enumerate()
             .map(|(i, it)| (i, it.as_str().to_string()))
@@ -307,78 +347,51 @@ mod tests {
         items.sort_by(|a, b| a.1.cmp(&b.1));
         let idxs: Vec<usize> = items.iter().map(|(i, _)| *i).collect();
 
-        let ranked = ranked_items_subset(&g, &idxs, 10000, 1e-8);
-        for r in &ranked {
-            eprintln!("{}: {}", r.item.as_str(), r.score);
-        }
-        assert_eq!(
-            ranked[0].item.as_str(),
-            "zebra",
-            "zebra won both votes and should rank #1"
-        );
+        let ranked = ranked_items_subset(&scope, &idxs, 10000, 1e-8);
+        assert_eq!(ranked[0].item.as_str(), "zebra");
     }
 
     #[test]
     fn top_bottom_splits_ends_without_overlap() {
-        let mut g = mk_group();
-        // Chain a > b > c > d > e > f so ranks are well separated.
+        let mut scope = mk_scope();
         for (hi, lo) in [("a", "b"), ("b", "c"), ("c", "d"), ("d", "e"), ("e", "f")] {
-            apply(&mut g, vote(1, hi, lo, 2, 1));
+            apply(&mut scope, vote(1, hi, lo, 2, 1));
         }
-        let (top, bottom) = top_bottom(&g, 2);
+        let (top, bottom) = top_bottom(&scope, 2);
         assert_eq!(top.len(), 2);
         assert_eq!(bottom.len(), 2);
-        // No overlap between the two ends.
         for t in &top {
             assert!(bottom.iter().all(|b| b.item != t.item));
         }
-        // Best item ranks above the worst item.
         assert!(top[0].score >= bottom[bottom.len() - 1].score);
     }
 
     #[test]
     fn top_bottom_small_group_has_empty_bottom() {
-        let mut g = mk_group();
-        apply(&mut g, vote(1, "a", "b", 2, 1));
-        let (top, bottom) = top_bottom(&g, 5);
+        let mut scope = mk_scope();
+        apply(&mut scope, vote(1, "a", "b", 2, 1));
+        let (top, bottom) = top_bottom(&scope, 5);
         assert_eq!(top.len(), 2);
         assert!(bottom.is_empty());
     }
 
     #[test]
     fn connected_components_split_disconnected_pairs() {
-        let mut g = mk_group();
-        // Two disconnected edges: (a,b) and (c,d)
-        apply(&mut g, vote(1, "a", "b", 3, 1));
-        apply(&mut g, vote(2, "c", "d", 3, 1));
+        let mut scope = mk_scope();
+        apply(&mut scope, vote(1, "a", "b", 3, 1));
+        apply(&mut scope, vote(2, "c", "d", 3, 1));
 
-        let n = g.idx_to_item.len();
-        let (mut comps, isolates) =
-            connected_components_from_voted_pairs(n, g.voted_pairs.iter().copied());
+        let (_, idx_to_item) = item_index(&scope);
+        let (mut comps, isolates, _) = scope_components(&scope);
         assert!(isolates.is_empty());
-        // Order-independent: sort components by their item names for stable assert.
         comps.sort_by_key(|c| {
             c.iter()
-                .map(|&i| g.idx_to_item[i].clone())
+                .map(|&i| idx_to_item[i].clone())
                 .collect::<Vec<_>>()
         });
         assert_eq!(comps.len(), 2);
-        let comp0 = comps[0]
-            .iter()
-            .map(|&i| g.idx_to_item[i].as_str())
-            .collect::<Vec<_>>();
-        let comp1 = comps[1]
-            .iter()
-            .map(|&i| g.idx_to_item[i].as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(comp0, vec!["a", "b"]);
-        assert_eq!(comp1, vec!["c", "d"]);
     }
 
-    /// A random spanning tree over 26 items needs only n−1 = 25 pairwise votes.
-    /// When each vote uses the "perfect" ratio (strength left : strength right =
-    /// (idx_left+1) : (idx_right+1)), rank centrality recovers the true order.
-    /// See `rank-eric.py` (Eric's demo of Negahban–Oh–Shah rank centrality).
     #[test]
     fn twenty_five_random_votes_perfect_ratios_sort_alphabet() {
         use rand::seq::SliceRandom;
@@ -390,13 +403,13 @@ mod tests {
         let mut perm: Vec<usize> = (0..N).collect();
         perm.shuffle(&mut rng);
 
-        let mut g = mk_group();
+        let mut scope = mk_scope();
         for k in 1..N {
             let i = *perm[..k].choose(&mut rng).unwrap();
             let j = perm[k];
             let (a, b) = (letters[i], letters[j]);
             apply(
-                &mut g,
+                &mut scope,
                 vote(
                     k as i64,
                     &a.to_string(),
@@ -407,34 +420,25 @@ mod tests {
             );
         }
 
-        let ranked = ranked_items(&g);
+        let ranked = ranked_items(&scope);
         assert_eq!(ranked.len(), N);
         for (rank, item) in ranked.iter().enumerate() {
             let expected = char::from(b'a' + (N - 1 - rank) as u8);
-            assert_eq!(
-                item.item.as_str(),
-                expected.to_string(),
-                "rank {rank}: expected '{expected}', got '{}'",
-                item.item.as_str()
-            );
+            assert_eq!(item.item.as_str(), expected.to_string());
         }
     }
 
     #[test]
     fn subset_ranking_ranks_within_component_only() {
-        let mut g = mk_group();
-        apply(&mut g, vote(1, "a", "b", 3, 1)); // a > b
-        apply(&mut g, vote(2, "c", "d", 1, 4)); // d > c
+        let mut scope = mk_scope();
+        apply(&mut scope, vote(1, "a", "b", 3, 1));
+        apply(&mut scope, vote(2, "c", "d", 1, 4));
 
-        let (comps, _) = connected_components_from_voted_pairs(
-            g.idx_to_item.len(),
-            g.voted_pairs.iter().copied(),
-        );
+        let (comps, _, _) = scope_components(&scope);
         assert_eq!(comps.len(), 2);
 
-        // Rank each component and ensure winner is first within that component.
         for comp in comps {
-            let ranked = ranked_items_subset(&g, &comp, 10000, 1e-8);
+            let ranked = ranked_items_subset(&scope, &comp, 10000, 1e-8);
             assert_eq!(ranked.len(), 2);
             let names = ranked.iter().map(|r| r.item.as_str()).collect::<Vec<_>>();
             if names.contains(&"a") {
