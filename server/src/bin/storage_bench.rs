@@ -6,8 +6,8 @@ use std::{
 };
 
 use sorter2_server::{
-    entity_store::EntityStore, event_log::EventLog, events::Event, journal::JournalClient,
-    projection_apply, projection_store::ProjectionStore,
+    event_log::EventLog, events::Event, journal::JournalClient, projection_apply,
+    projection_store::ProjectionStore,
 };
 
 #[tokio::main]
@@ -18,12 +18,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let data_dir = opts.data_dir.to_string_lossy().into_owned();
     let event_log = Arc::new(EventLog::new(format!("{data_dir}/events.jsonl")));
     let db = durable::Db::open(opts.data_dir.join("store"))?;
-    let entity_store = EntityStore::from_db(&db)?;
     let projection_store = ProjectionStore::from_db(&db)?;
 
     let journal = JournalClient::spawn(
         event_log.clone(),
-        entity_store.clone(),
         projection_store.clone(),
         event_log.last_sequence().await? + 1,
     );
@@ -46,12 +44,9 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     drop(journal);
 
     let rebuild_start = Instant::now();
-    entity_store.reset()?;
     projection_store.reset()?;
     let rebuild = event_log
-        .replay(|record| {
-            projection_apply::apply_records(&projection_store, &entity_store, &[record])
-        })
+        .replay(|record| projection_apply::apply_records(&projection_store, &[record]))
         .await?;
     let rebuild_elapsed = rebuild_start.elapsed();
 

@@ -9,13 +9,16 @@ use durable::{Db, Durability, Write};
 
 use crate::{
     path_types::ItemId,
-    reducer::{GlobalTree, NodeState},
-    storage_schema::{load_node_state, node, NodeSchemaFields, Store, StoreFields},
+    reducer::{EntityData, GlobalTree, NodeState},
+    storage_schema::{
+        entity_content_clear_writes, entity_content_writes, load_node_state, node, NodeSchemaFields,
+        Store, StoreFields,
+    },
 };
 
 const PROJECTION_CURSOR_KEY: &str = "cursor";
 const PROJECTION_SCHEMA_KEY: &str = "schema_version";
-const PROJECTION_SCHEMA_VERSION: u64 = 2;
+const PROJECTION_SCHEMA_VERSION: u64 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectionStoreError {
@@ -148,6 +151,45 @@ impl ProjectionStore {
         )?;
         Ok(())
     }
+
+    /// Cache Reddit display content outside the event log (must be evicted per policy).
+    pub fn put_ephemeral_content(
+        &self,
+        id: &ItemId,
+        view: &EntityData,
+        fetched_at: i64,
+    ) -> Result<(), ProjectionStoreError> {
+        let mut batch = self.db.batch();
+        entity_content_writes(&mut batch, id, view, fetched_at);
+        batch
+            .commit_with(Durability::DisableWal)
+            .map_err(ProjectionStoreError::from)?;
+        Ok(())
+    }
+
+    /// Drop cached display content older than `cutoff_ms` (votes and tree structure remain).
+    pub fn evict_content_older_than(&self, cutoff_ms: i64) -> Result<usize, ProjectionStoreError> {
+        let keys = Store::root().nodes().keys(&self.db)?;
+        let mut batch = self.db.batch();
+        let mut evicted = 0usize;
+        for key in keys {
+            let id = parse_node_key(&key)?;
+            let np = node(&id);
+            let Some(fetched_at) = np.fetched_at().get(&self.db)? else {
+                continue;
+            };
+            if fetched_at > 0 && fetched_at < cutoff_ms {
+                entity_content_clear_writes(&mut batch, &id);
+                evicted += 1;
+            }
+        }
+        if evicted > 0 {
+            batch
+                .commit_with(Durability::DisableWal)
+                .map_err(ProjectionStoreError::from)?;
+        }
+        Ok(evicted)
+    }
 }
 
 fn parse_node_key(key: &str) -> Result<ItemId, ProjectionStoreError> {
@@ -162,7 +204,7 @@ fn parse_node_key(key: &str) -> Result<ItemId, ProjectionStoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{entity_store::EntityStore, events::Event, projection_apply};
+    use crate::{events::Event, projection_apply, reducer::EntityData};
 
     fn record(seq: u64, event: Event) -> crate::events::EventRecord {
         crate::events::EventRecord::new(seq, crate::events::event_timestamp(&event), event)
@@ -172,7 +214,6 @@ mod tests {
     fn applies_and_loads_reducer_nodes() {
         let tmp = tempfile::tempdir().unwrap();
         let db = Db::open(tmp.path()).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
         let store = ProjectionStore::from_db(&db).unwrap();
 
         let event = Event::VoteRecorded {
@@ -183,7 +224,7 @@ mod tests {
             ratio_right: 1,
             scope: String::new(),
         };
-        projection_apply::apply_records(&store, &entity_store, &[record(1, event)]).unwrap();
+        projection_apply::apply_records(&store, &[record(1, event)]).unwrap();
         assert_eq!(store.last_applied_event_count().unwrap(), 1);
 
         let loaded = store.load_tree().unwrap();
@@ -196,7 +237,6 @@ mod tests {
     fn hydrates_scope_with_child_nodes() {
         let tmp = tempfile::tempdir().unwrap();
         let db = Db::open(tmp.path()).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
         let store = ProjectionStore::from_db(&db).unwrap();
 
         let event = Event::VoteRecorded {
@@ -207,11 +247,36 @@ mod tests {
             ratio_right: 1,
             scope: String::new(),
         };
-        projection_apply::apply_records(&store, &entity_store, &[record(1, event)]).unwrap();
+        projection_apply::apply_records(&store, &[record(1, event)]).unwrap();
 
         let scoped = store.scope_tree(&ItemId::root()).unwrap();
         let root = scoped.get(&ItemId::root()).unwrap();
         assert_eq!(root.children.len(), 2);
         assert!(scoped.get(&ItemId::opaque("alpha")).is_some());
+    }
+
+    #[test]
+    fn evicts_stale_ephemeral_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Db::open(tmp.path()).unwrap();
+        let store = ProjectionStore::from_db(&db).unwrap();
+        let id = ItemId::from_url("https://reddit.com/r/rust").unwrap();
+        store
+            .put_ephemeral_content(
+                &id,
+                &EntityData {
+                    title: "Rust".into(),
+                    author: None,
+                    body_html: None,
+                    thumb_url: None,
+                    image_url: None,
+                    link_url: None,
+                },
+                1_000,
+            )
+            .unwrap();
+        assert!(store.load_node(&id).unwrap().unwrap().data.is_some());
+        assert_eq!(store.evict_content_older_than(2_000).unwrap(), 1);
+        assert!(store.load_node(&id).unwrap().unwrap().data.is_none());
     }
 }
