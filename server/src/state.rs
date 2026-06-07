@@ -9,7 +9,7 @@ use crate::{
     projection_apply,
     projection_store::ProjectionStore,
     reddit::{RedditApiConfig, RedditBroker, REDDIT_CONTENT_TTL},
-    reducer::{GlobalTree, VoteData},
+    reducer::GlobalTree,
     view_log::ViewLog,
     views::ViewStore,
 };
@@ -234,23 +234,31 @@ impl AppState {
         if a_raw.is_empty() || b_raw.is_empty() || a_raw == b_raw {
             return Err("invalid vote: need two distinct non-empty items".to_string());
         }
-        if ratio_left.max(0) == 0 && ratio_right.max(0) == 0 {
+        let left = ratio_left.max(0);
+        let right = ratio_right.max(0);
+        if left == 0 && right == 0 {
             return Err(
                 "invalid vote: need a positive preference on at least one side".to_string(),
             );
         }
-        // Validate items canonicalize (or are opaque keys) before append.
-        let _ = VoteData::from_recorded(ts, a_raw, b_raw, ratio_left, ratio_right)
-            .ok_or_else(|| "invalid vote: need two distinct parseable items".to_string())?;
+        let a_id = ItemId::from_storage(a_raw)
+            .or_else(|| ItemId::parse(a_raw))
+            .ok_or_else(|| "invalid vote: unparseable item a".to_string())?;
+        let b_id = ItemId::from_storage(b_raw)
+            .or_else(|| ItemId::parse(b_raw))
+            .ok_or_else(|| "invalid vote: unparseable item b".to_string())?;
+        if a_id == b_id {
+            return Err("invalid vote: need two distinct items".to_string());
+        }
 
-        let event = Event::VoteRecorded {
+        let event = Event::vote_recorded(
             ts,
-            a: a_raw.to_string(),
-            b: b_raw.to_string(),
-            ratio_left,
-            ratio_right,
-            scope: parent.as_str().to_string(),
-        };
+            a_id.as_str(),
+            b_id.as_str(),
+            left,
+            right,
+            parent.as_str(),
+        );
 
         self.journal.append(event).await
     }
@@ -333,17 +341,7 @@ mod tests {
                     id: "https://reddit.com/r/rust".into(),
                 },
             ),
-            event_record(
-                2,
-                Event::VoteRecorded {
-                    ts: 2,
-                    a: "alpha".into(),
-                    b: "beta".into(),
-                    ratio_left: 2,
-                    ratio_right: 1,
-                    scope: String::new(),
-                },
-            ),
+            event_record(2, Event::vote_recorded(2, "alpha", "beta", 2, 1, "")),
         ])
         .await
         .unwrap();
@@ -430,14 +428,7 @@ mod tests {
         let log = EventLog::new(log_path.to_string_lossy().into_owned());
         log.append(&event_record(
             1,
-            Event::VoteRecorded {
-                ts: 1,
-                a: "alpha".into(),
-                b: "beta".into(),
-                ratio_left: 2,
-                ratio_right: 1,
-                scope: String::new(),
-            },
+            Event::vote_recorded(1, "alpha", "beta", 2, 1, ""),
         ))
         .await
         .unwrap();
@@ -601,14 +592,7 @@ mod tests {
         let log = EventLog::new(format!("{data_dir}/events.jsonl"));
         log.append(&event_record(
             1,
-            Event::VoteRecorded {
-                ts: 1,
-                a: "alpha".into(),
-                b: "beta".into(),
-                ratio_left: 2,
-                ratio_right: 1,
-                scope: String::new(),
-            },
+            Event::vote_recorded(1, "alpha", "beta", 2, 1, ""),
         ))
         .await
         .unwrap();

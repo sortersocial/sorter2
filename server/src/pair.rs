@@ -360,7 +360,16 @@ impl PairError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::{DEFAULT_PSEUDONYM, TEST_ACTOR_UUID};
     use crate::reducer::{GlobalTree, VoteData};
+
+    fn test_vote(ts: i64, a: &str, b: &str, l: i32, r: i32) -> VoteData {
+        VoteData::from_event(ts, a, b, l, r, DEFAULT_PSEUDONYM.to_string(), 1.0).unwrap()
+    }
+
+    fn apply(tree: &mut GlobalTree, parent: &ItemId, vote: VoteData) {
+        tree.apply_vote(parent, vote, TEST_ACTOR_UUID);
+    }
 
     fn seed_children(parent: &ItemId, ids: &[&str]) -> GlobalTree {
         let mut tree = GlobalTree::new();
@@ -382,22 +391,13 @@ mod tests {
     #[test]
     fn zero_weight_vote_leaves_pair_available_for_suggestion() {
         let parent = ItemId::parse("https://reddit.com/r/rust").unwrap();
-        let mut tree = seed_children(
+        let tree = seed_children(
             &parent,
             &[
                 "https://reddit.com/r/rust/a",
                 "https://reddit.com/r/rust/b",
             ],
         );
-        let noop = VoteData::from_recorded(
-            1,
-            "https://reddit.com/r/rust/a",
-            "https://reddit.com/r/rust/b",
-            0,
-            0,
-        )
-        .unwrap();
-        tree.apply_vote(&parent, noop);
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);
         assert!(!pair_is_voted(&group, &pool[0], &pool[1]));
@@ -415,9 +415,8 @@ mod tests {
                 "https://reddit.com/r/rust/c",
             ],
         );
-        let vote =
-            VoteData::from_recorded(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1).unwrap();
-        tree.apply_vote(&parent, vote);
+        let vote = test_vote(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1);
+        apply(&mut tree, &parent, vote);
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);
         let (l, r) = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
@@ -438,12 +437,10 @@ mod tests {
                 "https://reddit.com/r/rust/d",
             ],
         );
-        let ab =
-            VoteData::from_recorded(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1).unwrap();
-        let cd =
-            VoteData::from_recorded(2, "https://reddit.com/r/rust/c", "https://reddit.com/r/rust/d", 2, 1).unwrap();
-        tree.apply_vote(&parent, ab);
-        tree.apply_vote(&parent, cd);
+        let ab = test_vote(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1);
+        let cd = test_vote(2, "https://reddit.com/r/rust/c", "https://reddit.com/r/rust/d", 2, 1);
+        apply(&mut tree, &parent, ab);
+        apply(&mut tree, &parent, cd);
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
@@ -468,9 +465,8 @@ mod tests {
                 "https://reddit.com/r/rust/e",
             ],
         );
-        let ab =
-            VoteData::from_recorded(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1).unwrap();
-        tree.apply_vote(&parent, ab);
+        let ab = test_vote(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1);
+        apply(&mut tree, &parent, ab);
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
@@ -498,9 +494,8 @@ mod tests {
                 "https://reddit.com/r/rust/c",
             ],
         );
-        let ab =
-            VoteData::from_recorded(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1).unwrap();
-        tree.apply_vote(&parent, ab);
+        let ab = test_vote(1, "https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 2, 1);
+        apply(&mut tree, &parent, ab);
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);
         let pair = suggest_next_pair_in_pool(&group, &pool, None).unwrap();
@@ -524,8 +519,8 @@ mod tests {
             ("https://reddit.com/r/rust/a", "https://reddit.com/r/rust/b", 3, 1),
             ("https://reddit.com/r/rust/a", "https://reddit.com/r/rust/c", 2, 1),
         ] {
-            let v = VoteData::from_recorded(1, a, b, l, r).unwrap();
-            tree.apply_vote(&parent, v);
+            let v = test_vote(1, a, b, l, r);
+            apply(&mut tree, &parent, v);
         }
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);
@@ -552,8 +547,8 @@ mod tests {
             ("https://reddit.com/r/rust/b", "https://reddit.com/r/rust/c", 2, 1),
             ("https://reddit.com/r/rust/a", "https://reddit.com/r/rust/c", 2, 1),
         ] {
-            let v = VoteData::from_recorded(1, a, b, l, r).unwrap();
-            tree.apply_vote(&parent, v);
+            let v = test_vote(1, a, b, l, r);
+            apply(&mut tree, &parent, v);
         }
         let group = tree.get(&parent).unwrap().local_ranking.clone();
         let pool = children_of(&tree, &parent);

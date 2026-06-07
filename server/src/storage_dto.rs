@@ -1,9 +1,8 @@
 //! Versioned leaf value DTOs persisted in durable collections.
 //!
-//! Node structure (children, edges, voted pairs, recent votes) is no longer a
-//! single blob — it lives as point-addressable durable collections (see
-//! [`crate::storage_schema`]). This module only defines the small leaf values:
-//! ephemeral entity views and individual votes.
+//! Node structure (children, uuid votes, recent votes) lives as point-addressable
+//! durable collections (see [`crate::storage_schema`]). This module defines the
+//! small leaf values: ephemeral entity views and individual votes.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +11,7 @@ use crate::{
     reducer::{EntityData, VoteData},
 };
 
-pub const VOTE_RECORD_VERSION: u32 = 1;
+pub const VOTE_RECORD_VERSION: u32 = 2;
 pub const ENTITY_DATA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,7 +38,7 @@ pub struct StoredEntityDataV1 {
     pub link_url: Option<String>,
 }
 
-/// One vote stored in a node's `recent_votes` list.
+/// One vote stored in a node's `recent_votes` list or `uuid_votes` map.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredVoteV1 {
     pub version: u32,
@@ -48,10 +47,8 @@ pub struct StoredVoteV1 {
     pub b: String,
     pub ratio_left: i32,
     pub ratio_right: i32,
-    pub body: String,
-    pub principal: String,
-    pub delegate: Option<String>,
-    pub thread_tag: String,
+    pub pseudonym: String,
+    pub trust_weight: f64,
 }
 
 pub fn encode_entity_data(data: &EntityData) -> StoredEntityDataV1 {
@@ -85,10 +82,8 @@ pub fn encode_vote(vote: &VoteData) -> StoredVoteV1 {
         b: vote.b.as_str().to_string(),
         ratio_left: vote.ratio_left,
         ratio_right: vote.ratio_right,
-        body: vote.body.clone(),
-        principal: vote.principal.clone(),
-        delegate: vote.delegate.clone(),
-        thread_tag: vote.thread_tag.clone(),
+        pseudonym: vote.pseudonym.clone(),
+        trust_weight: vote.trust_weight,
     }
 }
 
@@ -99,10 +94,8 @@ pub fn decode_vote(vote: StoredVoteV1) -> Result<VoteData, String> {
         b: parse_stored_id(&vote.b)?,
         ratio_left: vote.ratio_left,
         ratio_right: vote.ratio_right,
-        body: vote.body,
-        principal: vote.principal,
-        delegate: vote.delegate,
-        thread_tag: vote.thread_tag,
+        pseudonym: vote.pseudonym,
+        trust_weight: vote.trust_weight,
     })
 }
 

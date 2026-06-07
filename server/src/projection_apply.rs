@@ -1,14 +1,13 @@
 //! Apply event-log records to the durable projection as precise point updates.
 //!
-//! Each batch of records lowers to reified durable writes (edge merges, child
-//! links, voted-pair flags, recent-vote pushes) plus a cursor advance, all
-//! committed in one atomic `DisableWal` batch. The cursor moving in the same
-//! batch as the (non-idempotent) edge merges guarantees exactly-once application
-//! across replay.
+//! Each batch of records lowers to reified durable writes (uuid vote upserts,
+//! child links, recent-vote appends) plus a cursor advance, all committed in
+//! one atomic `DisableWal` batch.
 
 use crate::{
     event_log::EventLogError,
     events::{Event, EventRecord},
+    identity::resolve_actor_uuid,
     path_types::ItemId,
     projection_store::ProjectionStore,
     reducer::VoteData,
@@ -53,20 +52,31 @@ pub fn apply_records(
                 ratio_left,
                 ratio_right,
                 scope,
+                pseudonym,
+                trust_weight,
             } => {
-                let vote = VoteData::from_recorded(*ts, a, b, *ratio_left, *ratio_right)
-                    .ok_or_else(|| EventLogError::Apply(format!("invalid vote event: {a} vs {b}")))?;
-                let parent = parent_from_event_scope(scope);
-                vote_writes(
-                    &mut batch,
-                    &parent,
-                    vote.a.as_str(),
-                    vote.b.as_str(),
-                    *ratio_left,
-                    *ratio_right,
+                let left = (*ratio_left).max(0);
+                let right = (*ratio_right).max(0);
+                if left == 0 && right == 0 {
+                    return Err(EventLogError::Apply(format!(
+                        "invalid vote event: zero weights ({a} vs {b})"
+                    )));
+                }
+                let vote = VoteData::from_event(
                     *ts,
+                    a,
+                    b,
+                    left,
+                    right,
+                    pseudonym.clone(),
+                    *trust_weight,
                 )
-                .map_err(|e| EventLogError::Apply(e.to_string()))?;
+                .ok_or_else(|| EventLogError::Apply(format!("invalid vote event: {a} vs {b}")))?;
+                let actor_uuid = resolve_actor_uuid(db, pseudonym)
+                    .map_err(|e| EventLogError::Apply(e))?;
+                let parent = parent_from_event_scope(scope);
+                vote_writes(&mut batch, &parent, &vote, &actor_uuid)
+                    .map_err(|e| EventLogError::Apply(e.to_string()))?;
             }
             Event::NodeEnsured { id } => {
                 let parsed = parse_event_id(id)?;

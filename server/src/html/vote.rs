@@ -336,6 +336,7 @@ pub async fn vote_page(
 #[cfg(test)]
 mod polarity_tests {
     use super::*;
+    use crate::identity::{DEFAULT_PSEUDONYM, TEST_ACTOR_UUID};
     use crate::ranking::ranked_items;
     use crate::reducer::GlobalTree;
 
@@ -351,11 +352,11 @@ mod polarity_tests {
         let right = id("right_item");
 
         // Stored a == page left: keep order.
-        let v1 = VoteData::from_recorded(1, left.as_str(), right.as_str(), 9, 1).unwrap();
+        let v1 = VoteData::from_event(1, left.as_str(), right.as_str(), 9, 1, DEFAULT_PSEUDONYM.to_string(), 1.0).unwrap();
         assert_eq!(ratios_for_page(&v1, &left, &right), (9, 1));
 
         // Stored a == page right: swap so left stays left.
-        let v2 = VoteData::from_recorded(2, right.as_str(), left.as_str(), 9, 1).unwrap();
+        let v2 = VoteData::from_event(2, right.as_str(), left.as_str(), 9, 1, DEFAULT_PSEUDONYM.to_string(), 1.0).unwrap();
         assert_eq!(ratios_for_page(&v2, &left, &right), (1, 9));
     }
 
@@ -383,9 +384,9 @@ mod polarity_tests {
         let right = id("right_item");
 
         // Slider dragged left yields e.g. 9:1 with a = left item.
-        let vote = VoteData::from_recorded(1, left.as_str(), right.as_str(), 9, 1).unwrap();
+        let vote = VoteData::from_event(1, left.as_str(), right.as_str(), 9, 1, DEFAULT_PSEUDONYM.to_string(), 1.0).unwrap();
         let mut tree = GlobalTree::new();
-        tree.apply_vote(&parent, vote);
+        tree.apply_vote(&parent, vote, TEST_ACTOR_UUID);
 
         let group = &tree.get(&parent).unwrap().local_ranking;
         let ranked = ranked_items(group);

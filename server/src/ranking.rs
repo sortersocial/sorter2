@@ -271,6 +271,7 @@ pub fn group_summary_scores(group: &GroupState) -> HashMap<ItemId, f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::{DEFAULT_PSEUDONYM, TEST_ACTOR_UUID};
     use crate::reducer::VoteData;
 
     fn mk_group() -> GroupState {
@@ -278,18 +279,11 @@ mod tests {
     }
 
     fn vote(ts: i64, a: &str, b: &str, l: i32, r: i32) -> VoteData {
-        use crate::path_types::ItemId;
-        VoteData {
-            ts,
-            a: ItemId::parse(a).unwrap(),
-            b: ItemId::parse(b).unwrap(),
-            ratio_left: l,
-            ratio_right: r,
-            body: "because".to_string(),
-            principal: "test".to_string(),
-            delegate: Some("00000000-0000-0000-0000-000000000000:test:local/test".to_string()),
-            thread_tag: "untagged".to_string(),
-        }
+        VoteData::from_event(ts, a, b, l, r, DEFAULT_PSEUDONYM.to_string(), 1.0).unwrap()
+    }
+
+    fn apply(g: &mut GroupState, v: VoteData) {
+        g.apply_vote(v, TEST_ACTOR_UUID);
     }
 
     /// Regression for issue #146: pure forward star at default `>` ratio (2:1).
@@ -301,8 +295,8 @@ mod tests {
     #[test]
     fn star_topology_winner_at_top_via_subset() {
         let mut g = mk_group();
-        g.apply_vote(vote(1, "zebra", "alpha", 2, 1));
-        g.apply_vote(vote(2, "zebra", "beta", 2, 1));
+        g.apply_vote(vote(1, "zebra", "alpha", 2, 1), TEST_ACTOR_UUID);
+        g.apply_vote(vote(2, "zebra", "beta", 2, 1), TEST_ACTOR_UUID);
 
         let mut items: Vec<(usize, String)> = g
             .idx_to_item
@@ -329,7 +323,7 @@ mod tests {
         let mut g = mk_group();
         // Chain a > b > c > d > e > f so ranks are well separated.
         for (hi, lo) in [("a", "b"), ("b", "c"), ("c", "d"), ("d", "e"), ("e", "f")] {
-            g.apply_vote(vote(1, hi, lo, 2, 1));
+            apply(&mut g, vote(1, hi, lo, 2, 1));
         }
         let (top, bottom) = top_bottom(&g, 2);
         assert_eq!(top.len(), 2);
@@ -345,7 +339,7 @@ mod tests {
     #[test]
     fn top_bottom_small_group_has_empty_bottom() {
         let mut g = mk_group();
-        g.apply_vote(vote(1, "a", "b", 2, 1));
+        apply(&mut g, vote(1, "a", "b", 2, 1));
         let (top, bottom) = top_bottom(&g, 5);
         assert_eq!(top.len(), 2);
         assert!(bottom.is_empty());
@@ -355,8 +349,8 @@ mod tests {
     fn connected_components_split_disconnected_pairs() {
         let mut g = mk_group();
         // Two disconnected edges: (a,b) and (c,d)
-        g.apply_vote(vote(1, "a", "b", 3, 1));
-        g.apply_vote(vote(2, "c", "d", 3, 1));
+        apply(&mut g, vote(1, "a", "b", 3, 1));
+        apply(&mut g, vote(2, "c", "d", 3, 1));
 
         let n = g.idx_to_item.len();
         let (mut comps, isolates) =
@@ -401,13 +395,16 @@ mod tests {
             let i = *perm[..k].choose(&mut rng).unwrap();
             let j = perm[k];
             let (a, b) = (letters[i], letters[j]);
-            g.apply_vote(vote(
-                k as i64,
-                &a.to_string(),
-                &b.to_string(),
-                (i + 1) as i32,
-                (j + 1) as i32,
-            ));
+            apply(
+                &mut g,
+                vote(
+                    k as i64,
+                    &a.to_string(),
+                    &b.to_string(),
+                    (i + 1) as i32,
+                    (j + 1) as i32,
+                ),
+            );
         }
 
         let ranked = ranked_items(&g);
@@ -426,8 +423,8 @@ mod tests {
     #[test]
     fn subset_ranking_ranks_within_component_only() {
         let mut g = mk_group();
-        g.apply_vote(vote(1, "a", "b", 3, 1)); // a > b
-        g.apply_vote(vote(2, "c", "d", 1, 4)); // d > c
+        apply(&mut g, vote(1, "a", "b", 3, 1)); // a > b
+        apply(&mut g, vote(2, "c", "d", 1, 4)); // d > c
 
         let (comps, _) = connected_components_from_voted_pairs(
             g.idx_to_item.len(),

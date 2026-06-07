@@ -4,6 +4,7 @@ pub mod events;
 pub mod fetch;
 pub mod form_template;
 pub mod html;
+pub mod identity;
 pub mod journal;
 pub mod pair;
 pub mod parser;

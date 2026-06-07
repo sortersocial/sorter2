@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Schema version for JSONL log records. Bump when event semantics change.
-pub const CURRENT_LOG_SCHEMA: u32 = 1;
+pub const CURRENT_LOG_SCHEMA: u32 = 2;
 
 /// One JSONL line: schema envelope around a payload event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,9 +51,33 @@ pub enum Event {
         b: String,
         ratio_left: i32,
         ratio_right: i32,
-        #[serde(default)]
         scope: String,
+        pseudonym: String,
+        trust_weight: f64,
     },
     /// Register a node path in the fractal tree (no external fetch).
     NodeEnsured { id: String },
+}
+
+impl Event {
+    /// Construct a vote event with the default dev pseudonym (tests and benches).
+    pub fn vote_recorded(
+        ts: i64,
+        a: impl Into<String>,
+        b: impl Into<String>,
+        ratio_left: i32,
+        ratio_right: i32,
+        scope: impl Into<String>,
+    ) -> Self {
+        Self::VoteRecorded {
+            ts,
+            a: a.into(),
+            b: b.into(),
+            ratio_left,
+            ratio_right,
+            scope: scope.into(),
+            pseudonym: crate::identity::DEFAULT_PSEUDONYM.to_string(),
+            trust_weight: 1.0,
+        }
+    }
 }

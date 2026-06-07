@@ -5,27 +5,27 @@ use serde::{Deserialize, Serialize};
 use crate::path_types::ItemId;
 
 /// Parsed pairwise vote (internal representation).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VoteData {
     pub ts: i64,
     pub a: ItemId,
     pub b: ItemId,
     pub ratio_left: i32,
     pub ratio_right: i32,
-    pub body: String,
-    pub principal: String,
-    pub delegate: Option<String>,
-    pub thread_tag: String,
+    pub pseudonym: String,
+    pub trust_weight: f64,
 }
 
 impl VoteData {
-    /// Build a vote from persisted event fields (web UI / replay).
-    pub fn from_recorded(
+    /// Build a vote from validated event fields (replay / tests).
+    pub fn from_event(
         ts: i64,
         a: &str,
         b: &str,
         ratio_left: i32,
         ratio_right: i32,
+        pseudonym: String,
+        trust_weight: f64,
     ) -> Option<Self> {
         let a = ItemId::from_storage(a)?;
         let b = ItemId::from_storage(b)?;
@@ -38,10 +38,8 @@ impl VoteData {
             b,
             ratio_left,
             ratio_right,
-            body: String::new(),
-            principal: "web".to_string(),
-            delegate: None,
-            thread_tag: "default".to_string(),
+            pseudonym,
+            trust_weight,
         })
     }
 }
@@ -52,6 +50,8 @@ pub struct GroupState {
     pub idx_to_item: Vec<ItemId>,
     pub edges: HashMap<(usize, usize), f64>,
     pub voted_pairs: HashSet<(usize, usize)>,
+    /// Latest vote per `(actor_uuid, min_idx, max_idx)` — Sybil dedup anchor.
+    pub uuid_votes: HashMap<(String, usize, usize), VoteData>,
     pub recent_votes: Vec<VoteData>,
 }
 
@@ -62,6 +62,7 @@ impl GroupState {
             idx_to_item: Vec::new(),
             edges: HashMap::new(),
             voted_pairs: HashSet::new(),
+            uuid_votes: HashMap::new(),
             recent_votes: Vec::new(),
         }
     }
@@ -83,35 +84,77 @@ impl GroupState {
         *self.edges.entry((src, dst)).or_insert(0.0) += w;
     }
 
-    pub fn apply_vote(&mut self, mut vote: VoteData) {
-        vote.a = ItemId::from_storage(vote.a.as_str()).unwrap_or(vote.a.clone());
-        vote.b = ItemId::from_storage(vote.b.as_str()).unwrap_or(vote.b.clone());
-        if vote.ratio_left < 0 {
-            vote.ratio_left = 0;
-        }
-        if vote.ratio_right < 0 {
-            vote.ratio_right = 0;
-        }
-        if vote.ratio_left == 0 && vote.ratio_right == 0 {
+    fn subtract_edge_weight(&mut self, src: usize, dst: usize, w: f64) {
+        if w <= 0.0 {
             return;
         }
+        if let Some(entry) = self.edges.get_mut(&(src, dst)) {
+            *entry -= w;
+            if *entry <= 0.0 {
+                self.edges.remove(&(src, dst));
+            }
+        }
+    }
+
+    fn apply_weights(&mut self, vote: &VoteData, a_idx: usize, b_idx: usize) {
+        let w_a = vote.ratio_left as f64 * vote.trust_weight;
+        let w_b = vote.ratio_right as f64 * vote.trust_weight;
+        let (i, j) = if a_idx < b_idx {
+            (a_idx, b_idx)
+        } else {
+            (b_idx, a_idx)
+        };
+        self.voted_pairs.insert((i, j));
+        self.add_edge_weight(b_idx, a_idx, w_a);
+        self.add_edge_weight(a_idx, b_idx, w_b);
+    }
+
+    fn rollback_weights(&mut self, vote: &VoteData) {
+        let a_idx = match self.item_to_idx.get(&vote.a) {
+            Some(&i) => i,
+            None => return,
+        };
+        let b_idx = match self.item_to_idx.get(&vote.b) {
+            Some(&i) => i,
+            None => return,
+        };
+        let w_a = vote.ratio_left as f64 * vote.trust_weight;
+        let w_b = vote.ratio_right as f64 * vote.trust_weight;
+        self.subtract_edge_weight(b_idx, a_idx, w_a);
+        self.subtract_edge_weight(a_idx, b_idx, w_b);
+    }
+
+    /// Apply a validated vote, deduplicating by `actor_uuid` per unordered pair.
+    pub fn apply_vote(&mut self, vote: VoteData, actor_uuid: &str) {
         let a_idx = self.ensure_item(&vote.a);
         let b_idx = self.ensure_item(&vote.b);
-
         let (i, j) = if a_idx < b_idx {
             (a_idx, b_idx)
         } else {
             (b_idx, a_idx)
         };
 
-        let w_a = vote.ratio_left as f64;
-        let w_b = vote.ratio_right as f64;
+        let dedupe_key = (actor_uuid.to_string(), i, j);
+        if let Some(old) = self.uuid_votes.get(&dedupe_key).cloned() {
+            self.rollback_weights(&old);
+        }
 
-        self.voted_pairs.insert((i, j));
-        self.add_edge_weight(b_idx, a_idx, w_a);
-        self.add_edge_weight(a_idx, b_idx, w_b);
-
+        self.apply_weights(&vote, a_idx, b_idx);
+        self.uuid_votes.insert(dedupe_key, vote.clone());
         self.recent_votes.push(vote);
+    }
+
+    /// Rebuild edge weights from deduped uuid votes (load path — no rollback).
+    pub fn ingest_uuid_vote(&mut self, vote: VoteData, actor_uuid: &str) {
+        let a_idx = self.ensure_item(&vote.a);
+        let b_idx = self.ensure_item(&vote.b);
+        let (i, j) = if a_idx < b_idx {
+            (a_idx, b_idx)
+        } else {
+            (b_idx, a_idx)
+        };
+        self.apply_weights(&vote, a_idx, b_idx);
+        self.uuid_votes.insert((actor_uuid.to_string(), i, j), vote);
     }
 }
 
@@ -192,14 +235,14 @@ impl GlobalTree {
         self.nodes.get(id)
     }
 
-    pub fn apply_vote(&mut self, parent: &ItemId, vote: VoteData) {
+    pub fn apply_vote(&mut self, parent: &ItemId, vote: VoteData, actor_uuid: &str) {
         self.ensure_path(parent);
         self.ensure_path(&vote.a);
         self.ensure_path(&vote.b);
         if let Some(node) = self.nodes.get_mut(parent) {
             node.children.insert(vote.a.clone());
             node.children.insert(vote.b.clone());
-            node.local_ranking.apply_vote(vote);
+            node.local_ranking.apply_vote(vote, actor_uuid);
         }
     }
 
@@ -231,36 +274,62 @@ impl GlobalTree {
 }
 
 #[cfg(test)]
-mod from_recorded_tests {
+mod tests {
     use super::*;
 
-    #[test]
-    fn rejects_same_item() {
-        assert!(VoteData::from_recorded(1, "a", "a", 2, 1).is_none());
+    fn vote(ts: i64, a: &str, b: &str, l: i32, r: i32, pseudonym: &str) -> VoteData {
+        VoteData {
+            ts,
+            a: ItemId::opaque(a),
+            b: ItemId::opaque(b),
+            ratio_left: l,
+            ratio_right: r,
+            pseudonym: pseudonym.to_string(),
+            trust_weight: 1.0,
+        }
     }
 
     #[test]
-    fn rejects_empty_pair() {
-        assert!(VoteData::from_recorded(1, "", "b", 2, 1).is_none());
+    fn from_event_rejects_same_item() {
+        assert!(VoteData::from_event(
+            1,
+            "a",
+            "a",
+            2,
+            1,
+            "anon".into(),
+            1.0
+        )
+        .is_none());
     }
 
     #[test]
-    fn zero_weight_vote_does_not_mark_pair_or_edges() {
+    fn from_event_rejects_empty_pair() {
+        assert!(VoteData::from_event(1, "", "b", 2, 1, "anon".into(), 1.0).is_none());
+    }
+
+    #[test]
+    fn same_uuid_replaces_prior_vote_on_pair() {
         let mut g = GroupState::new();
-        g.apply_vote(VoteData {
-            ts: 1,
-            a: ItemId::opaque("a"),
-            b: ItemId::opaque("b"),
-            ratio_left: 0,
-            ratio_right: 0,
-            body: String::new(),
-            principal: "test".to_string(),
-            delegate: None,
-            thread_tag: "untagged".to_string(),
-        });
-        assert!(g.voted_pairs.is_empty());
-        assert!(g.edges.is_empty());
-        assert!(g.recent_votes.is_empty());
+        let uuid = "u1";
+        g.apply_vote(vote(1, "a", "b", 2, 1, "alice"), uuid);
+        let first_total: f64 = g.edges.values().sum();
+        assert_eq!(first_total, 3.0);
+
+        g.apply_vote(vote(2, "a", "b", 0, 1, "bob"), uuid);
+        let second_total: f64 = g.edges.values().sum();
+        assert_eq!(second_total, 1.0);
+        assert_eq!(g.uuid_votes.len(), 1);
+    }
+
+    #[test]
+    fn different_uuids_both_count() {
+        let mut g = GroupState::new();
+        g.apply_vote(vote(1, "a", "b", 2, 1, "alice"), "u1");
+        g.apply_vote(vote(2, "a", "b", 0, 1, "bob"), "u2");
+        let total: f64 = g.edges.values().sum();
+        assert_eq!(total, 4.0);
+        assert_eq!(g.uuid_votes.len(), 2);
     }
 
     #[test]

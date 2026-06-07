@@ -1,14 +1,13 @@
 //! Durable schema for sorter2 — the projection laid out as point-addressable
 //! durable collections instead of one blob per node.
 //!
-//! A vote updates a handful of keys: a few edge-weight merges, a voted-pair flag,
-//! a recent-vote list append, and child-link set entries. The in-memory
-//! [`crate::reducer::GroupState`] is reconstructed from these keys on read for
-//! rank-centrality.
+//! Votes are stored as deduped `uuid_votes` entries plus an append-only
+//! `recent_votes` audit list. Edge weights for rank centrality are derived
+//! from `uuid_votes` on read, not incrementally merged in RocksDB.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashSet};
 
-use durable::{Batch, Db, Durable, Leaf, List, Map, Sum};
+use durable::{Batch, Db, Durable, Leaf, List, Map};
 
 use crate::{
     path_types::ItemId,
@@ -19,10 +18,8 @@ use crate::{
     },
 };
 
-/// Directed edge key `(from_id, to_id)`.
-pub type EdgeKey = (String, String);
-/// Unordered voted-pair key, stored canonically as `(min, max)` by string.
-pub type PairKey = (String, String);
+/// `(actor_uuid, min_item_id, max_item_id)` — one vote slot per human per pair.
+pub type UuidVoteKey = (String, String, String);
 
 /// One node in the fractal tree, exploded into precisely-updatable collections.
 #[derive(Durable)]
@@ -34,22 +31,21 @@ pub struct NodeSchema {
     pub data: Leaf<StoredEntityDataV1>,
     /// Child ids (a set; value is always `true`).
     pub children: Map<String, Leaf<bool>>,
-    /// Directed edge weights `(from, to) -> weight`, updated by blind merges.
-    pub edges: Map<EdgeKey, Sum<f64>>,
-    /// Voted pairs `(min, max) -> true`.
-    pub voted_pairs: Map<PairKey, Leaf<bool>>,
+    /// Latest vote per actor per unordered pair; edges are derived from this on read.
+    pub uuid_votes: Map<UuidVoteKey, Leaf<StoredVoteV1>>,
     /// Recent votes, append-only oldest-first (cap applied on read).
     pub recent_votes: List<Leaf<StoredVoteV1>>,
     /// When ephemeral Reddit display content was last fetched (ms); absent after eviction.
     pub fetched_at: Leaf<i64>,
 }
 
-/// The single database root: nodes, view counts, and per-concern metadata maps
-/// (cursors and schema versions).
+/// The single database root: nodes, identity maps, view counts, and metadata.
 #[derive(Durable)]
 #[allow(dead_code)]
 pub struct Store {
     pub nodes: Map<String, NodeSchema>,
+    /// Global pseudonym → actor UUID (Sybil dedup anchor).
+    pub pseudonyms: Map<String, Leaf<String>>,
     pub proj_meta: Map<String, Leaf<u64>>,
     pub view_counts: Map<String, Leaf<u64>>,
     pub view_meta: Map<String, Leaf<u64>>,
@@ -60,6 +56,21 @@ pub const RECENT_VOTES_CAP: u64 = 200;
 
 fn id_key(id: &ItemId) -> String {
     id.as_str().to_string()
+}
+
+fn pair_keys(a: &ItemId, b: &ItemId) -> (String, String) {
+    let ak = id_key(a);
+    let bk = id_key(b);
+    if ak <= bk {
+        (ak, bk)
+    } else {
+        (bk, ak)
+    }
+}
+
+pub fn uuid_vote_key(actor_uuid: &str, a: &ItemId, b: &ItemId) -> UuidVoteKey {
+    let (lo, hi) = pair_keys(a, b);
+    (actor_uuid.to_string(), lo, hi)
 }
 
 /// Path to a node by id.
@@ -77,16 +88,10 @@ pub fn load_node_state(db: &Db, id: &ItemId) -> durable::Result<Option<NodeState
     let present = np.present().get(db)?.unwrap_or(false);
 
     let children_keys = np.children().keys(db)?;
-    let voted = np.voted_pairs().keys(db)?;
-    let edges_raw = np.edges().iter(db)?;
+    let uuid_vote_entries = np.uuid_votes().iter(db)?;
     let data = np.data().get(db)?;
 
-    if !present
-        && children_keys.is_empty()
-        && voted.is_empty()
-        && edges_raw.is_empty()
-        && data.is_none()
-    {
+    if !present && children_keys.is_empty() && uuid_vote_entries.is_empty() && data.is_none() {
         return Ok(None);
     }
 
@@ -95,7 +100,7 @@ pub fn load_node_state(db: &Db, id: &ItemId) -> durable::Result<Option<NodeState
         children.insert(parse_storage_id(&child)?);
     }
 
-    let local_ranking = build_group_state(db, &np, voted, edges_raw)?;
+    let local_ranking = build_group_state(db, &np)?;
 
     Ok(Some(NodeState {
         id: id.clone(),
@@ -105,65 +110,24 @@ pub fn load_node_state(db: &Db, id: &ItemId) -> durable::Result<Option<NodeState
     }))
 }
 
-fn build_group_state(
-    db: &Db,
-    np: &durable::Path<NodeSchema>,
-    voted: Vec<PairKey>,
-    edges_raw: Vec<(EdgeKey, f64)>,
-) -> durable::Result<GroupState> {
-    // Item universe = every endpoint that appears in a voted pair or an edge.
-    let mut item_strs: BTreeSet<String> = BTreeSet::new();
-    for (a, b) in &voted {
-        item_strs.insert(a.clone());
-        item_strs.insert(b.clone());
-    }
-    for ((a, b), _) in &edges_raw {
-        item_strs.insert(a.clone());
-        item_strs.insert(b.clone());
+fn build_group_state(db: &Db, np: &durable::Path<NodeSchema>) -> durable::Result<GroupState> {
+    let mut group = GroupState::new();
+
+    for (key, stored) in np.uuid_votes().iter(db)? {
+        let (actor_uuid, _lo, _hi) = key;
+        let vote = decode_vote(stored).map_err(durable::Error::Deserialize)?;
+        group.ingest_uuid_vote(vote, &actor_uuid);
     }
 
-    let mut idx_to_item: Vec<ItemId> = Vec::with_capacity(item_strs.len());
-    let mut item_to_idx: HashMap<ItemId, usize> = HashMap::with_capacity(item_strs.len());
-    let mut str_to_idx: HashMap<String, usize> = HashMap::with_capacity(item_strs.len());
-    for s in item_strs {
-        let id = parse_storage_id(&s)?;
-        let idx = idx_to_item.len();
-        str_to_idx.insert(s, idx);
-        item_to_idx.insert(id.clone(), idx);
-        idx_to_item.push(id);
-    }
-
-    let mut edges: HashMap<(usize, usize), f64> = HashMap::with_capacity(edges_raw.len());
-    for ((a, b), w) in edges_raw {
-        if let (Some(&ai), Some(&bi)) = (str_to_idx.get(&a), str_to_idx.get(&b)) {
-            edges.insert((ai, bi), w);
-        }
-    }
-
-    let mut voted_pairs: HashSet<(usize, usize)> = HashSet::with_capacity(voted.len());
-    for (a, b) in voted {
-        if let (Some(&ai), Some(&bi)) = (str_to_idx.get(&a), str_to_idx.get(&b)) {
-            let (i, j) = if ai < bi { (ai, bi) } else { (bi, ai) };
-            voted_pairs.insert((i, j));
-        }
-    }
-
-    // List is index order (oldest first); keep the newest RECENT_VOTES_CAP entries.
     let stored = np.recent_votes().iter(db)?;
     let cap = RECENT_VOTES_CAP as usize;
     let start = stored.len().saturating_sub(cap);
-    let recent_votes = stored[start..]
+    group.recent_votes = stored[start..]
         .iter()
         .map(|s| decode_vote(s.clone()).map_err(durable::Error::Deserialize))
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(GroupState {
-        item_to_idx,
-        idx_to_item,
-        edges,
-        voted_pairs,
-        recent_votes,
-    })
+    Ok(group)
 }
 
 fn parse_storage_id(s: &str) -> durable::Result<ItemId> {
@@ -197,73 +161,24 @@ pub fn ensure_path_writes(batch: &mut Batch, id: &ItemId) {
     }
 }
 
-/// Reified writes for a recorded vote under `parent`. Mirrors
-/// [`crate::reducer::GroupState::apply_vote`] as point updates.
+/// Reified writes for a validated vote under `parent`.
 pub fn vote_writes(
     batch: &mut Batch,
     parent: &ItemId,
-    a: &str,
-    b: &str,
-    ratio_left: i32,
-    ratio_right: i32,
-    ts: i64,
+    vote: &VoteData,
+    actor_uuid: &str,
 ) -> durable::Result<()> {
-    let left = ratio_left.max(0);
-    let right = ratio_right.max(0);
-    if left == 0 && right == 0 {
-        return Ok(());
-    }
-
-    let a_id = ItemId::from_storage(a).unwrap_or_else(|| ItemId::opaque(a));
-    let b_id = ItemId::from_storage(b).unwrap_or_else(|| ItemId::opaque(b));
-
     ensure_path_writes(batch, parent);
-    ensure_path_writes(batch, &a_id);
-    ensure_path_writes(batch, &b_id);
+    ensure_path_writes(batch, &vote.a);
+    ensure_path_writes(batch, &vote.b);
 
     let pnode = node(parent);
-    batch.write(pnode.children().key(&id_key(&a_id)).set(&true));
-    batch.write(pnode.children().key(&id_key(&b_id)).set(&true));
+    batch.write(pnode.children().key(&id_key(&vote.a)).set(&true));
+    batch.write(pnode.children().key(&id_key(&vote.b)).set(&true));
 
-    // Edge weights: edge (b,a) += left, edge (a,b) += right (positive only).
-    if left > 0 {
-        batch.write(
-            pnode
-                .edges()
-                .key(&(id_key(&b_id), id_key(&a_id)))
-                .add(left as f64),
-        );
-    }
-    if right > 0 {
-        batch.write(
-            pnode
-                .edges()
-                .key(&(id_key(&a_id), id_key(&b_id)))
-                .add(right as f64),
-        );
-    }
-
-    // Voted pair, canonicalized.
-    let (lo, hi) = if id_key(&a_id) <= id_key(&b_id) {
-        (id_key(&a_id), id_key(&b_id))
-    } else {
-        (id_key(&b_id), id_key(&a_id))
-    };
-    batch.write(pnode.voted_pairs().key(&(lo, hi)).set(&true));
-
-    // Recent votes (append-only; cap on read).
-    let stored = encode_vote(&VoteData {
-        ts,
-        a: a_id,
-        b: b_id,
-        ratio_left: left,
-        ratio_right: right,
-        body: String::new(),
-        principal: "web".to_string(),
-        delegate: None,
-        thread_tag: "default".to_string(),
-    });
-    batch.push(&pnode.recent_votes(), &stored)?;
+    let key = uuid_vote_key(actor_uuid, &vote.a, &vote.b);
+    batch.write(pnode.uuid_votes().key(&key).set(&encode_vote(vote)));
+    batch.push(&pnode.recent_votes(), &encode_vote(vote))?;
     Ok(())
 }
 
@@ -283,15 +198,30 @@ pub fn entity_content_clear_writes(batch: &mut Batch, id: &ItemId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::{seed_default_pseudonym, DEFAULT_ACTOR_UUID, DEFAULT_PSEUDONYM};
+
+    fn sample_vote(ts: i64, a: &str, b: &str, l: i32, r: i32) -> VoteData {
+        VoteData {
+            ts,
+            a: ItemId::opaque(a),
+            b: ItemId::opaque(b),
+            ratio_left: l,
+            ratio_right: r,
+            pseudonym: DEFAULT_PSEUDONYM.to_string(),
+            trust_weight: 1.0,
+        }
+    }
 
     #[test]
     fn vote_roundtrip_reconstructs_group_state() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
+        seed_default_pseudonym(&db).unwrap();
         let parent = ItemId::root();
 
+        let vote = sample_vote(1, "alpha", "beta", 2, 1);
         let mut batch = db.batch();
-        vote_writes(&mut batch, &parent, "alpha", "beta", 2, 1, 1).unwrap();
+        vote_writes(&mut batch, &parent, &vote, DEFAULT_ACTOR_UUID).unwrap();
         batch.commit().unwrap();
 
         let node_state = load_node_state(&db, &parent).unwrap().unwrap();
@@ -305,16 +235,38 @@ mod tests {
     }
 
     #[test]
-    fn zero_weight_vote_writes_nothing() {
+    fn uuid_vote_replace_updates_edges() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
         let parent = ItemId::root();
+        let uuid = "u1";
 
         let mut batch = db.batch();
-        vote_writes(&mut batch, &parent, "alpha", "beta", 0, 0, 1).unwrap();
+        vote_writes(
+            &mut batch,
+            &parent,
+            &sample_vote(1, "alpha", "beta", 2, 1),
+            uuid,
+        )
+        .unwrap();
+        vote_writes(
+            &mut batch,
+            &parent,
+            &VoteData {
+                pseudonym: "alias2".into(),
+                ratio_left: 0,
+                ratio_right: 1,
+                ..sample_vote(2, "alpha", "beta", 0, 1)
+            },
+            uuid,
+        )
+        .unwrap();
         batch.commit().unwrap();
 
-        assert!(load_node_state(&db, &parent).unwrap().is_none());
+        let g = &load_node_state(&db, &parent).unwrap().unwrap().local_ranking;
+        let edge_total: f64 = g.edges.values().sum();
+        assert_eq!(edge_total, 1.0);
+        assert_eq!(g.uuid_votes.len(), 1);
     }
 
     #[test]
@@ -325,7 +277,13 @@ mod tests {
 
         let mut batch = db.batch();
         for i in 0..RECENT_VOTES_CAP + 10 {
-            vote_writes(&mut batch, &parent, "alpha", "beta", 1, 0, i as i64).unwrap();
+            vote_writes(
+                &mut batch,
+                &parent,
+                &sample_vote(i as i64, "alpha", "beta", 1, 0),
+                "u1",
+            )
+            .unwrap();
         }
         batch.commit().unwrap();
 
@@ -337,12 +295,12 @@ mod tests {
         let node_state = load_node_state(&db, &parent).unwrap().unwrap();
         assert_eq!(node_state.local_ranking.recent_votes.len(), RECENT_VOTES_CAP as usize);
         assert_eq!(
-            node_state.local_ranking.recent_votes.first().map(|v| v.ts),
+            node_state
+                .local_ranking
+                .recent_votes
+                .first()
+                .map(|v| v.ts),
             Some(10)
-        );
-        assert_eq!(
-            node_state.local_ranking.recent_votes.last().map(|v| v.ts),
-            Some(RECENT_VOTES_CAP as i64 + 9)
         );
     }
 

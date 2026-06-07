@@ -29,14 +29,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     for chunk_start in (0..opts.events).step_by(opts.batch_size) {
         let chunk_end = (chunk_start + opts.batch_size).min(opts.events);
         let events = (chunk_start..chunk_end)
-            .map(|i| Event::VoteRecorded {
-                ts: i as i64,
-                a: format!("item-{i}"),
-                b: format!("item-{}", i + 1),
-                ratio_left: 2,
-                ratio_right: 1,
-                scope: String::new(),
-            })
+            .map(|i| Event::vote_recorded(i as i64, format!("item-{i}"), format!("item-{}", i + 1), 2, 1, ""))
             .collect();
         journal.append_many(events).await?;
     }

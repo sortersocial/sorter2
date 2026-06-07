@@ -18,7 +18,7 @@ use crate::{
 
 const PROJECTION_CURSOR_KEY: &str = "cursor";
 const PROJECTION_SCHEMA_KEY: &str = "schema_version";
-const PROJECTION_SCHEMA_VERSION: u64 = 4;
+const PROJECTION_SCHEMA_VERSION: u64 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectionStoreError {
@@ -51,6 +51,8 @@ impl ProjectionStore {
         if version != Some(PROJECTION_SCHEMA_VERSION) {
             store.reset()?;
         }
+        crate::identity::seed_default_pseudonym(db)
+            .map_err(ProjectionStoreError::Durable)?;
         Ok(store)
     }
 
@@ -206,14 +208,7 @@ mod tests {
         let db = Db::open(tmp.path()).unwrap();
         let store = ProjectionStore::from_db(&db).unwrap();
 
-        let event = Event::VoteRecorded {
-            ts: 1,
-            a: "alpha".into(),
-            b: "beta".into(),
-            ratio_left: 2,
-            ratio_right: 1,
-            scope: String::new(),
-        };
+        let event = Event::vote_recorded(1, "alpha", "beta", 2, 1, "");
         projection_apply::apply_records(&store, &[record(1, event)]).unwrap();
         assert_eq!(store.last_applied_event_count().unwrap(), 1);
 
@@ -229,14 +224,7 @@ mod tests {
         let db = Db::open(tmp.path()).unwrap();
         let store = ProjectionStore::from_db(&db).unwrap();
 
-        let event = Event::VoteRecorded {
-            ts: 1,
-            a: "alpha".into(),
-            b: "beta".into(),
-            ratio_left: 2,
-            ratio_right: 1,
-            scope: String::new(),
-        };
+        let event = Event::vote_recorded(1, "alpha", "beta", 2, 1, "");
         projection_apply::apply_records(&store, &[record(1, event)]).unwrap();
 
         let scoped = store.scope_tree(&ItemId::root()).unwrap();

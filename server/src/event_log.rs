@@ -206,14 +206,7 @@ mod tests {
         .unwrap();
         log.append(&sample_record(
             2,
-            Event::VoteRecorded {
-                ts: 1,
-                a: "a".into(),
-                b: "b".into(),
-                ratio_left: 2,
-                ratio_right: 1,
-                scope: String::new(),
-            },
+            Event::vote_recorded(1, "a", "b", 2, 1, ""),
         ))
         .await
         .unwrap();
