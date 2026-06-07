@@ -2,13 +2,13 @@
 //! durable collections instead of one blob per node.
 //!
 //! A vote updates a handful of keys: a few edge-weight merges, a voted-pair flag,
-//! a recent-vote deque push, and child-link set entries. The in-memory
+//! a recent-vote list append, and child-link set entries. The in-memory
 //! [`crate::reducer::GroupState`] is reconstructed from these keys on read for
 //! rank-centrality.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use durable::{Batch, Db, Deque, Durable, Leaf, Map, Sum};
+use durable::{Batch, Db, Durable, Leaf, List, Map, Sum};
 
 use crate::{
     path_types::ItemId,
@@ -38,8 +38,8 @@ pub struct NodeSchema {
     pub edges: Map<EdgeKey, Sum<f64>>,
     /// Voted pairs `(min, max) -> true`.
     pub voted_pairs: Map<PairKey, Leaf<bool>>,
-    /// Recent votes, newest at the front (capped on write).
-    pub recent_votes: Deque<Leaf<StoredVoteV1>>,
+    /// Recent votes, append-only oldest-first (cap applied on read).
+    pub recent_votes: List<Leaf<StoredVoteV1>>,
     /// When ephemeral Reddit display content was last fetched (ms); absent after eviction.
     pub fetched_at: Leaf<i64>,
 }
@@ -55,7 +55,7 @@ pub struct Store {
     pub view_meta: Map<String, Leaf<u64>>,
 }
 
-/// Cap on the per-node recent-vote window (matches the in-memory reducer).
+/// Max recent votes returned when loading a node (query-time cap only).
 pub const RECENT_VOTES_CAP: u64 = 200;
 
 fn id_key(id: &ItemId) -> String {
@@ -148,11 +148,14 @@ fn build_group_state(
         }
     }
 
-    // Deque is front=newest; in-memory VecDeque is also front=newest.
-    let mut recent_votes = std::collections::VecDeque::new();
-    for stored in np.recent_votes().iter(db)? {
-        recent_votes.push_back(decode_vote(stored).map_err(durable::Error::Deserialize)?);
-    }
+    // List is index order (oldest first); keep the newest RECENT_VOTES_CAP entries.
+    let stored = np.recent_votes().iter(db)?;
+    let cap = RECENT_VOTES_CAP as usize;
+    let start = stored.len().saturating_sub(cap);
+    let recent_votes = stored[start..]
+        .iter()
+        .map(|s| decode_vote(s.clone()).map_err(durable::Error::Deserialize))
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(GroupState {
         item_to_idx,
@@ -248,7 +251,7 @@ pub fn vote_writes(
     };
     batch.write(pnode.voted_pairs().key(&(lo, hi)).set(&true));
 
-    // Recent votes (newest at front).
+    // Recent votes (append-only; cap on read).
     let stored = encode_vote(&VoteData {
         ts,
         a: a_id,
@@ -260,7 +263,7 @@ pub fn vote_writes(
         delegate: None,
         thread_tag: "default".to_string(),
     });
-    batch.push_front(&pnode.recent_votes(), &stored)?;
+    batch.push(&pnode.recent_votes(), &stored)?;
     Ok(())
 }
 
@@ -312,6 +315,35 @@ mod tests {
         batch.commit().unwrap();
 
         assert!(load_node_state(&db, &parent).unwrap().is_none());
+    }
+
+    #[test]
+    fn load_caps_recent_votes_at_query_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let parent = ItemId::root();
+
+        let mut batch = db.batch();
+        for i in 0..RECENT_VOTES_CAP + 10 {
+            vote_writes(&mut batch, &parent, "alpha", "beta", 1, 0, i as i64).unwrap();
+        }
+        batch.commit().unwrap();
+
+        assert_eq!(
+            node(&parent).recent_votes().len(&db).unwrap(),
+            RECENT_VOTES_CAP + 10
+        );
+
+        let node_state = load_node_state(&db, &parent).unwrap().unwrap();
+        assert_eq!(node_state.local_ranking.recent_votes.len(), RECENT_VOTES_CAP as usize);
+        assert_eq!(
+            node_state.local_ranking.recent_votes.first().map(|v| v.ts),
+            Some(10)
+        );
+        assert_eq!(
+            node_state.local_ranking.recent_votes.last().map(|v| v.ts),
+            Some(RECENT_VOTES_CAP as i64 + 9)
+        );
     }
 
     #[test]

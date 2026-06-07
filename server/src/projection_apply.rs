@@ -6,8 +6,6 @@
 //! batch as the (non-idempotent) edge merges guarantees exactly-once application
 //! across replay.
 
-use std::collections::BTreeSet;
-
 use crate::{
     event_log::EventLogError,
     events::{Event, EventRecord},
@@ -44,7 +42,6 @@ pub fn apply_records(
 
     let db = projection_store.db();
     let mut batch = db.batch();
-    let mut vote_parents: BTreeSet<ItemId> = BTreeSet::new();
     let mut last_seq = 0u64;
 
     for record in records {
@@ -70,7 +67,6 @@ pub fn apply_records(
                     *ts,
                 )
                 .map_err(|e| EventLogError::Apply(e.to_string()))?;
-                vote_parents.insert(parent);
             }
             Event::NodeEnsured { id } => {
                 let parsed = parse_event_id(id)?;
@@ -84,12 +80,6 @@ pub fn apply_records(
     batch
         .commit_with(durable::Durability::DisableWal)
         .map_err(|e| EventLogError::Apply(e.to_string()))?;
-
-    for parent in vote_parents {
-        projection_store
-            .trim_recent_votes(&parent)
-            .map_err(|e| EventLogError::Apply(e.to_string()))?;
-    }
 
     Ok(())
 }

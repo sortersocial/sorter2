@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -52,7 +52,7 @@ pub struct GroupState {
     pub idx_to_item: Vec<ItemId>,
     pub edges: HashMap<(usize, usize), f64>,
     pub voted_pairs: HashSet<(usize, usize)>,
-    pub recent_votes: VecDeque<VoteData>,
+    pub recent_votes: Vec<VoteData>,
 }
 
 impl GroupState {
@@ -62,7 +62,7 @@ impl GroupState {
             idx_to_item: Vec::new(),
             edges: HashMap::new(),
             voted_pairs: HashSet::new(),
-            recent_votes: VecDeque::with_capacity(200),
+            recent_votes: Vec::new(),
         }
     }
 
@@ -111,10 +111,7 @@ impl GroupState {
         self.add_edge_weight(b_idx, a_idx, w_a);
         self.add_edge_weight(a_idx, b_idx, w_b);
 
-        self.recent_votes.push_front(vote);
-        while self.recent_votes.len() > 200 {
-            self.recent_votes.pop_back();
-        }
+        self.recent_votes.push(vote);
     }
 }
 

@@ -18,7 +18,7 @@ use crate::{
 
 const PROJECTION_CURSOR_KEY: &str = "cursor";
 const PROJECTION_SCHEMA_KEY: &str = "schema_version";
-const PROJECTION_SCHEMA_VERSION: u64 = 3;
+const PROJECTION_SCHEMA_VERSION: u64 = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectionStoreError {
@@ -140,16 +140,6 @@ impl ProjectionStore {
         let mut tree = GlobalTree::new();
         self.hydrate_scope(&mut tree, id)?;
         Ok(tree)
-    }
-
-    /// Cap a node's recent-vote window after applying votes (best-effort, blind).
-    pub(crate) fn trim_recent_votes(&self, parent: &ItemId) -> Result<(), ProjectionStoreError> {
-        node(parent).recent_votes().truncate_back(
-            &self.db,
-            crate::storage_schema::RECENT_VOTES_CAP,
-            Durability::DisableWal,
-        )?;
-        Ok(())
     }
 
     /// Cache Reddit display content outside the event log (must be evicted per policy).

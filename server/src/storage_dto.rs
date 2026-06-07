@@ -39,7 +39,7 @@ pub struct StoredEntityDataV1 {
     pub link_url: Option<String>,
 }
 
-/// One vote stored in a node's `recent_votes` deque.
+/// One vote stored in a node's `recent_votes` list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredVoteV1 {
     pub version: u32,
