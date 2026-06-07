@@ -72,8 +72,9 @@
           log2 (slurp (io/file log-path))]
       (is (str/includes? after-children "Announcing Rust 1.99"))
       (is (str/includes? after-children "Unranked"))
-      (is (str/includes? log2 "announcing_rust_199"))
-      (is (not (str/includes? log2 "\"selftext\"")))))
+      (is (str/includes? log2 "\"type\":\"node_ensured\""))
+      (is (str/includes? log2 "/comments/"))
+      (is (not (str/includes? log2 "\"selftext\""))))))
 
 (deftest reddit-fetch-via-mock-api
   (testing "Fetch caches display content ephemerally; log records structure only"
