@@ -136,8 +136,7 @@ pub struct EntityData {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeState {
     pub id: ItemId,
-    /// Domain-specific view derived from imported payload (e.g. Reddit title/author).
-    /// Raw JSON lives in [`crate::entity_store::EntityStore`].
+    /// Ephemeral display view (Reddit title/author/etc.; not event-logged).
     pub data: Option<EntityData>,
     pub children: HashSet<ItemId>,
     pub local_ranking: GroupState,

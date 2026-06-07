@@ -9,9 +9,12 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    entity_store::EntityStore, events::Event, fetch::now_ms, journal::JournalClient,
-    path_types::ItemId, reducer::GlobalTree,
+    events::Event, fetch::now_ms, journal::JournalClient,
+    path_types::ItemId, projection_store::ProjectionStore,
 };
+
+/// Reddit display content must not be retained longer than this (API policy).
+pub const REDDIT_CONTENT_TTL: std::time::Duration = std::time::Duration::from_secs(48 * 3600);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchJobResult {
@@ -70,7 +73,11 @@ struct OAuthToken {
 }
 
 impl RedditBroker {
-    pub fn spawn(journal: JournalClient, config: RedditApiConfig) -> Self {
+    pub fn spawn(
+        journal: JournalClient,
+        projection_store: ProjectionStore,
+        config: RedditApiConfig,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(100);
 
         let mut headers = header::HeaderMap::new();
@@ -93,7 +100,7 @@ impl RedditBroker {
             "reddit worker started"
         );
 
-        tokio::spawn(reddit_worker(rx, journal, client, config));
+        tokio::spawn(reddit_worker(rx, journal, projection_store, client, config));
 
         Self { tx }
     }
@@ -189,27 +196,50 @@ pub fn entity_view_from_payload(
     None
 }
 
-pub fn apply_entity_import(
-    tree: &mut GlobalTree,
-    store: &EntityStore,
-    id: &ItemId,
-    payload: Value,
-) -> Result<(), String> {
-    let view = entity_view_from_payload(id, &payload);
-    store.put(id, &payload).map_err(|e| e.to_string())?;
-    tree.apply_entity(id, view);
-    Ok(())
-}
-
 fn notify(done: Option<oneshot::Sender<FetchJobResult>>, result: FetchJobResult) {
     if let Some(tx) = done {
         let _ = tx.send(result);
     }
 }
 
+async fn import_fetched_payload(
+    kind: FetchKind,
+    fetch_id: &ItemId,
+    payload: Value,
+    projection_store: &ProjectionStore,
+    journal: &JournalClient,
+) -> Result<usize, String> {
+    let fetched_at = now_ms();
+    let imports: Vec<(ItemId, Value)> = match kind {
+        FetchKind::SelfEntity => vec![(fetch_id.clone(), payload)],
+        FetchKind::Children => parse_children(fetch_id, &payload),
+    };
+
+    for (id, child_payload) in &imports {
+        if let Some(view) = entity_view_from_payload(id, child_payload) {
+            projection_store
+                .put_ephemeral_content(id, &view, fetched_at)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    let events: Vec<Event> = imports
+        .iter()
+        .map(|(id, _)| Event::NodeEnsured {
+            id: id.as_str().to_string(),
+        })
+        .collect();
+    let written = events.len();
+    if !events.is_empty() {
+        journal.append_many(events).await?;
+    }
+    Ok(written)
+}
+
 async fn reddit_worker(
     mut rx: mpsc::Receiver<RedditCommand>,
     journal: JournalClient,
+    projection_store: ProjectionStore,
     client: Client,
     config: RedditApiConfig,
 ) {
@@ -276,33 +306,20 @@ async fn reddit_worker(
 
         match outcome {
             Ok(FetchOutcome::Payload(payload)) => {
-                let imports: Vec<(ItemId, Value)> = match kind {
-                    FetchKind::SelfEntity => vec![(fetch_id.clone(), payload)],
-                    FetchKind::Children => parse_children(&fetch_id, &payload),
-                };
                 tracing::debug!(
                     item = %fetch_id,
                     ?kind,
-                    count = imports.len(),
-                    "reddit fetch got payload, importing"
+                    "reddit fetch got payload, caching ephemerally"
                 );
 
-                let events: Vec<Event> = imports
-                    .into_iter()
-                    .map(|(child_id, child_payload)| Event::EntityImported {
-                        id: child_id.as_str().to_string(),
-                        ts: now_ms(),
-                        payload: child_payload,
-                    })
-                    .collect();
-                let written = events.len();
-
-                match journal.append_many(events).await {
+                match import_fetched_payload(kind, &fetch_id, payload, &projection_store, &journal)
+                    .await
+                {
                     Err(e) => {
-                        tracing::warn!(item = %fetch_id, err = %e, "reddit import journal failed");
+                        tracing::warn!(item = %fetch_id, err = %e, "reddit import failed");
                         notify(done, FetchJobResult::Failed(e));
                     }
-                    Ok(()) => {
+                    Ok(written) => {
                         recently_fetched.insert(key.clone(), Instant::now());
                         current_delay = Duration::from_millis(600);
                         tracing::info!(item = %fetch_id, ?kind, written, "reddit import complete");

@@ -5,7 +5,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    entity_store::EntityStore,
     event_log::EventLog,
     events::{event_timestamp, Event, EventRecord},
     projection_apply,
@@ -25,7 +24,6 @@ pub struct JournalClient {
 impl JournalClient {
     pub fn spawn(
         event_log: Arc<EventLog>,
-        entity_store: EntityStore,
         projection_store: ProjectionStore,
         next_seq: u64,
     ) -> Self {
@@ -33,7 +31,6 @@ impl JournalClient {
         tokio::spawn(journal_worker(
             rx,
             event_log,
-            entity_store,
             projection_store,
             next_seq,
         ));
@@ -62,7 +59,6 @@ impl JournalClient {
 async fn journal_worker(
     mut rx: mpsc::Receiver<JournalCommand>,
     event_log: Arc<EventLog>,
-    entity_store: EntityStore,
     projection_store: ProjectionStore,
     mut next_seq: u64,
 ) {
@@ -75,7 +71,6 @@ async fn journal_worker(
         let result = append_and_project_batch(
             &event_log,
             &projection_store,
-            &entity_store,
             &mut next_seq,
             &batch,
         )
@@ -99,7 +94,6 @@ async fn journal_worker(
 async fn append_and_project_batch(
     event_log: &EventLog,
     projection_store: &ProjectionStore,
-    entity_store: &EntityStore,
     next_seq: &mut u64,
     commands: &[JournalCommand],
 ) -> Result<(), String> {
@@ -117,7 +111,7 @@ async fn append_and_project_batch(
         .await
         .map_err(|e| e.to_string())?;
     *next_seq = seq;
-    projection_apply::apply_records(projection_store, entity_store, &records)
+    projection_apply::apply_records(projection_store, &records)
         .map_err(|e| format!("projection apply failed after durable append: {e}"))
 }
 
@@ -132,10 +126,9 @@ mod tests {
         let log_path = tmp.path().join("events.jsonl");
         let event_log = Arc::new(EventLog::new(log_path));
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
         let projection_store = ProjectionStore::from_db(&db).unwrap();
 
-        let journal = JournalClient::spawn(event_log, entity_store, projection_store.clone(), 1);
+        let journal = JournalClient::spawn(event_log, projection_store.clone(), 1);
 
         let j1 = journal.clone();
         let j2 = journal.clone();
@@ -177,11 +170,9 @@ mod tests {
             .unwrap();
 
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
         let projection_store = ProjectionStore::from_db(&db).unwrap();
         projection_apply::apply_records(
             &projection_store,
-            &entity_store,
             &[EventRecord::new(
                 1,
                 1,
@@ -196,7 +187,6 @@ mod tests {
 
         let journal = JournalClient::spawn(
             event_log.clone(),
-            entity_store,
             projection_store.clone(),
             next_seq,
         );
@@ -219,10 +209,9 @@ mod tests {
         let log_path = tmp.path().join("events.jsonl");
         let event_log = Arc::new(EventLog::new(log_path));
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
         let projection_store = ProjectionStore::from_db(&db).unwrap();
         let journal =
-            JournalClient::spawn(event_log.clone(), entity_store, projection_store.clone(), 1);
+            JournalClient::spawn(event_log.clone(), projection_store.clone(), 1);
 
         journal
             .append_many(vec![

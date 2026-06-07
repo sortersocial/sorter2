@@ -1,22 +1,20 @@
 //! Apply event-log records to the durable projection as precise point updates.
 //!
 //! Each batch of records lowers to reified durable writes (edge merges, child
-//! links, voted-pair flags, recent-vote pushes, entity payloads) plus a cursor
-//! advance, all committed in one atomic `DisableWal` batch. The cursor moving in
-//! the same batch as the (non-idempotent) edge merges guarantees exactly-once
-//! application across replay.
+//! links, voted-pair flags, recent-vote pushes) plus a cursor advance, all
+//! committed in one atomic `DisableWal` batch. The cursor moving in the same
+//! batch as the (non-idempotent) edge merges guarantees exactly-once application
+//! across replay.
 
 use std::collections::BTreeSet;
 
 use crate::{
-    entity_store::EntityStore,
     event_log::EventLogError,
     events::{Event, EventRecord},
     path_types::ItemId,
     projection_store::ProjectionStore,
-    reddit::entity_view_from_payload,
     reducer::VoteData,
-    storage_schema::{ensure_path_writes, entity_view_writes, vote_writes},
+    storage_schema::{ensure_path_writes, vote_writes},
 };
 
 fn parse_event_id(id: &str) -> Result<ItemId, EventLogError> {
@@ -38,7 +36,6 @@ fn parent_from_event_scope(scope: &str) -> ItemId {
 
 pub fn apply_records(
     projection_store: &ProjectionStore,
-    entity_store: &EntityStore,
     records: &[EventRecord],
 ) -> Result<(), EventLogError> {
     if records.is_empty() {
@@ -78,14 +75,6 @@ pub fn apply_records(
             Event::NodeEnsured { id } => {
                 let parsed = parse_event_id(id)?;
                 ensure_path_writes(&mut batch, &parsed);
-            }
-            Event::EntityImported { id, payload, .. } => {
-                let parsed = parse_event_id(id)?;
-                let view = entity_view_from_payload(&parsed, payload);
-                entity_view_writes(&mut batch, &parsed, view.as_ref());
-                entity_store
-                    .put_in_batch(&mut batch, &parsed, payload)
-                    .map_err(|e| EventLogError::Apply(e.to_string()))?;
             }
         }
         last_seq = record.seq;

@@ -15,7 +15,7 @@ use crate::{
     reducer::{EntityData, GroupState, NodeState, VoteData},
     storage_dto::{
         decode_entity_data, decode_vote, encode_entity_data, encode_vote, parse_stored_id,
-        StoredEntityDataV1, StoredEntityRecord, StoredVoteV1,
+        StoredEntityDataV1, StoredVoteV1,
     },
 };
 
@@ -40,17 +40,17 @@ pub struct NodeSchema {
     pub voted_pairs: Map<PairKey, Leaf<bool>>,
     /// Recent votes, newest at the front (capped on write).
     pub recent_votes: Deque<Leaf<StoredVoteV1>>,
+    /// When ephemeral Reddit display content was last fetched (ms); absent after eviction.
+    pub fetched_at: Leaf<i64>,
 }
 
-/// The single database root: nodes, raw payloads, view counts, and per-concern
-/// metadata maps (cursors and schema versions).
+/// The single database root: nodes, view counts, and per-concern metadata maps
+/// (cursors and schema versions).
 #[derive(Durable)]
 #[allow(dead_code)]
 pub struct Store {
     pub nodes: Map<String, NodeSchema>,
     pub proj_meta: Map<String, Leaf<u64>>,
-    pub entities: Map<String, Leaf<StoredEntityRecord>>,
-    pub entity_meta: Map<String, Leaf<u64>>,
     pub view_counts: Map<String, Leaf<u64>>,
     pub view_meta: Map<String, Leaf<u64>>,
 }
@@ -264,12 +264,17 @@ pub fn vote_writes(
     Ok(())
 }
 
-/// Reified writes for an imported entity view (node data + path wiring).
-pub fn entity_view_writes(batch: &mut Batch, id: &ItemId, view: Option<&EntityData>) {
+/// Reified writes for ephemeral Reddit display content (not event-logged).
+pub fn entity_content_writes(batch: &mut Batch, id: &ItemId, view: &EntityData, fetched_at: i64) {
     ensure_path_writes(batch, id);
-    if let Some(view) = view {
-        batch.write(node(id).data().set(&encode_entity_data(view)));
-    }
+    batch.write(node(id).data().set(&encode_entity_data(view)));
+    batch.write(node(id).fetched_at().set(&fetched_at));
+}
+
+/// Clear cached display content for one node (structure/votes are untouched).
+pub fn entity_content_clear_writes(batch: &mut Batch, id: &ItemId) {
+    batch.write(node(id).data().delete());
+    batch.write(node(id).fetched_at().delete());
 }
 
 #[cfg(test)]

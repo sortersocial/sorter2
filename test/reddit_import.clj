@@ -59,9 +59,10 @@
                                      "curl" "-sf" browse-url))
           log (slurp (io/file log-path))]
       (is (str/includes? after "The Rust Programming Language"))
-      (is (str/includes? log "\"type\":\"entity_imported\""))
-      (is (str/includes? log "\"subscribers\":350000"))
-      (is (str/includes? log "\"display_name\":\"rust\"")))
+      (is (str/includes? log "\"type\":\"node_ensured\""))
+      (is (not (str/includes? log "\"subscribers\"")))
+      (is (not (str/includes? log "\"display_name\"")))
+      (is (not (str/includes? log "entity_imported"))))
     (let [children-sse (curl-fetch-ui-sse app-base "reddit.com/r/rust" "children")]
       (is (zero? (:exit children-sse)) "POST /ui fetch_entity (children) SSE succeeds")
       (is (str/includes? (:out children-sse) "Idiomorph.morph"))
@@ -71,10 +72,11 @@
           log2 (slurp (io/file log-path))]
       (is (str/includes? after-children "Announcing Rust 1.99"))
       (is (str/includes? after-children "Unranked"))
-      (is (str/includes? log2 "announcing_rust_199")))))
+      (is (str/includes? log2 "announcing_rust_199"))
+      (is (not (str/includes? log2 "\"selftext\"")))))
 
 (deftest reddit-fetch-via-mock-api
-  (testing "Fetch more queues import; event log stores full payload; page shows title"
+  (testing "Fetch caches display content ephemerally; log records structure only"
     (let [root (repo-root)
           fixtures (mock-reddit/fixtures-dir root)
           data-dir (.getAbsolutePath

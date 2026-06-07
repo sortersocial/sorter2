@@ -3,17 +3,15 @@
 //! Node structure (children, edges, voted pairs, recent votes) is no longer a
 //! single blob — it lives as point-addressable durable collections (see
 //! [`crate::storage_schema`]). This module only defines the small leaf values:
-//! the derived entity view, raw entity payloads, and individual votes.
+//! ephemeral entity views and individual votes.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::{
     path_types::ItemId,
     reducer::{EntityData, VoteData},
 };
 
-pub const ENTITY_RECORD_VERSION: u32 = 1;
 pub const VOTE_RECORD_VERSION: u32 = 1;
 pub const ENTITY_DATA_VERSION: u32 = 1;
 
@@ -29,14 +27,7 @@ impl<T> Versioned<T> {
     }
 }
 
-pub type StoredEntityRecord = Versioned<StoredEntityV1>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredEntityV1 {
-    pub json: Value,
-}
-
-/// Derived entity view stored at a node's `data` leaf.
+/// Derived entity view stored at a node's `data` leaf (ephemeral; not logged).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredEntityDataV1 {
     pub version: u32,
@@ -61,25 +52,6 @@ pub struct StoredVoteV1 {
     pub principal: String,
     pub delegate: Option<String>,
     pub thread_tag: String,
-}
-
-pub fn encode_entity_payload(payload: &Value) -> StoredEntityRecord {
-    Versioned::new(
-        ENTITY_RECORD_VERSION,
-        StoredEntityV1 {
-            json: payload.clone(),
-        },
-    )
-}
-
-pub fn decode_entity_payload(record: StoredEntityRecord) -> Result<Value, String> {
-    if record.version != ENTITY_RECORD_VERSION {
-        return Err(format!(
-            "unsupported entity record version: {}",
-            record.version
-        ));
-    }
-    Ok(record.payload.json)
 }
 
 pub fn encode_entity_data(data: &EntityData) -> StoredEntityDataV1 {

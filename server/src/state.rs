@@ -1,14 +1,14 @@
 use std::{error::Error, sync::Arc};
 
 use crate::{
-    entity_store::EntityStore,
     event_log::EventLog,
     events::Event,
+    fetch::now_ms,
     journal::JournalClient,
     path_types::ItemId,
     projection_apply,
     projection_store::ProjectionStore,
-    reddit::{RedditApiConfig, RedditBroker},
+    reddit::{RedditApiConfig, RedditBroker, REDDIT_CONTENT_TTL},
     reducer::{GlobalTree, VoteData},
     view_log::ViewLog,
     views::ViewStore,
@@ -45,7 +45,6 @@ pub fn normalize_scope(raw: &str) -> String {
 
 async fn catch_up_projection(
     event_log: &EventLog,
-    entity_store: &EntityStore,
     projection_store: &ProjectionStore,
 ) -> Result<(), crate::event_log::EventLogError> {
     let after_seq = projection_store
@@ -54,7 +53,7 @@ async fn catch_up_projection(
 
     let stats = event_log
         .replay_from(after_seq, |record| {
-            projection_apply::apply_records(projection_store, entity_store, &[record])
+            projection_apply::apply_records(projection_store, &[record])
         })
         .await?;
     if after_seq > stats.last_seq {
@@ -67,22 +66,34 @@ async fn catch_up_projection(
     Ok(())
 }
 
+fn spawn_content_evictor(projection_store: ProjectionStore) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15 * 60));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let cutoff = now_ms() - REDDIT_CONTENT_TTL.as_millis() as i64;
+            match projection_store.evict_content_older_than(cutoff) {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(evicted = n, "reddit display content TTL eviction"),
+                Err(e) => tracing::warn!(err = %e, "reddit content TTL eviction failed"),
+            }
+        }
+    });
+}
+
 pub async fn rebuild_projection(
     cfg: &AppConfig,
 ) -> Result<ProjectionRebuildStats, Box<dyn Error + Send + Sync + 'static>> {
     let event_log = EventLog::new(cfg.event_log_path.clone());
     let store_path = format!("{}/store", cfg.data_dir);
     let db = durable::Db::open(std::path::Path::new(&store_path))?;
-    let entity_store = EntityStore::from_db(&db)?;
     let projection_store = ProjectionStore::from_db(&db)?;
 
-    entity_store.reset()?;
     projection_store.reset()?;
 
     let stats = event_log
-        .replay(|record| {
-            projection_apply::apply_records(&projection_store, &entity_store, &[record])
-        })
+        .replay(|record| projection_apply::apply_records(&projection_store, &[record]))
         .await?;
     let cursor = projection_store.last_applied_event_count()?;
     if cursor != stats.last_seq {
@@ -132,7 +143,6 @@ pub struct AppState {
     pub cfg: Arc<AppConfig>,
     pub event_log: Arc<EventLog>,
     pub view_log: Arc<ViewLog>,
-    pub entity_store: EntityStore,
     pub projection_store: ProjectionStore,
     pub views: ViewStore,
     journal: JournalClient,
@@ -145,7 +155,6 @@ impl AppState {
         let view_log = Arc::new(ViewLog::new(cfg.views_log_path.clone()));
         let store_path = format!("{}/store", cfg.data_dir);
         let db = durable::Db::open(std::path::Path::new(&store_path))?;
-        let entity_store = EntityStore::from_db(&db)?;
         let projection_store = ProjectionStore::from_db(&db)?;
         let views = ViewStore::from_db(&db)?;
 
@@ -157,22 +166,25 @@ impl AppState {
         }
         views.spawn_worker(view_log.clone());
 
-        catch_up_projection(&event_log, &entity_store, &projection_store).await?;
+        catch_up_projection(&event_log, &projection_store).await?;
         let next_seq = event_log.last_sequence().await? + 1;
 
         let journal = JournalClient::spawn(
             event_log.clone(),
-            entity_store.clone(),
             projection_store.clone(),
             next_seq,
         );
-        let reddit = RedditBroker::spawn(journal.clone(), RedditApiConfig::from_env());
+        let reddit = RedditBroker::spawn(
+            journal.clone(),
+            projection_store.clone(),
+            RedditApiConfig::from_env(),
+        );
+        spawn_content_evictor(projection_store.clone());
 
         Ok(Self {
             cfg: Arc::new(cfg),
             event_log,
             view_log,
-            entity_store,
             projection_store,
             views,
             journal,
@@ -248,54 +260,72 @@ impl AppState {
 mod tests {
     use super::{normalize_scope, parse_item_param, AppConfig, AppState};
     use crate::{
-        entity_store::EntityStore, event_log::EventLog, events::Event, path_types::ItemId,
-        projection_apply, projection_store::ProjectionStore,
+        event_log::EventLog, events::Event, path_types::ItemId, projection_apply,
+        projection_store::ProjectionStore, reducer::EntityData,
     };
-    use serde_json::json;
 
     fn event_record(seq: u64, event: Event) -> crate::events::EventRecord {
         crate::events::EventRecord::new(seq, crate::events::event_timestamp(&event), event)
     }
 
     #[tokio::test]
-    async fn replay_entity_imported_restores_view() {
-        let tmp = tempfile::tempdir().unwrap();
-        let log_path = tmp.path().join("events.jsonl");
-        let log = EventLog::new(log_path.to_string_lossy().into_owned());
-        let payload = json!({"kind":"t5","data":{"title":"Rust","display_name":"rust"}});
-        let event = Event::EntityImported {
-            id: "https://reddit.com/r/rust".into(),
-            ts: 1,
-            payload: payload.clone(),
-        };
-        log.append(&event_record(1, event)).await.unwrap();
-
-        let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
-        let projection_store = ProjectionStore::from_db(&db).unwrap();
-        super::catch_up_projection(&log, &entity_store, &projection_store)
-            .await
-            .unwrap();
-        let tree = projection_store
-            .scope_tree(&ItemId::parse("https://reddit.com/r/rust").unwrap())
-            .unwrap();
-        let node = tree
-            .get(&ItemId::parse("https://reddit.com/r/rust").unwrap())
-            .unwrap();
-        assert_eq!(node.data.as_ref().unwrap().title, "Rust");
-        let stored = entity_store
-            .get(&ItemId::parse("https://reddit.com/r/rust").unwrap())
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored["data"]["display_name"], "rust");
-    }
-
-    #[tokio::test]
-    async fn rebuild_projection_restores_nodes_payloads_and_cursor_from_jsonl() {
+    async fn rebuild_projection_drops_ephemeral_content() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().to_string_lossy().into_owned();
         let log = EventLog::new(format!("{data_dir}/events.jsonl"));
-        let payload = json!({"kind":"t5","data":{"title":"Rust","display_name":"rust"}});
+        log.append(&event_record(
+            1,
+            Event::NodeEnsured {
+                id: "https://reddit.com/r/rust".into(),
+            },
+        ))
+        .await
+        .unwrap();
+
+        let db = durable::Db::open(tmp.path().join("store")).unwrap();
+        let projection_store = ProjectionStore::from_db(&db).unwrap();
+        super::catch_up_projection(&log, &projection_store)
+            .await
+            .unwrap();
+        let id = ItemId::parse("https://reddit.com/r/rust").unwrap();
+        projection_store
+            .put_ephemeral_content(
+                &id,
+                &EntityData {
+                    title: "Rust".into(),
+                    author: None,
+                    body_html: None,
+                    thumb_url: None,
+                    image_url: None,
+                    link_url: None,
+                },
+                1,
+            )
+            .unwrap();
+        assert!(projection_store.load_node(&id).unwrap().unwrap().data.is_some());
+        drop(projection_store);
+        drop(db);
+
+        super::rebuild_projection(&AppConfig {
+            data_dir: data_dir.clone(),
+            event_log_path: format!("{data_dir}/events.jsonl"),
+            views_log_path: format!("{data_dir}/views.jsonl"),
+            port: 0,
+        })
+        .await
+        .unwrap();
+
+        let db = durable::Db::open(tmp.path().join("store")).unwrap();
+        let projection_store = ProjectionStore::from_db(&db).unwrap();
+        let node = projection_store.load_node(&id).unwrap().unwrap();
+        assert!(node.data.is_none());
+    }
+
+    #[tokio::test]
+    async fn rebuild_projection_restores_structure_and_cursor_from_jsonl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let log = EventLog::new(format!("{data_dir}/events.jsonl"));
         log.append_batch(&[
             event_record(
                 1,
@@ -305,16 +335,8 @@ mod tests {
             ),
             event_record(
                 2,
-                Event::EntityImported {
-                    id: "https://reddit.com/r/rust".into(),
-                    ts: 2,
-                    payload: payload.clone(),
-                },
-            ),
-            event_record(
-                3,
                 Event::VoteRecorded {
-                    ts: 3,
+                    ts: 2,
                     a: "alpha".into(),
                     b: "beta".into(),
                     ratio_left: 2,
@@ -328,11 +350,9 @@ mod tests {
 
         {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
-            let entity_store = EntityStore::from_db(&db).unwrap();
             let projection_store = ProjectionStore::from_db(&db).unwrap();
             projection_apply::apply_records(
                 &projection_store,
-                &entity_store,
                 &[event_record(
                     1,
                     Event::NodeEnsured {
@@ -352,13 +372,12 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(stats.applied, 3);
-        assert_eq!(stats.last_seq, 3);
+        assert_eq!(stats.applied, 2);
+        assert_eq!(stats.last_seq, 2);
 
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
         let projection_store = ProjectionStore::from_db(&db).unwrap();
-        assert_eq!(projection_store.last_applied_event_count().unwrap(), 3);
+        assert_eq!(projection_store.last_applied_event_count().unwrap(), 2);
         let tree = projection_store.scope_tree(&ItemId::root()).unwrap();
         let root = tree.get(&ItemId::root()).unwrap();
         assert!(root.children.contains(&ItemId::parse("alpha").unwrap()));
@@ -366,11 +385,6 @@ mod tests {
             .load_node(&ItemId::parse("https://reddit.com/r/stale").unwrap())
             .unwrap()
             .is_none());
-        let stored = entity_store
-            .get(&ItemId::parse("https://reddit.com/r/rust").unwrap())
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored["data"]["display_name"], "rust");
     }
 
     #[tokio::test]
@@ -389,12 +403,9 @@ mod tests {
 
         {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
-            let entity_store = EntityStore::from_db(&db).unwrap();
             let projection_store = ProjectionStore::from_db(&db).unwrap();
-            // Advance the projection cursor to 2 while the log tail is only 1.
             projection_apply::apply_records(
                 &projection_store,
-                &entity_store,
                 &[event_record(
                     2,
                     Event::NodeEnsured {
@@ -403,7 +414,7 @@ mod tests {
                 )],
             )
             .unwrap();
-            let err = super::catch_up_projection(&log, &entity_store, &projection_store)
+            let err = super::catch_up_projection(&log, &projection_store)
                 .await
                 .unwrap_err();
             assert!(err
@@ -432,10 +443,9 @@ mod tests {
         .unwrap();
 
         let db = durable::Db::open(tmp.path().join("store")).unwrap();
-        let entity_store = EntityStore::from_db(&db).unwrap();
         let projection_store = ProjectionStore::from_db(&db).unwrap();
 
-        super::catch_up_projection(&log, &entity_store, &projection_store)
+        super::catch_up_projection(&log, &projection_store)
             .await
             .unwrap();
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
@@ -444,7 +454,7 @@ mod tests {
         let first_edge_total: f64 = first_root.local_ranking.edges.values().sum();
         assert_eq!(first_edge_total, 3.0);
 
-        super::catch_up_projection(&log, &entity_store, &projection_store)
+        super::catch_up_projection(&log, &projection_store)
             .await
             .unwrap();
         assert_eq!(projection_store.last_applied_event_count().unwrap(), 1);
@@ -556,9 +566,8 @@ mod tests {
         .unwrap();
         {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
-            let entity_store = EntityStore::from_db(&db).unwrap();
             let projection_store = ProjectionStore::from_db(&db).unwrap();
-            super::catch_up_projection(&log, &entity_store, &projection_store)
+            super::catch_up_projection(&log, &projection_store)
                 .await
                 .unwrap();
         }
@@ -605,9 +614,8 @@ mod tests {
         .unwrap();
         {
             let db = durable::Db::open(tmp.path().join("store")).unwrap();
-            let entity_store = EntityStore::from_db(&db).unwrap();
             let projection_store = ProjectionStore::from_db(&db).unwrap();
-            super::catch_up_projection(&log, &entity_store, &projection_store)
+            super::catch_up_projection(&log, &projection_store)
                 .await
                 .unwrap();
         }

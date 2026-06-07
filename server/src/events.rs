@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 /// Schema version for JSONL log records. Bump when event semantics change.
 pub const CURRENT_LOG_SCHEMA: u32 = 1;
@@ -30,7 +29,7 @@ pub type ViewRecord = LogRecord<ViewEvent>;
 /// Wall-clock timestamp carried on the log envelope for domain events.
 pub fn event_timestamp(event: &Event) -> i64 {
     match event {
-        Event::VoteRecorded { ts, .. } | Event::EntityImported { ts, .. } => *ts,
+        Event::VoteRecorded { ts, .. } => *ts,
         Event::NodeEnsured { .. } => crate::fetch::now_ms(),
     }
 }
@@ -57,6 +56,4 @@ pub enum Event {
     },
     /// Register a node path in the fractal tree (no external fetch).
     NodeEnsured { id: String },
-    /// Full upstream API payload for a node (domain-specific view derived at replay/render time).
-    EntityImported { id: String, ts: i64, payload: Value },
 }
