@@ -44,6 +44,12 @@ pub enum HtmlUiAction {
         #[serde(default)]
         kind: FetchTarget,
     },
+    /// Refresh Reddit display content for ranked items in a scope's ranking panel.
+    FetchEntitiesBatch {
+        /// Parent scope [`ItemId`] string (for re-rendering `#ranking-panel`).
+        scope: String,
+        items: Vec<String>,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -155,6 +161,28 @@ mod tests {
                 ratio_right: 1,
                 scope: String::new(),
                 vote_compare: false,
+            }
+        );
+    }
+
+    #[test]
+    fn fetch_entities_batch_deserializes() {
+        let v = serde_json::json!({
+            "action": "fetch_entities_batch",
+            "scope": "https://reddit.com/r/rust",
+            "items": [
+                "https://reddit.com/r/rust/comments/abc/t",
+                "https://reddit.com/r/rust/comments/def/u"
+            ],
+        });
+        assert_eq!(
+            serde_json::from_value::<HtmlUiAction>(v).unwrap(),
+            HtmlUiAction::FetchEntitiesBatch {
+                scope: "https://reddit.com/r/rust".into(),
+                items: vec![
+                    "https://reddit.com/r/rust/comments/abc/t".into(),
+                    "https://reddit.com/r/rust/comments/def/u".into(),
+                ],
             }
         );
     }

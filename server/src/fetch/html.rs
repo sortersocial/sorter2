@@ -82,6 +82,32 @@ pub fn fetch_entity_panel(item: &ItemId, has_data: bool, fetching: bool) -> Mark
     }
 }
 
+/// Batch-refresh ranked Reddit posts shown in `#ranking-panel`.
+pub fn refresh_top_button(parent: &ItemId, ranked_ids: &[ItemId]) -> Markup {
+    let items: Vec<&str> = ranked_ids
+        .iter()
+        .filter(|id| is_fetchable(id))
+        .map(|id| id.as_str())
+        .collect();
+    if items.is_empty() {
+        return html! {};
+    }
+    let rpc = template_json_compact(&serde_json::json!({
+        "action": "fetch_entities_batch",
+        "scope": parent.as_str(),
+        "items": items,
+    }))
+    .expect("fetch_entities_batch rpc template");
+    html! {
+        div class="ranking-refresh-top" {
+            form method="post" action="/ui" class="fetch-entity-form" {
+                input type="hidden" name=(UI_RPC_FIELD) value=(rpc);
+                button type="submit" class="btn-secondary" { "Refresh top" }
+            }
+        }
+    }
+}
+
 /// Entity card + fetch control (morph target [`entity_section_selector`]).
 pub fn entity_section(item: &ItemId, node: &NodeState, fetching: bool) -> Markup {
     let has_data = node.data.is_some();

@@ -235,6 +235,10 @@ code {
   font-weight: 600;
 }
 
+.ranking-refresh-top {
+  margin-bottom: 0.75rem;
+}
+
 .rank-heading {
   margin: 0.75rem 0 0.25rem;
   text-transform: uppercase;

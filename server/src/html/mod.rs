@@ -9,7 +9,7 @@ use maud::{html, Markup, DOCTYPE};
 use std::collections::HashSet;
 
 use crate::{
-    fetch::html::entity_section,
+    fetch::html::{entity_section, refresh_top_button},
     form_template::template_json_compact,
     path_types::ItemId,
     ranking::{
@@ -391,19 +391,14 @@ pub fn ranking_panel(item: &ItemId, node: &NodeState, tree: &GlobalTree) -> Mark
     ranking_panel_with_highlights(item, node, tree, &HashSet::new())
 }
 
-pub fn ranking_panel_with_highlights(
-    item: &ItemId,
+fn compute_ranking_lists(
     node: &NodeState,
-    tree: &GlobalTree,
-    highlighted: &HashSet<ItemId>,
-) -> Markup {
+) -> (Vec<Vec<RankedItem>>, Vec<ItemId>, HashSet<ItemId>) {
     let group = &node.local_ranking;
     let n = group.idx_to_item.len();
     let (comps, _isolates) =
         connected_components_from_voted_pairs(n, group.voted_pairs.iter().copied());
 
-    // Each connected component of voted items is its own ranking; isolated and
-    // never-voted children fall into the "unranked" bucket below.
     let mut ranked_ids: HashSet<ItemId> = HashSet::new();
     let mut ranked_groups: Vec<Vec<RankedItem>> = Vec::new();
     for comp in &comps {
@@ -426,11 +421,27 @@ pub fn ranking_panel_with_highlights(
         .collect();
     unranked.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
+    (ranked_groups, unranked, ranked_ids)
+}
+
+pub fn ranking_panel_with_highlights(
+    item: &ItemId,
+    node: &NodeState,
+    tree: &GlobalTree,
+    highlighted: &HashSet<ItemId>,
+) -> Markup {
+    let (ranked_groups, unranked, _ranked_ids) = compute_ranking_lists(node);
+    let ranked_top: Vec<ItemId> = ranked_groups
+        .iter()
+        .flat_map(|group| group.iter().map(|r| r.item.clone()))
+        .collect();
+
     let has_ranked = !ranked_groups.is_empty();
     let multi = ranked_groups.len() > 1;
 
     html! {
         section id="ranking-panel" class="demo-panel" {
+            (refresh_top_button(item, &ranked_top))
             @if !has_ranked && unranked.is_empty() {
                 p class="muted" {
                     @if item.is_root() {

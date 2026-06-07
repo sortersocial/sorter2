@@ -140,3 +140,63 @@ pub fn fetch_entity_stream(
 
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
+
+/// Batch-refresh ranked items in a scope (`SelfEntity` per id), then morph `#ranking-panel`.
+pub fn fetch_entities_batch_stream(
+    state: AppState,
+    parent: ItemId,
+    items: Vec<ItemId>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    tracing::debug!(parent = %parent, count = items.len(), "fetch entities batch stream opened");
+
+    let stream = stream! {
+        if parent.is_root() && items.is_empty() {
+            yield Ok(js_event(error_js("Nothing to refresh.")));
+            return;
+        }
+
+        let fetchable: Vec<ItemId> = items
+            .into_iter()
+            .filter(|id| crate::reddit::is_fetchable(id))
+            .collect();
+        if fetchable.is_empty() {
+            yield Ok(js_event(error_js("No fetchable ranked items to refresh.")));
+            return;
+        }
+
+        tracing::debug!(parent = %parent, count = fetchable.len(), "batch fetch queuing jobs");
+
+        let mut pending = Vec::with_capacity(fetchable.len());
+        for id in fetchable {
+            let (tx, rx) = oneshot::channel();
+            state.queue_entity_fetch(id, FetchKind::SelfEntity, Some(tx));
+            pending.push(rx);
+        }
+
+        let mut failures = 0usize;
+        for rx in pending {
+            match rx.await {
+                Ok(FetchJobResult::Failed(_)) | Err(_) => failures += 1,
+                _ => {}
+            }
+        }
+
+        let tree = state
+            .scope_tree(&parent)
+            .unwrap_or_else(|_| crate::reducer::GlobalTree::new());
+        let empty = NodeState::default();
+        let node = tree.get(&parent).unwrap_or(&empty);
+        let mut b = JsBuilder::new().morph_selector(
+            "#ranking-panel",
+            ranking_panel(&parent, node, &tree),
+        );
+        if failures > 0 {
+            b = b.raw(&error_js(&format!(
+                "{failures} refresh request(s) failed — try again in a moment."
+            )));
+        }
+        yield Ok(js_event(b.build()));
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+}

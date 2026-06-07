@@ -94,6 +94,11 @@ pub async fn post_ui_html(
             let id = parse_item_param(&item);
             fetch::fetch_entity_stream(state, id, kind).into_response()
         }
+        HtmlUiAction::FetchEntitiesBatch { scope, items } => {
+            let parent = parent_from_scope(&scope);
+            let ids: Vec<ItemId> = items.iter().map(|s| parse_item_param(s)).collect();
+            fetch::fetch_entities_batch_stream(state, parent, ids).into_response()
+        }
     }
 }
 
