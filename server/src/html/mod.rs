@@ -9,7 +9,7 @@ use maud::{html, Markup, DOCTYPE};
 use std::collections::HashSet;
 
 use crate::{
-    fetch::html::entity_section,
+    fetch::html::entity_section_with_options,
     form_template::template_json_compact,
     path_types::ItemId,
     ranking::{
@@ -150,6 +150,13 @@ fn layout(title: &str, body: Markup, views: u64) -> Markup {
             }
         }
     }
+}
+
+fn reveal_nsfw(uri: &Uri) -> bool {
+    uri.query()
+        .unwrap_or("")
+        .split('&')
+        .any(|part| matches!(part, "reveal_nsfw=1" | "reveal_nsfw=true"))
 }
 
 pub(crate) fn item_href(id: &ItemId) -> String {
@@ -303,7 +310,10 @@ fn rank_list(
     tree: &GlobalTree,
 ) -> Markup {
     let min_score = items.iter().map(|r| r.score).fold(f64::INFINITY, f64::min);
-    let max_score = items.iter().map(|r| r.score).fold(f64::NEG_INFINITY, f64::max);
+    let max_score = items
+        .iter()
+        .map(|r| r.score)
+        .fold(f64::NEG_INFINITY, f64::max);
     html! {
         @if !items.is_empty() {
             h3 class="rank-heading muted small" { (label) }
@@ -483,6 +493,7 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
     let path = uri.path().to_string();
     state.views.increment(path.clone());
     let views = state.views.get_views(&path);
+    let reveal_nsfw = reveal_nsfw(&uri);
 
     let tree = state
         .scope_tree(&item)
@@ -502,7 +513,7 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
             h1 { "sorter" }
             (input_panel("", None))
             (breadcrumb_path(&item))
-            (entity_section(&item, node, false))
+            (entity_section_with_options(&item, node, false, reveal_nsfw))
             @if let Some(href) = vote_link {
                 p class="vote-cta" {
                     a class="btn-primary" href=(href) data-testid="vote-children" { "Vote on children" }

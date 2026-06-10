@@ -169,11 +169,7 @@ impl AppState {
         catch_up_projection(&event_log, &projection_store).await?;
         let next_seq = event_log.last_sequence().await? + 1;
 
-        let journal = JournalClient::spawn(
-            event_log.clone(),
-            projection_store.clone(),
-            next_seq,
-        );
+        let journal = JournalClient::spawn(event_log.clone(), projection_store.clone(), next_seq);
         let reddit = RedditBroker::spawn(
             journal.clone(),
             projection_store.clone(),
@@ -295,6 +291,7 @@ mod tests {
                     title: "Rust".into(),
                     author: None,
                     body_html: None,
+                    over_18: false,
                     thumb_url: None,
                     image_url: None,
                     link_url: None,
@@ -302,7 +299,12 @@ mod tests {
                 1,
             )
             .unwrap();
-        assert!(projection_store.load_node(&id).unwrap().unwrap().data.is_some());
+        assert!(projection_store
+            .load_node(&id)
+            .unwrap()
+            .unwrap()
+            .data
+            .is_some());
         drop(projection_store);
         drop(db);
 
@@ -510,7 +512,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("positive preference"));
-        assert_eq!(state.projection_store.last_applied_event_count().unwrap(), 0);
+        assert_eq!(
+            state.projection_store.last_applied_event_count().unwrap(),
+            0
+        );
     }
 
     #[tokio::test]

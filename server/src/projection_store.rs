@@ -11,8 +11,8 @@ use crate::{
     path_types::ItemId,
     reducer::{EntityData, GlobalTree, NodeState},
     storage_schema::{
-        entity_content_clear_writes, entity_content_writes, load_node_state, node, NodeSchemaFields,
-        Store, StoreFields,
+        entity_content_clear_writes, entity_content_writes, load_node_state, node,
+        NodeSchemaFields, Store, StoreFields,
     },
 };
 
@@ -258,6 +258,7 @@ mod tests {
                     title: "Rust".into(),
                     author: None,
                     body_html: None,
+                    over_18: false,
                     thumb_url: None,
                     image_url: None,
                     link_url: None,

@@ -218,6 +218,29 @@ code {
   word-break: break-all;
 }
 
+.nsfw-badge {
+  display: inline-block;
+  margin-right: 0.45rem;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid color-mix(in oklch, #ff8a8a 70%, var(--border));
+  color: #ffb4b4;
+  background: color-mix(in oklch, #5c1414 48%, transparent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.nsfw-gate {
+  margin: 0.75rem 0;
+  padding: 0.85rem;
+  border: 1px solid color-mix(in oklch, #ff8a8a 55%, var(--border));
+  background: color-mix(in oklch, #3b1212 34%, var(--panel));
+}
+
+.nsfw-gate p {
+  margin: 0 0 0.65rem;
+}
+
 .reddit-post-figure {
   margin: 0.75rem 0;
 }

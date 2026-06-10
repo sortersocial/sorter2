@@ -34,6 +34,8 @@ pub struct StoredEntityDataV1 {
     pub title: String,
     pub author: Option<String>,
     pub body_html: Option<String>,
+    #[serde(default)]
+    pub over_18: bool,
     pub thumb_url: Option<String>,
     pub image_url: Option<String>,
     pub link_url: Option<String>,
@@ -60,6 +62,7 @@ pub fn encode_entity_data(data: &EntityData) -> StoredEntityDataV1 {
         title: data.title.clone(),
         author: data.author.clone(),
         body_html: data.body_html.clone(),
+        over_18: data.over_18,
         thumb_url: data.thumb_url.clone(),
         image_url: data.image_url.clone(),
         link_url: data.link_url.clone(),
@@ -71,6 +74,7 @@ pub fn decode_entity_data(data: StoredEntityDataV1) -> EntityData {
         title: data.title,
         author: data.author,
         body_html: data.body_html,
+        over_18: data.over_18,
         thumb_url: data.thumb_url,
         image_url: data.image_url,
         link_url: data.link_url,
@@ -113,4 +117,27 @@ pub fn parse_stored_id(s: &str) -> Result<ItemId, String> {
     ItemId::from_storage(s)
         .or_else(|| ItemId::parse(s))
         .ok_or_else(|| format!("invalid stored item id: {s}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entity_data_roundtrip_preserves_over_18() {
+        let data = EntityData {
+            title: "adult post".into(),
+            author: Some("alice".into()),
+            body_html: Some("<p>body</p>".into()),
+            over_18: true,
+            thumb_url: Some("https://example.com/thumb.jpg".into()),
+            image_url: Some("https://example.com/image.jpg".into()),
+            link_url: Some("https://example.com/out".into()),
+        };
+
+        let decoded = decode_entity_data(encode_entity_data(&data));
+        assert!(decoded.over_18);
+        assert_eq!(decoded.title, data.title);
+        assert_eq!(decoded.image_url, data.image_url);
+    }
 }

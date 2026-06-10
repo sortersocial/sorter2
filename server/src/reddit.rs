@@ -9,8 +9,8 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    events::Event, fetch::now_ms, journal::JournalClient,
-    path_types::ItemId, projection_store::ProjectionStore,
+    events::Event, fetch::now_ms, journal::JournalClient, path_types::ItemId,
+    projection_store::ProjectionStore,
 };
 
 /// Reddit display content must not be retained longer than this (API policy).
@@ -624,6 +624,7 @@ fn parse_subreddit_about(v: &Value) -> Option<crate::reducer::EntityData> {
         title,
         author: None,
         body_html,
+        over_18: reddit_bool(data, &["over18", "over_18"]),
         thumb_url,
         image_url: None,
         link_url: None,
@@ -654,6 +655,7 @@ fn parse_post_listing(v: &Value) -> Option<crate::reducer::EntityData> {
         .and_then(|t| t.as_str())
         .filter(|s| s.starts_with("http"))
         .map(|s| s.to_string());
+    let over_18 = reddit_bool(child, &["over_18", "over18"]);
     let image_url = reddit_post_image_url(child);
     let link_url = reddit_post_link_url(child);
 
@@ -661,10 +663,16 @@ fn parse_post_listing(v: &Value) -> Option<crate::reducer::EntityData> {
         title,
         author,
         body_html,
+        over_18,
         thumb_url,
         image_url,
         link_url,
     })
+}
+
+fn reddit_bool(data: &Value, keys: &[&str]) -> bool {
+    keys.iter()
+        .any(|key| data.get(*key).and_then(|v| v.as_bool()).unwrap_or(false))
 }
 
 fn reddit_post_link_url(data: &Value) -> Option<String> {
@@ -737,22 +745,45 @@ mod tests {
             entity_view_from_payload(&ItemId::from_url("https://reddit.com/r/rust").unwrap(), &v)
                 .unwrap();
         assert_eq!(entity.title, "The Rust Programming Language");
+        assert!(!entity.over_18);
     }
 
     #[test]
     fn parse_post_listing_extracts_thumb_and_full_preview() {
         let json = include_str!("../../test/fixtures/reddit/post_preview.json");
         let v: Value = serde_json::from_str(json).unwrap();
-        let id =
-            ItemId::from_url("https://reddit.com/r/nsfw/comments/1tpy6a1/angel_eyes").unwrap();
+        let id = ItemId::from_url("https://reddit.com/r/nsfw/comments/1tpy6a1/angel_eyes").unwrap();
         let entity = entity_view_from_payload(&id, &v).unwrap();
         assert_eq!(entity.title, "Angel Eyes");
+        assert!(!entity.over_18);
         assert!(entity.thumb_url.as_ref().unwrap().contains("width=140"));
         assert!(entity.image_url.as_ref().unwrap().contains("auto=webp"));
         assert!(!entity.image_url.as_ref().unwrap().contains("redgifs"));
         assert_eq!(
             entity.link_url.as_deref(),
             Some("http://v3.redgifs.com/watch/impossibleprestigioushedgehog")
+        );
+    }
+
+    #[test]
+    fn parse_nsfw_post_listing_marks_over_18() {
+        let v = serde_json::json!({
+            "kind": "t3",
+            "data": {
+                "title": "adult post",
+                "author": "alice",
+                "over_18": true,
+                "thumbnail": "https://example.com/thumb.jpg",
+                "url": "https://i.redd.it/adult.jpg",
+                "selftext_html": "<p>adult body</p>"
+            }
+        });
+        let id = ItemId::from_url("https://reddit.com/r/nsfw/comments/abc/adult_post").unwrap();
+        let entity = entity_view_from_payload(&id, &v).unwrap();
+        assert!(entity.over_18);
+        assert_eq!(
+            entity.image_url.as_deref(),
+            Some("https://i.redd.it/adult.jpg")
         );
     }
 }
