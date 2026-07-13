@@ -25,7 +25,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 rand = "0.8"
 urlencoding = "2"
 url = "2"
-durable = { git = "https://github.com/tommy-mor/durable.git", branch = "main" }
+durable = { git = "https://github.com/tommy-mor/durable.git", rev = "a6c14eaa809693140eea0c22b07ef24d8e74adaf" }
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }

@@ -4,11 +4,13 @@ use axum::{
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
+use axum_extra::extract::cookie::CookieJar;
 use maud::{html, Markup, DOCTYPE};
 
 use std::collections::HashSet;
 
 use crate::{
+    auth::nav_pseudonym,
     fetch::html::entity_section,
     form_template::template_json_compact,
     path_types::ItemId,
@@ -126,7 +128,7 @@ pub fn now_ms() -> i64 {
     t.as_millis() as i64
 }
 
-pub(crate) fn layout(title: &str, body: Markup, views: u64) -> Markup {
+pub(crate) fn layout(title: &str, body: Markup, views: u64, nav_user: Option<&str>) -> Markup {
     let ver = asset_version();
     let css_href = format!("/static/sorter.css?v={ver}");
     let js_src = format!("/static/sorter_ui.js?v={ver}");
@@ -145,7 +147,15 @@ pub(crate) fn layout(title: &str, body: Markup, views: u64) -> Markup {
                     span class="view-meta muted" { (views) " views" }
                 }
                 nav class="top-nav" {
-                    a href="/login" { "login" }
+                    @if let Some(name) = nav_user {
+                        span class="top-nav-user" data-testid="nav-user" { (name) }
+                        a href="/login" { "account" }
+                        form class="top-nav-logout" method="post" action="/auth/logout" data-navigate="full" {
+                            button type="submit" data-testid="nav-logout" { "log out" }
+                        }
+                    } @else {
+                        a href="/login" data-testid="nav-login" { "login" }
+                    }
                 }
                 div id="errors" {}
                 (body)
@@ -481,10 +491,11 @@ pub fn input_panel(query: &str, error: Option<&str>) -> Markup {
     }
 }
 
-async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
+async fn item_page(state: AppState, uri: Uri, item: ItemId, jar: CookieJar) -> Markup {
     let path = uri.path().to_string();
     state.views.increment(path.clone());
     let views = state.views.get_views(&path);
+    let nav_user = nav_pseudonym(state.projection_store.db(), &jar);
 
     let tree = state
         .scope_tree(&item)
@@ -513,16 +524,24 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId) -> Markup {
             (ranking_panel(&item, node, &tree))
         }
     };
-    layout("sorter2", body, views)
+    layout("sorter2", body, views, nav_user.as_deref())
 }
 
-pub async fn home(State(state): State<AppState>, uri: Uri) -> impl IntoResponse {
-    item_page(state, uri, ItemId::root()).await
+pub async fn home(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    uri: Uri,
+) -> impl IntoResponse {
+    item_page(state, uri, ItemId::root(), jar).await
 }
 
-pub async fn browse(State(state): State<AppState>, uri: Uri) -> impl IntoResponse {
+pub async fn browse(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    uri: Uri,
+) -> impl IntoResponse {
     let item = ItemId::from_browse_uri(uri.path()).unwrap_or(ItemId::root());
-    item_page(state, uri, item).await
+    item_page(state, uri, item, jar).await
 }
 
 #[cfg(test)]

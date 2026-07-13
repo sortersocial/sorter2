@@ -10,11 +10,11 @@ Single Rust web app **`sorter2-server`**: pairwise voting, rank-centrality ranki
 
 - **Bootstrap script**: `./scripts/cursor-env-install.sh` (also run via `.cursor/environment.json` on Cloud Agent boot) installs Playwright Chromium, Babashka, bbin, `clj-paren-repair`, and warms the RocksDB build.
 - **Rust 1.88+** is required (`rust-toolchain.toml`). The Cloud Dockerfile and `cursor-env-install.sh` install **rustup** 1.88.0 first so `cargo` works while Playwright/Clojure bootstrap continues. Do not rely on `/usr/local/cargo` (often missing or stale).
-- **RocksDB / `durable`**: Ubuntu’s default `c++` is often **clang** without libc++ headers. Set **`CXX=g++`** and **`RUSTFLAGS="-C linker=g++"`** (or `CC=gcc`) before `cargo build` / `cargo test` — both are set in the bootstrap script and `.cursor/environment.json`.
+- **RocksDB / `durable`**: `durable` is an external git dependency (`tommy-mor/durable`, pinned by rev in `server/Cargo.toml`). Ubuntu’s default `c++` is often **clang** without libc++ headers. Set **`CXX=g++`** and **`RUSTFLAGS="-C linker=g++"`** (or `CC=gcc`) before `cargo build` / `cargo test` — both are set in the bootstrap script and `.cursor/environment.json`.
 - **System packages** for builds: `build-essential`, `g++`, `clang`, `libclang-dev`, `pkg-config`, `libssl-dev`, `openjdk-21-jre-headless` (for `reqwest` / OpenSSL, `librocksdb-sys`, `zstd-sys` / bindgen, and **bbin** / Clojure JVM). The bootstrap sets **`JAVA_HOME`** when Java is present.
 - **Clojure CLI 1.12.0.1530** (used in CI): install from https://clojure.org/guides/install_clojure — needed for `./scripts/clj-test.sh` / Kaocha tests.
 - **Babashka / bbin / clj-paren-repair**: installed by `cursor-env-install.sh` into `~/.local/bin` (bb tasks in `bb.edn`, delimiter repair for Clojure edits).
-- **Playwright** (Spel browser tests in `test/vote_compare.clj`): Chromium via `clojure -M -e "(com.microsoft.playwright.CLI/main ...)"` — run once after clone or use the bootstrap script.
+- **Playwright** (Spel browser tests in `test/vote_compare.clj` / `test/auth_login.clj`): Chromium via `clojure -M -e "(com.microsoft.playwright.CLI/main ...)"` — run once after clone or use the bootstrap script.
 
 ### Commands (see also `TEST.sh`)
 
@@ -34,13 +34,17 @@ Environment variables (defaults in `server/src/state.rs`):
 - `PORT` — default `8080`
 - `SORTER2_DATA_DIR` — default `./data` (created on startup)
 - `SORTER2_EVENT_LOG` — default `{data_dir}/events.jsonl`
+- `SORTER2_BASE_URL` — public origin (also drives Secure cookies when `https://`)
+- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` — GitHub OAuth (optional; login disabled if unset)
+- `SORTER2_ALLOW_MOCK_OAUTH=1` — allow `mock_user` on `/auth/github` (tests only)
 
 Health check: `GET /healthz` → `ok`.
 
-Core UI flow: `POST /ui` with form field `__rpc__` (JSON). Example vote:
+Core UI flow: `POST /ui` with form field `__rpc__` (JSON). Votes require a session cookie (sign in via `/login`). Example vote:
 
 ```bash
 curl -sf -X POST http://127.0.0.1:8080/ui \
+  --cookie "sorter2_session=..." \
   --data-urlencode '__rpc__={"action":"record_vote","a":"alpha","b":"beta","ratio_left":2,"ratio_right":1}'
 ```
 

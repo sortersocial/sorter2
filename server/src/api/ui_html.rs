@@ -71,10 +71,16 @@ pub async fn post_ui_html(
                 return resp;
             }
             let parent = parent_from_scope(&scope);
-            let actor = resolve_vote_actor(
+            let actor = match resolve_vote_actor(
                 state.projection_store.db(),
                 session_id_from_jar(&jar).as_deref(),
-            );
+            ) {
+                Ok(actor) => actor,
+                Err(_) => {
+                    return vote_auth_redirect(&state, &jar)
+                        .unwrap_or_else(|| login_redirect_js().into_response());
+                }
+            };
             if let Err(e) = state
                 .record_vote(&parent, &a, &b, ratio_left, ratio_right, &actor)
                 .await

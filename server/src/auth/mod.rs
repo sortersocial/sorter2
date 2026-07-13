@@ -26,7 +26,7 @@ use crate::{
     ui_action::UI_RPC_FIELD,
 };
 
-pub use session::{resolve_vote_actor, session_id_from_jar, VoteActor};
+pub use session::{nav_pseudonym, resolve_vote_actor, session_id_from_jar, VoteActor};
 
 pub fn base_url_from_env(port: u16) -> String {
     std::env::var("SORTER2_BASE_URL")
@@ -168,6 +168,10 @@ pub async fn login_page(
         "login · sorter2",
         login_body(session.as_ref(), &aliases, &providers),
         state.views.get_views("/login"),
+        session
+            .as_ref()
+            .filter(|s| !s.pseudonym.trim().is_empty())
+            .map(|s| s.pseudonym.as_str()),
     );
     (jar, Html(markup.into_string())).into_response()
 }
@@ -222,6 +226,7 @@ pub async fn alias_page(
             "choose alias · sorter2",
             body,
             state.views.get_views("/login/alias"),
+            None,
         )
         .into_string(),
     )
@@ -237,7 +242,12 @@ pub async fn github_start(
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let return_to = return_from_query_or_jar(&jar, query.return_to.as_deref());
     let state_token = session::new_oauth_state();
-    let url = oauth::authorize_url(&cfg, &state_token, query.mock_user.as_deref());
+    let mock_user = if config::mock_oauth_allowed() {
+        query.mock_user.as_deref()
+    } else {
+        None
+    };
+    let url = oauth::authorize_url(&cfg, &state_token, mock_user);
     let jar = jar
         .add(session::oauth_state_cookie_value(&state_token))
         .add(session::auth_return_cookie_value(&return_to));

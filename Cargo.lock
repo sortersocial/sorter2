@@ -414,7 +414,7 @@ dependencies = [
 [[package]]
 name = "durable"
 version = "0.2.0"
-source = "git+https://github.com/tommy-mor/durable.git?branch=main#a6c14eaa809693140eea0c22b07ef24d8e74adaf"
+source = "git+https://github.com/tommy-mor/durable.git?rev=a6c14eaa809693140eea0c22b07ef24d8e74adaf#a6c14eaa809693140eea0c22b07ef24d8e74adaf"
 dependencies = [
  "ciborium",
  "durable-derive",
@@ -426,7 +426,7 @@ dependencies = [
 [[package]]
 name = "durable-derive"
 version = "0.2.0"
-source = "git+https://github.com/tommy-mor/durable.git?branch=main#a6c14eaa809693140eea0c22b07ef24d8e74adaf"
+source = "git+https://github.com/tommy-mor/durable.git?rev=a6c14eaa809693140eea0c22b07ef24d8e74adaf#a6c14eaa809693140eea0c22b07ef24d8e74adaf"
 dependencies = [
  "proc-macro2",
  "quote",

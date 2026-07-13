@@ -4,11 +4,13 @@ use axum::{
     extract::{Query, State},
     response::{Html, IntoResponse},
 };
+use axum_extra::extract::cookie::CookieJar;
 use maud::{html, Markup};
 use serde::Deserialize;
 use std::collections::HashSet;
 
 use crate::{
+    auth::nav_pseudonym,
     fetch::html::entity_section,
     form_template::template_json_compact,
     html::{ranking_panel_with_highlights, scope_theme_style, JsBuilder},
@@ -262,6 +264,7 @@ fn suggest_next(
 
 pub async fn vote_page(
     State(state): State<AppState>,
+    jar: CookieJar,
     Query(q): Query<VoteQuery>,
 ) -> impl IntoResponse {
     let parent = parse_item_param(&q.parent);
@@ -329,8 +332,9 @@ pub async fn vote_page(
     let path = format!("/vote?parent={}", urlencoding::encode(parent.as_str()));
     state.views.increment(path.clone());
     let views = state.views.get_views(&path);
+    let nav_user = nav_pseudonym(state.projection_store.db(), &jar);
 
-    Html(layout(&title, body, views).into_string()).into_response()
+    Html(layout(&title, body, views, nav_user.as_deref()).into_string()).into_response()
 }
 
 #[cfg(test)]

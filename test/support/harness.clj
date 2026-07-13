@@ -43,6 +43,7 @@
          "SORTER2_VIEWS_LOG" (str data-dir "/views.jsonl")
          "PORT" (str app-port)
          "SORTER2_BASE_URL" (str "http://127.0.0.1:" app-port)
+         "SORTER2_ALLOW_MOCK_OAUTH" "1"
          "GITHUB_CLIENT_ID" "test-client"
          "GITHUB_CLIENT_SECRET" "test-secret"
          "GITHUB_OAUTH_BASE" (str "http://127.0.0.1:" oauth-port)
