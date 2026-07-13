@@ -661,6 +661,7 @@ pub fn map_children_url(id: &ItemId, api_base: &str) -> String {
 /// Parse a subreddit listing payload into `(child_id, child_payload)` entries.
 /// Each child id is the post's permalink under `reddit.com/…`, and the payload
 /// is the raw `{kind, data}` listing element (persisted per child).
+/// Pinned / stickied posts are skipped.
 fn parse_children(_parent: &ItemId, payload: &Value) -> Vec<(ItemId, Value)> {
     let mut out = Vec::new();
     let children = match payload.pointer("/data/children").and_then(|c| c.as_array()) {
@@ -668,6 +669,9 @@ fn parse_children(_parent: &ItemId, payload: &Value) -> Vec<(ItemId, Value)> {
         None => return out,
     };
     for child in children {
+        if child_is_pinned(child) {
+            continue;
+        }
         let permalink = match child.pointer("/data/permalink").and_then(|p| p.as_str()) {
             Some(p) if !p.is_empty() => p,
             _ => continue,
@@ -678,6 +682,15 @@ fn parse_children(_parent: &ItemId, payload: &Value) -> Vec<(ItemId, Value)> {
         }
     }
     out
+}
+
+fn child_is_pinned(child: &Value) -> bool {
+    let data = match child.get("data") {
+        Some(d) => d,
+        None => return false,
+    };
+    data.get("stickied").and_then(|v| v.as_bool()) == Some(true)
+        || data.get("pinned").and_then(|v| v.as_bool()) == Some(true)
 }
 
 fn parse_reddit_view(id: &ItemId, v: &Value) -> Option<crate::reducer::EntityData> {
@@ -851,6 +864,48 @@ mod tests {
         assert_eq!(
             entity.link_url.as_deref(),
             Some("http://v3.redgifs.com/watch/impossibleprestigioushedgehog")
+        );
+    }
+
+    #[test]
+    fn parse_children_skips_pinned_posts() {
+        let payload = serde_json::json!({
+            "kind": "Listing",
+            "data": {
+                "children": [
+                    {
+                        "kind": "t3",
+                        "data": {
+                            "title": "Official rules (pinned)",
+                            "permalink": "/r/rust/comments/pin/official_rules/",
+                            "stickied": true
+                        }
+                    },
+                    {
+                        "kind": "t3",
+                        "data": {
+                            "title": "Also pinned via pinned field",
+                            "permalink": "/r/rust/comments/pin2/also_pinned/",
+                            "pinned": true
+                        }
+                    },
+                    {
+                        "kind": "t3",
+                        "data": {
+                            "title": "Normal post",
+                            "permalink": "/r/rust/comments/aaa/normal_post/",
+                            "stickied": false
+                        }
+                    }
+                ]
+            }
+        });
+        let parent = ItemId::from_url("https://reddit.com/r/rust").unwrap();
+        let children = parse_children(&parent, &payload);
+        assert_eq!(children.len(), 1);
+        assert_eq!(
+            children[0].0.as_str(),
+            "https://reddit.com/r/rust/comments/aaa"
         );
     }
 }
