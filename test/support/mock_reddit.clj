@@ -12,7 +12,7 @@
 (defn- query-param [query key]
   (when query
     (some (fn [pair]
-            (let [[k v] (str/split pair "=" 2)]
+            (let [[k v] (str/split pair #"=" 2)]
               (when (= k key)
                 (URLDecoder/decode (or v "") "UTF-8"))))
           (str/split query #"&"))))
@@ -34,11 +34,11 @@
 
 (defn- send-redirect [^HttpExchange ex location]
   (.set (.getResponseHeaders ex) "Location" location)
-  (.sendResponseHeaders ex 302 -1)
+  (.sendResponseHeaders ex 302 0)
   (.close (.getResponseBody ex)))
 
 (defn- read-form [^HttpExchange ex]
-  (let [body (slurp (.getInputStream ex))]
+  (let [body (slurp (.getRequestBody ex))]
     {:code (query-param body "code")
      :grant (query-param body "grant_type")}))
 
@@ -48,7 +48,7 @@
           (str/replace #"^[Bb]earer " "")))
 
 (defn- parse-token-user [token]
-  (when (str/starts-with? token "mock:")
+  (when (and token (str/starts-with? token "mock:"))
     (parse-mock-user (subs token 5))))
 
 (defn start-mock-reddit
@@ -72,7 +72,7 @@
                        user (parse-mock-user (query-param query "mock_user"))
                        code (str "mock:" (:id user) ":" (:login user))
                        loc (str redirect-uri "?code=" (java.net.URLEncoder/encode code "UTF-8")
-                                "&state=" (java.net.URLEncoder/encode state "UTF-8"))]
+                                "&state=" (java.net.URLEncoder/encode (or state "") "UTF-8"))]
                    (send-redirect exchange loc))
 
                  (and (= method "POST") (str/ends-with? path "/api/v1/access_token"))

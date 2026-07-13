@@ -7,7 +7,7 @@
 (defn- query-param [query key]
   (when query
     (some (fn [pair]
-            (let [[k v] (str/split pair "=" 2)]
+            (let [[k v] (str/split pair #"=" 2)]
               (when (= k key)
                 (URLDecoder/decode (or v "") "UTF-8"))))
           (str/split query #"&"))))
@@ -31,11 +31,11 @@
 
 (defn- send-redirect [^HttpExchange ex location]
   (.set (.getResponseHeaders ex) "Location" location)
-  (.sendResponseHeaders ex 302 -1)
+  (.sendResponseHeaders ex 302 0)
   (.close (.getResponseBody ex)))
 
 (defn- read-form [^HttpExchange ex]
-  (let [body (slurp (.getInputStream ex))]
+  (let [body (slurp (.getRequestBody ex))]
     {:code (query-param body "code")
      :grant (query-param body "grant_type")}))
 
@@ -45,7 +45,7 @@
           (str/replace #"^[Bb]earer " "")))
 
 (defn- parse-token-user [token]
-  (when (str/starts-with? token "mock:")
+  (when (and token (str/starts-with? token "mock:"))
     (parse-mock-user (subs token 5))))
 
 (defn- authorize-redirect [exchange query]
@@ -55,7 +55,7 @@
         user (parse-mock-user mock-user)
         code (str "mock:" (:id user) ":" (:login user))
         loc (str redirect-uri "?code=" (java.net.URLEncoder/encode code "UTF-8")
-                 "&state=" (java.net.URLEncoder/encode state "UTF-8"))]
+                 "&state=" (java.net.URLEncoder/encode (or state "") "UTF-8"))]
     (send-redirect exchange loc)))
 
 (defn start-mock-oauth
@@ -65,49 +65,56 @@
         handler
         (proxy [HttpHandler] []
           (handle [^HttpExchange exchange]
-            (let [uri (.getRequestURI exchange)
-                  path (.getPath uri)
-                  query (.getQuery uri)
-                  method (.getRequestMethod exchange)]
-              (cond
-                ;; GitHub authorize
-                (str/ends-with? path "/login/oauth/authorize")
-                (authorize-redirect exchange query)
+            (try
+              (let [uri (.getRequestURI exchange)
+                    path (.getPath uri)
+                    query (.getQuery uri)
+                    method (.getRequestMethod exchange)]
+                (cond
+                  ;; GitHub authorize
+                  (str/ends-with? path "/login/oauth/authorize")
+                  (authorize-redirect exchange query)
 
-                ;; Reddit authorize
-                (str/ends-with? path "/api/v1/authorize")
-                (authorize-redirect exchange query)
+                  ;; Reddit authorize
+                  (str/ends-with? path "/api/v1/authorize")
+                  (authorize-redirect exchange query)
 
-                ;; GitHub token
-                (and (= method "POST") (str/ends-with? path "/login/oauth/access_token"))
-                (let [code (or (:code (read-form exchange)) "mock:1002:newbie")]
-                  (send-json exchange 200 (str "{\"access_token\":\"" code "\",\"token_type\":\"bearer\"}")))
+                  ;; GitHub token
+                  (and (= method "POST") (str/ends-with? path "/login/oauth/access_token"))
+                  (let [code (or (:code (read-form exchange)) "mock:1002:newbie")]
+                    (send-json exchange 200 (str "{\"access_token\":\"" code "\",\"token_type\":\"bearer\"}")))
 
-                ;; Reddit token (client_credentials for import + authorization_code for login)
-                (and (= method "POST") (str/ends-with? path "/api/v1/access_token"))
-                (let [form (read-form exchange)
-                      grant (or (:grant form) "")
-                      code (or (:code form) "mock:t2_test:redditor")]
-                  (if (= grant "client_credentials")
-                    (send-json exchange 200 "{\"access_token\":\"app-token\",\"token_type\":\"bearer\",\"expires_in\":3600}")
-                    (send-json exchange 200 (str "{\"access_token\":\"" code "\",\"token_type\":\"bearer\",\"expires_in\":3600}"))))
+                  ;; Reddit token (client_credentials for import + authorization_code for login)
+                  (and (= method "POST") (str/ends-with? path "/api/v1/access_token"))
+                  (let [form (read-form exchange)
+                        grant (or (:grant form) "")
+                        code (or (:code form) "mock:t2_test:redditor")]
+                    (if (= grant "client_credentials")
+                      (send-json exchange 200 "{\"access_token\":\"app-token\",\"token_type\":\"bearer\",\"expires_in\":3600}")
+                      (send-json exchange 200 (str "{\"access_token\":\"" code "\",\"token_type\":\"bearer\",\"expires_in\":3600}"))))
 
-                ;; GitHub user
-                (= path "/user")
-                (let [token (bearer-token exchange)
-                      user (or (parse-token-user token) {:id "1002" :login "newbie" :numeric? true})]
-                  (send-json exchange 200
-                             (str "{\"id\":" (:id user) ",\"login\":\"" (:login user) "\"}")))
+                  ;; GitHub user
+                  (= path "/user")
+                  (let [token (bearer-token exchange)
+                        user (or (parse-token-user token) {:id "1002" :login "newbie" :numeric? true})]
+                    (send-json exchange 200
+                               (str "{\"id\":" (:id user) ",\"login\":\"" (:login user) "\"}")))
 
-                ;; Reddit /api/v1/me
-                (str/ends-with? path "/api/v1/me")
-                (let [token (bearer-token exchange)
-                      user (or (parse-token-user token) {:id "t2_test" :login "redditor"})]
-                  (send-json exchange 200
-                             (str "{\"id\":\"" (:id user) "\",\"name\":\"" (:login user) "\"}")))
+                  ;; Reddit /api/v1/me
+                  (str/ends-with? path "/api/v1/me")
+                  (let [token (bearer-token exchange)
+                        user (or (parse-token-user token) {:id "t2_test" :login "redditor"})]
+                    (send-json exchange 200
+                               (str "{\"id\":\"" (:id user) "\",\"name\":\"" (:login user) "\"}")))
 
-                :else
-                (send-json exchange 404 "{\"error\":\"not found\"}")))))]
+                  :else
+                  (send-json exchange 404 "{\"error\":\"not found\"}")))
+              (catch Throwable t
+                (binding [*out* *err*]
+                  (println "mock-oauth handler error:" t))
+                (try
+                  (send-json exchange 500 "{\"error\":\"mock-oauth internal\"}")
+                  (catch Throwable _))))))]
     (.createContext server "/" handler)
     (.setExecutor server nil)
     (.start server)

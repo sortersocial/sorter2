@@ -14,27 +14,27 @@
 (defn- type-alias! [pg text]
   (page/evaluate pg
                  (.replace
-                  "(() => { const i = document.getElementById('alias-input'); const f = document.getElementById('alias-check-form'); if (!i || !f) return;
+                  "(() => { const i = document.getElementById('alias-input'); const f = document.getElementById('alias-check-form'); if (!i || !f) return Promise.resolve('missing-form');
                     i.value = __TEXT__;
                     const cf = document.getElementById('alias-claim-field'); if (cf) cf.value = i.value;
                     return fetch(f.action, { method: 'POST', credentials: 'same-origin',
                       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                       body: new URLSearchParams(new FormData(f)).toString() })
                       .then(function (r) { return r.text(); })
-                      .then(function (t) { eval(t); }); })()"
+                      .then(function (t) { eval(t); return document.getElementById('alias-status')?.textContent || ''; }); })()"
                   "__TEXT__"
-                  (pr-str text)))
-  (Thread/sleep 400))
+                  (pr-str text))))
 
-(defn- element-text [pg test-id]
+(defn- element-text [pg selector]
   (let [raw (page/evaluate pg
-                           (str "document.querySelector('[data-testid=\"" test-id "\"]')?.textContent || ''"))]
+                           (str "document.querySelector(" (pr-str selector) ")?.textContent || ''"))]
     (when (string? raw) (str/trim raw))))
 
 (defn- wait-for-text [pg test-id text timeout-ms]
-  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)
+        selector (str "[data-testid=\"" test-id "\"]")]
     (loop []
-      (let [got (or (element-text pg test-id) "")]
+      (let [got (or (element-text pg selector) "")]
         (cond
           (= got text) got
           (< (System/currentTimeMillis) deadline) (do (Thread/sleep 200) (recur))
