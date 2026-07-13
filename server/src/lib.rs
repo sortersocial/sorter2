@@ -1,4 +1,5 @@
 pub mod api;
+pub mod auth;
 pub mod event_log;
 pub mod events;
 pub mod fetch;
@@ -42,6 +43,12 @@ pub fn create_app(state: AppState) -> Router {
         .route("/~/*item_path", get(crate::html::browse))
         .route("/", get(crate::html::home))
         .route("/vote", get(crate::html::vote::vote_page))
+        .route("/login", get(crate::auth::login_page))
+        .route("/login/alias", get(crate::auth::alias_page))
+        .route("/auth/github", get(crate::auth::github_start))
+        .route("/auth/github/callback", get(crate::auth::github_callback))
+        .route("/auth/logout", post(crate::auth::logout))
+        .route("/auth/switch", post(crate::auth::switch_pseudonym))
         .route("/ui", post(crate::api::ui_html::post_ui_html))
         .with_state(state)
         .layer(TraceLayer::new_for_http())

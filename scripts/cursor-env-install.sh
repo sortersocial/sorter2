@@ -190,7 +190,6 @@ clojure -P -M
 clojure -M -e "(com.microsoft.playwright.CLI/main (into-array String [\"install\" \"chromium\" \"--with-deps\"]))"
 
 # Warm RocksDB + release server link (Clojure tests use release binary).
-cargo build -p durable --quiet
 cargo build --release --package sorter2-server --quiet
 
 echo "cursor-env-install: ok (bb=$(bb --version 2>/dev/null || echo missing), CXX=${CXX})"

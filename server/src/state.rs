@@ -227,6 +227,7 @@ impl AppState {
         b: &str,
         ratio_left: i32,
         ratio_right: i32,
+        actor: &crate::auth::VoteActor,
     ) -> Result<(), String> {
         let ts = crate::html::now_ms();
         let a_raw = a.trim();
@@ -251,16 +252,48 @@ impl AppState {
             return Err("invalid vote: need two distinct items".to_string());
         }
 
-        let event = Event::vote_recorded(
+        let event = Event::VoteRecorded {
             ts,
-            a_id.as_str(),
-            b_id.as_str(),
-            left,
-            right,
-            parent.as_str(),
-        );
+            a: a_id.as_str().to_string(),
+            b: b_id.as_str().to_string(),
+            ratio_left: left,
+            ratio_right: right,
+            scope: parent.as_str().to_string(),
+            pseudonym: actor.pseudonym.clone(),
+            trust_weight: actor.trust_weight,
+        };
 
         self.journal.append(event).await
+    }
+
+    /// Append identity events (OAuth link, pseudonym claim, etc.).
+    pub async fn append_identity_events(&self, events: Vec<Event>) -> Result<(), String> {
+        self.journal.append_many(events).await
+    }
+
+    pub async fn claim_pseudonym(
+        &self,
+        uuid: &str,
+        pseudonym: &str,
+    ) -> Result<(), String> {
+        let ts = crate::html::now_ms();
+        self.journal
+            .append(Event::PseudonymClaimed {
+                uuid: uuid.to_string(),
+                pseudonym: pseudonym.to_string(),
+                ts,
+            })
+            .await
+    }
+
+    /// Session id for the seeded default pseudonym (tests and local dev helpers).
+    pub fn create_default_session(&self) -> Result<String, String> {
+        crate::auth::session::create_session(
+            self.projection_store.db(),
+            crate::identity::DEFAULT_ACTOR_UUID,
+            crate::identity::DEFAULT_PSEUDONYM,
+        )
+        .map(|(id, _)| id)
     }
 }
 
@@ -497,7 +530,7 @@ mod tests {
         .await;
 
         let err = state
-            .record_vote(&ItemId::root(), "alpha", "beta", 0, 0)
+            .record_vote(&ItemId::root(), "alpha", "beta", 0, 0, &crate::auth::VoteActor::anon())
             .await
             .unwrap_err();
         assert!(err.contains("positive preference"));
@@ -517,7 +550,14 @@ mod tests {
         .await;
 
         state
-            .record_vote(&ItemId::root(), "alpha", "beta", 2, 1)
+            .record_vote(
+                &ItemId::root(),
+                "alpha",
+                "beta",
+                2,
+                1,
+                &crate::auth::VoteActor::anon(),
+            )
             .await
             .unwrap();
 
@@ -611,7 +651,14 @@ mod tests {
         };
         let second = AppState::new(cfg).await;
         second
-            .record_vote(&ItemId::root(), "alpha", "gamma", 3, 1)
+            .record_vote(
+                &ItemId::root(),
+                "alpha",
+                "gamma",
+                3,
+                1,
+                &crate::auth::VoteActor::anon(),
+            )
             .await
             .unwrap();
 

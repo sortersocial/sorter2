@@ -162,8 +162,36 @@
     update();
   }
 
+  function initAliasInput() {
+    var input = document.getElementById('alias-input');
+    var form = document.getElementById('alias-check-form');
+    var claimField = document.getElementById('alias-claim-field');
+    if (!input || !form) return;
+    var timer;
+    function syncClaimField() {
+      if (claimField) claimField.value = input.value || '';
+    }
+    function queueCheck() {
+      syncClaimField();
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        postUiForm(form);
+      }, 250);
+    }
+    input.addEventListener('input', queueCheck);
+    syncClaimField();
+  }
+
+  document.addEventListener('input', function (e) {
+    if (e.target && e.target.id === 'alias-input') {
+      var claimField = document.getElementById('alias-claim-field');
+      if (claimField) claimField.value = e.target.value || '';
+    }
+  });
+
   function initSorterUi() {
     initVoteSlider();
+    initAliasInput();
     document.addEventListener('submit', async function (e) {
       var f = e.target;
       if (!f || f.tagName !== 'FORM') return;

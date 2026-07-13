@@ -13,6 +13,16 @@ use crate::{
 
 pub const VOTE_RECORD_VERSION: u32 = 2;
 pub const ENTITY_DATA_VERSION: u32 = 1;
+pub const SESSION_DATA_VERSION: u32 = 1;
+
+/// Browser session stored in durable (operational; not event-logged).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionDataV1 {
+    pub version: u32,
+    pub uuid: String,
+    pub current_pseudonym: String,
+    pub expires_at: i64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Versioned<T> {

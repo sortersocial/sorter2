@@ -3,14 +3,20 @@ use axum::{
     response::{IntoResponse, Response},
     Form,
 };
+use axum_extra::extract::cookie::CookieJar;
 use std::collections::HashMap;
 
 use crate::{
+    auth::{
+        alias_status_js, alias_redirect_js, config, login_redirect_js, oauth, redirect_js, resolve_vote_actor,
+        session::{load_valid_session, session_has_pseudonym, session_id_from_jar},
+    },
     fetch,
     html::{input_panel, js_string_literal, ranking_panel, JsBuilder},
     parser::parse_reddit_url,
     path_types::ItemId,
     state::{parse_item_param, AppState},
+    storage_schema::pseudonym_owner,
     ui_action::{parse_html_ui_from_form, HtmlUiAction},
 };
 
@@ -30,8 +36,21 @@ fn parent_from_scope(scope: &str) -> ItemId {
     parse_item_param(scope)
 }
 
+fn vote_auth_redirect(state: &AppState, jar: &CookieJar) -> Option<Response> {
+    let db = state.projection_store.db();
+    let session = session_id_from_jar(jar)
+        .as_deref()
+        .and_then(|id| load_valid_session(db, id));
+    match session {
+        None => Some(login_redirect_js().into_response()),
+        Some(s) if !session_has_pseudonym(&s) => Some(alias_redirect_js().into_response()),
+        Some(_) => None,
+    }
+}
+
 pub async fn post_ui_html(
     State(state): State<AppState>,
+    jar: CookieJar,
     Form(form): Form<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let action = match parse_html_ui_from_form(&form) {
@@ -48,9 +67,16 @@ pub async fn post_ui_html(
             scope,
             vote_compare,
         } => {
+            if let Some(resp) = vote_auth_redirect(&state, &jar) {
+                return resp;
+            }
             let parent = parent_from_scope(&scope);
+            let actor = resolve_vote_actor(
+                state.projection_store.db(),
+                session_id_from_jar(&jar).as_deref(),
+            );
             if let Err(e) = state
-                .record_vote(&parent, &a, &b, ratio_left, ratio_right)
+                .record_vote(&parent, &a, &b, ratio_left, ratio_right, &actor)
                 .await
             {
                 return ui_js_warn(&e).into_response();
@@ -71,6 +97,58 @@ pub async fn post_ui_html(
             JsBuilder::new()
                 .morph_selector("#ranking-panel", panel)
                 .into_response()
+        }
+        HtmlUiAction::CheckPseudonym { pseudonym } => {
+            let db = state.projection_store.db();
+            let session_id = match session_id_from_jar(&jar) {
+                Some(id) => id,
+                None => return alias_status_js("sign in first", false).into_response(),
+            };
+            let session = match load_valid_session(db, &session_id) {
+                Some(s) => s,
+                None => return alias_status_js("session expired", false).into_response(),
+            };
+            match oauth::validate_pseudonym(&pseudonym) {
+                Err(msg) => alias_status_js(msg, false).into_response(),
+                Ok(name) => match pseudonym_owner(db, &name) {
+                    Ok(None) => alias_status_js("available", true).into_response(),
+                    Ok(Some(owner)) if owner == session.uuid => {
+                        alias_status_js("already yours", true).into_response()
+                    }
+                    Ok(Some(_)) => alias_status_js("taken", false).into_response(),
+                    Err(e) => ui_js_warn(&e.to_string()).into_response(),
+                },
+            }
+        }
+        HtmlUiAction::ClaimPseudonym {
+            pseudonym,
+            return_to,
+        } => {
+            let db = state.projection_store.db();
+            let session_id = match session_id_from_jar(&jar) {
+                Some(id) => id,
+                None => return login_redirect_js().into_response(),
+            };
+            let session = match load_valid_session(db, &session_id) {
+                Some(s) => s,
+                None => return login_redirect_js().into_response(),
+            };
+            let name = match oauth::validate_pseudonym(&pseudonym) {
+                Ok(n) => n,
+                Err(msg) => return alias_status_js(msg, false).into_response(),
+            };
+            if let Ok(Some(owner)) = pseudonym_owner(db, &name) {
+                if owner != session.uuid {
+                    return alias_status_js("taken", false).into_response();
+                }
+            } else if let Err(e) = state.claim_pseudonym(&session.uuid, &name).await {
+                return ui_js_warn(&e).into_response();
+            }
+            if let Err(e) = crate::auth::session::update_session_pseudonym(&db, &session_id, &name)
+            {
+                return ui_js_warn(&e).into_response();
+            }
+            redirect_js(&config::sanitize_return_to(&return_to)).into_response()
         }
         HtmlUiAction::ParseQuery { query } => match parse_reddit_url(&query) {
             Ok(item) => {

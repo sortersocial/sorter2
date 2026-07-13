@@ -14,7 +14,7 @@ use crate::{
     reducer::{EntityData, NodeState, ScopeVotes, VoteData, UuidVoteKey, uuid_vote_key},
     storage_dto::{
         decode_entity_data, decode_vote, encode_entity_data, encode_vote, parse_stored_id,
-        StoredEntityDataV1, StoredVoteV1,
+        SessionDataV1, StoredEntityDataV1, StoredVoteV1,
     },
 };
 
@@ -34,10 +34,73 @@ pub struct NodeSchema {
 #[allow(dead_code)]
 pub struct Store {
     pub nodes: Map<String, NodeSchema>,
+    pub sessions: Map<String, Leaf<SessionDataV1>>,
+    pub oauth_links: Map<String, Leaf<String>>,
     pub pseudonyms: Map<String, Leaf<String>>,
+    pub user_pseudonyms: Map<String, List<Leaf<String>>>,
+    pub user_weights: Map<String, Leaf<f64>>,
     pub proj_meta: Map<String, Leaf<u64>>,
     pub view_counts: Map<String, Leaf<u64>>,
     pub view_meta: Map<String, Leaf<u64>>,
+}
+
+pub fn encode_session(data: &SessionDataV1) -> SessionDataV1 {
+    data.clone()
+}
+
+pub fn decode_session(data: SessionDataV1) -> SessionDataV1 {
+    data
+}
+
+pub fn oauth_link_key(provider: &str, provider_id: &str) -> String {
+    format!("{provider}:{provider_id}")
+}
+
+pub fn user_trust_weight(db: &Db, uuid: &str) -> durable::Result<f64> {
+    Ok(Store::root()
+        .user_weights()
+        .key(&uuid.to_string())
+        .get(db)?
+        .unwrap_or(1.0))
+}
+
+pub fn load_session(db: &Db, session_id: &str) -> durable::Result<Option<SessionDataV1>> {
+    Store::root()
+        .sessions()
+        .key(&session_id.to_string())
+        .get(db)
+}
+
+pub fn write_session(batch: &mut Batch, session_id: &str, data: &SessionDataV1) {
+    batch.write(
+        Store::root()
+            .sessions()
+            .key(&session_id.to_string())
+            .set(&encode_session(data)),
+    );
+}
+
+pub fn delete_session(batch: &mut Batch, session_id: &str) {
+    batch.write(
+        Store::root()
+            .sessions()
+            .key(&session_id.to_string())
+            .delete(),
+    );
+}
+
+pub fn pseudonym_owner(db: &Db, pseudonym: &str) -> durable::Result<Option<String>> {
+    Store::root()
+        .pseudonyms()
+        .key(&pseudonym.to_string())
+        .get(db)
+}
+
+pub fn oauth_link_owner(db: &Db, provider: &str, provider_id: &str) -> durable::Result<Option<String>> {
+    Store::root()
+        .oauth_links()
+        .key(&oauth_link_key(provider, provider_id))
+        .get(db)
 }
 
 pub const RECENT_VOTES_CAP: u64 = 200;

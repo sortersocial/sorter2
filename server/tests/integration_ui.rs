@@ -3,12 +3,13 @@ use std::net::SocketAddr;
 
 use axum::Router;
 use sorter2_server::{
+    auth::session::SESSION_COOKIE,
     create_app, create_app_state, path_types::ItemId, state::AppConfig, ui_action::UI_RPC_FIELD,
 };
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 
-async fn start_test_server() -> (SocketAddr, TempDir) {
+async fn start_test_server() -> (SocketAddr, TempDir, String) {
     let tmp = TempDir::new().unwrap();
     let data = tmp.path().to_string_lossy().into_owned();
     let cfg = AppConfig {
@@ -18,6 +19,8 @@ async fn start_test_server() -> (SocketAddr, TempDir) {
         port: 0,
     };
     let state = create_app_state(cfg).await;
+    let session_id = state.create_default_session().unwrap();
+    let session_cookie = format!("{SESSION_COOKIE}={session_id}");
     let app: Router = create_app(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -25,12 +28,12 @@ async fn start_test_server() -> (SocketAddr, TempDir) {
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    (addr, tmp)
+    (addr, tmp, session_cookie)
 }
 
 #[tokio::test]
 async fn post_ui_vote_compare_morphs_edge_history() {
-    let (addr, _tmp) = start_test_server().await;
+    let (addr, _tmp, session_cookie) = start_test_server().await;
     let parent = "reddit.com/r/rust";
     let a = "reddit.com/r/rust/comments/aaa/announcing_rust_199";
     let b = "reddit.com/r/rust/comments/bbb/what_are_you_working_on";
@@ -53,6 +56,7 @@ async fn post_ui_vote_compare_morphs_edge_history() {
     let client = reqwest::Client::new();
     let body = client
         .post(format!("http://{addr}/ui"))
+        .header("Cookie", &session_cookie)
         .form(&form)
         .send()
         .await
@@ -85,7 +89,7 @@ async fn post_ui_vote_compare_morphs_edge_history() {
 
 #[tokio::test]
 async fn post_ui_record_vote_morphs_ranking_and_persists() {
-    let (addr, tmp) = start_test_server().await;
+    let (addr, tmp, session_cookie) = start_test_server().await;
     let rpc = serde_json::json!({
         "action": "record_vote",
         "a": "alpha",
@@ -100,6 +104,7 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
     let client = reqwest::Client::new();
     let body = client
         .post(format!("http://{addr}/ui"))
+        .header("Cookie", &session_cookie)
         .form(&form)
         .send()
         .await
@@ -139,7 +144,7 @@ async fn post_ui_record_vote_morphs_ranking_and_persists() {
 
 #[tokio::test]
 async fn browse_url_renders_subreddit_page() {
-    let (addr, _tmp) = start_test_server().await;
+    let (addr, _tmp, _session_cookie) = start_test_server().await;
     let client = reqwest::Client::new();
     let html = client
         .get(format!("http://{addr}/~/https://reddit.com/r/rust"))
@@ -155,7 +160,7 @@ async fn browse_url_renders_subreddit_page() {
 
 #[tokio::test]
 async fn vote_page_renders_live_ranking_sidebar() {
-    let (addr, _tmp) = start_test_server().await;
+    let (addr, _tmp, session_cookie) = start_test_server().await;
     let client = reqwest::Client::new();
     let seed_rpc = serde_json::json!({
         "action": "record_vote",
@@ -169,6 +174,7 @@ async fn vote_page_renders_live_ranking_sidebar() {
     form.insert(UI_RPC_FIELD.to_string(), seed_rpc);
     client
         .post(format!("http://{addr}/ui"))
+        .header("Cookie", &session_cookie)
         .form(&form)
         .send()
         .await
@@ -199,7 +205,7 @@ async fn vote_page_renders_live_ranking_sidebar() {
 
 #[tokio::test]
 async fn post_ui_parse_query_redirects_to_subreddit() {
-    let (addr, _tmp) = start_test_server().await;
+    let (addr, _tmp, _session_cookie) = start_test_server().await;
     let rpc = serde_json::json!({
         "action": "parse_query",
         "query": "r/rust"

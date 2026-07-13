@@ -126,7 +126,7 @@ pub fn now_ms() -> i64 {
     t.as_millis() as i64
 }
 
-fn layout(title: &str, body: Markup, views: u64) -> Markup {
+pub(crate) fn layout(title: &str, body: Markup, views: u64) -> Markup {
     let ver = asset_version();
     let css_href = format!("/static/sorter.css?v={ver}");
     let js_src = format!("/static/sorter_ui.js?v={ver}");
@@ -143,6 +143,9 @@ fn layout(title: &str, body: Markup, views: u64) -> Markup {
             body class="home" {
                 @if views > 0 {
                     span class="view-meta muted" { (views) " views" }
+                }
+                nav class="top-nav" {
+                    a href="/login" { "login" }
                 }
                 div id="errors" {}
                 (body)

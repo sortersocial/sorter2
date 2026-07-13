@@ -31,6 +31,9 @@ pub fn event_timestamp(event: &Event) -> i64 {
     match event {
         Event::VoteRecorded { ts, .. } => *ts,
         Event::NodeEnsured { .. } => crate::fetch::now_ms(),
+        Event::PrincipalCreated { ts, .. } => *ts,
+        Event::OauthLinked { ts, .. } => *ts,
+        Event::PseudonymClaimed { ts, .. } => *ts,
     }
 }
 
@@ -57,6 +60,24 @@ pub enum Event {
     },
     /// Register a node path in the fractal tree (no external fetch).
     NodeEnsured { id: String },
+
+    /// New trust anchor (first identity event for a human).
+    PrincipalCreated { uuid: String, ts: i64 },
+
+    /// OAuth provider account linked to an existing UUID.
+    OauthLinked {
+        uuid: String,
+        provider: String,
+        provider_id: String,
+        ts: i64,
+    },
+
+    /// Display pseudonym claimed by a UUID (global uniqueness enforced at apply).
+    PseudonymClaimed {
+        uuid: String,
+        pseudonym: String,
+        ts: i64,
+    },
 }
 
 impl Event {

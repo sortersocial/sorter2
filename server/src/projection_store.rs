@@ -18,7 +18,7 @@ use crate::{
 
 const PROJECTION_CURSOR_KEY: &str = "cursor";
 const PROJECTION_SCHEMA_KEY: &str = "schema_version";
-const PROJECTION_SCHEMA_VERSION: u64 = 5;
+const PROJECTION_SCHEMA_VERSION: u64 = 6;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectionStoreError {

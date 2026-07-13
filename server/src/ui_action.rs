@@ -44,6 +44,14 @@ pub enum HtmlUiAction {
         #[serde(default)]
         kind: FetchTarget,
     },
+    /// Live alias availability check (alias chooser page).
+    CheckPseudonym { pseudonym: String },
+    /// Claim first alias after OAuth, then redirect.
+    ClaimPseudonym {
+        pseudonym: String,
+        #[serde(default)]
+        return_to: String,
+    },
 }
 
 #[derive(Debug, Error)]

@@ -7,11 +7,13 @@
 use crate::{
     event_log::EventLogError,
     events::{Event, EventRecord},
-    identity::resolve_actor_uuid,
+    auth::identity::{trust_weight_after_link, BASE_TRUST_WEIGHT},
     path_types::ItemId,
     projection_store::ProjectionStore,
     reducer::VoteData,
-    storage_schema::{ensure_path_writes, vote_writes},
+    storage_schema::{
+        ensure_path_writes, oauth_link_key, pseudonym_owner, vote_writes, Store, StoreFields,
+    },
 };
 
 fn parse_event_id(id: &str) -> Result<ItemId, EventLogError> {
@@ -72,7 +74,7 @@ pub fn apply_records(
                     *trust_weight,
                 )
                 .ok_or_else(|| EventLogError::Apply(format!("invalid vote event: {a} vs {b}")))?;
-                let actor_uuid = resolve_actor_uuid(db, pseudonym)
+                let actor_uuid = crate::identity::resolve_actor_uuid(db, pseudonym)
                     .map_err(|e| EventLogError::Apply(e))?;
                 let parent = parent_from_event_scope(scope);
                 vote_writes(&mut batch, &parent, &vote, &actor_uuid)
@@ -81,6 +83,72 @@ pub fn apply_records(
             Event::NodeEnsured { id } => {
                 let parsed = parse_event_id(id)?;
                 ensure_path_writes(&mut batch, &parsed);
+            }
+            Event::PrincipalCreated { uuid, .. } => {
+                batch.write(
+                    Store::root()
+                        .user_weights()
+                        .key(&uuid.clone())
+                        .set(&BASE_TRUST_WEIGHT),
+                );
+            }
+            Event::OauthLinked {
+                uuid,
+                provider,
+                provider_id,
+                ..
+            } => {
+                let link_key = oauth_link_key(provider, provider_id);
+                if let Some(existing) = Store::root()
+                    .oauth_links()
+                    .key(&link_key)
+                    .get(db)
+                    .map_err(|e| EventLogError::Apply(e.to_string()))?
+                {
+                    if existing != *uuid {
+                        return Err(EventLogError::Apply(format!(
+                            "oauth link {link_key} already owned by {existing}"
+                        )));
+                    }
+                } else {
+                    batch.write(Store::root().oauth_links().key(&link_key).set(uuid));
+                    let current = Store::root()
+                        .user_weights()
+                        .key(&uuid.clone())
+                        .get(db)
+                        .map_err(|e| EventLogError::Apply(e.to_string()))?
+                        .unwrap_or(BASE_TRUST_WEIGHT);
+                    batch.write(
+                        Store::root()
+                            .user_weights()
+                            .key(&uuid.clone())
+                            .set(&trust_weight_after_link(current)),
+                    );
+                }
+            }
+            Event::PseudonymClaimed { uuid, pseudonym, .. } => {
+                if let Some(owner) = pseudonym_owner(db, pseudonym)
+                    .map_err(|e| EventLogError::Apply(e.to_string()))?
+                {
+                    if owner != *uuid {
+                        return Err(EventLogError::Apply(format!(
+                            "pseudonym {pseudonym} already claimed by {owner}"
+                        )));
+                    }
+                } else {
+                    batch.write(
+                        Store::root()
+                            .pseudonyms()
+                            .key(&pseudonym.clone())
+                            .set(uuid),
+                    );
+                    batch
+                        .push(
+                            &Store::root().user_pseudonyms().key(&uuid.clone()),
+                            &pseudonym.clone(),
+                        )
+                        .map_err(|e| EventLogError::Apply(e.to_string()))?;
+                }
             }
         }
         last_seq = record.seq;
@@ -92,4 +160,106 @@ pub fn apply_records(
         .map_err(|e| EventLogError::Apply(e.to_string()))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        events::EventRecord,
+        identity::resolve_actor_uuid,
+        projection_store::ProjectionStore,
+        storage_schema::{oauth_link_owner, user_trust_weight, StoreFields},
+    };
+
+    fn record(seq: u64, event: Event) -> EventRecord {
+        EventRecord::new(seq, crate::events::event_timestamp(&event), event)
+    }
+
+    #[test]
+    fn identity_events_project_pseudonym_and_oauth_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = durable::Db::open(dir.path()).unwrap();
+        let store = ProjectionStore::from_db(&db).unwrap();
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let ts = 1;
+
+        apply_records(
+            &store,
+            &[
+                record(
+                    1,
+                    Event::PrincipalCreated {
+                        uuid: uuid.into(),
+                        ts,
+                    },
+                ),
+                record(
+                    2,
+                    Event::OauthLinked {
+                        uuid: uuid.into(),
+                        provider: "github".into(),
+                        provider_id: "42".into(),
+                        ts,
+                    },
+                ),
+                record(
+                    3,
+                    Event::PseudonymClaimed {
+                        uuid: uuid.into(),
+                        pseudonym: "octocat".into(),
+                        ts,
+                    },
+                ),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            oauth_link_owner(store.db(), "github", "42").unwrap(),
+            Some(uuid.to_string())
+        );
+        assert_eq!(resolve_actor_uuid(store.db(), "octocat").unwrap(), uuid);
+        assert_eq!(user_trust_weight(store.db(), uuid).unwrap(), 1.5);
+        let aliases = Store::root()
+            .user_pseudonyms()
+            .key(&uuid.to_string())
+            .iter(store.db())
+            .unwrap();
+        assert_eq!(aliases, vec!["octocat".to_string()]);
+    }
+
+    #[test]
+    fn pseudonym_claim_rejects_second_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = durable::Db::open(dir.path()).unwrap();
+        let store = ProjectionStore::from_db(&db).unwrap();
+
+        apply_records(
+            &store,
+            &[record(
+                1,
+                Event::PseudonymClaimed {
+                    uuid: "uuid-a".into(),
+                    pseudonym: "taken".into(),
+                    ts: 1,
+                },
+            )],
+        )
+        .unwrap();
+
+        let err = apply_records(
+            &store,
+            &[record(
+                2,
+                Event::PseudonymClaimed {
+                    uuid: "uuid-b".into(),
+                    pseudonym: "taken".into(),
+                    ts: 2,
+                },
+            )],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("already claimed"));
+    }
 }
