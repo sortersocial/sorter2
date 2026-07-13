@@ -94,55 +94,161 @@ fn alias_list(db: &durable::Db, uuid: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn login_body(
-    session: Option<&session::SessionActor>,
-    aliases: &[String],
-    providers: &[(&str, String)],
-) -> Markup {
+fn alias_claim_forms(return_to: &str, submit_label: &str) -> Result<Markup, StatusCode> {
+    let check_rpc = template_json_compact(&serde_json::json!({
+        "action": "check_pseudonym",
+        "pseudonym": {"$form": "pseudonym"},
+    }))
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let claim_rpc = template_json_compact(&serde_json::json!({
+        "action": "claim_pseudonym",
+        "pseudonym": {"$form": "pseudonym"},
+        "return_to": return_to,
+    }))
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(html! {
+        div class="alias-claim" {
+            form id="alias-check-form" method="POST" action="/ui" {
+                input type="hidden" name=(UI_RPC_FIELD) value=(check_rpc);
+                label for="alias-input" { "alias" }
+                input type="text" id="alias-input" name="pseudonym" autocomplete="off"
+                    data-testid="alias-input" maxlength="64" placeholder="letters, numbers, _ -";
+                p id="alias-status" class="muted" data-testid="alias-status" { "type to check availability" }
+            }
+            form id="alias-claim-form" method="POST" action="/ui" {
+                input type="hidden" name=(UI_RPC_FIELD) value=(claim_rpc);
+                input type="hidden" name="pseudonym" id="alias-claim-field" value="";
+                button type="submit" class="btn-primary" data-testid="alias-claim" { (submit_label) }
+            }
+        }
+    })
+}
+
+fn signed_out_body(providers: &[(&str, String)]) -> Markup {
     html! {
         main class="panel login-page" {
-            div class="login-grid" {
-                section class="login-oauth" {
-                    h1 { "sign in" }
-                    @if providers.is_empty() {
-                        p class="muted" {
-                            "OAuth is not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET."
-                        }
-                    } @else {
-                        ul class="oauth-provider-list" {
-                            @for (name, href) in providers {
-                                li {
-                                    a href=(href) class="button oauth-provider" data-testid=(format!("oauth-{}", name.to_lowercase())) {
-                                        (format!("Continue with {name}"))
-                                    }
+            section class="login-section" {
+                h1 { "sign in" }
+                p class="muted" { "link an account to vote under a lasting alias" }
+                @if providers.is_empty() {
+                    p class="muted" {
+                        "OAuth is not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET."
+                    }
+                } @else {
+                    ul class="oauth-provider-list" {
+                        @for (name, href) in providers {
+                            li {
+                                a href=(href) class="btn-primary oauth-provider"
+                                    data-testid=(format!("oauth-{}", name.to_lowercase())) {
+                                    (format!("Continue with {name}"))
                                 }
-                            }
-                        }
-                    }
-                    @if let Some(actor) = session {
-                        p class="muted small" {
-                            "session active · weight " (format!("{:.1}", actor.trust_weight))
-                        }
-                        form method="post" action="/auth/logout" data-navigate="full" {
-                            button type="submit" { "log out" }
-                        }
-                    }
-                }
-                section class="login-aliases" {
-                    h2 { "your aliases" }
-                    ul id="alias-list" class="alias-list" {
-                        @if aliases.is_empty() {
-                            li class="muted" data-testid="alias-list-empty" { "none yet" }
-                        } @else {
-                            @for alias in aliases {
-                                li { (alias) }
                             }
                         }
                     }
                 }
             }
-            p { a href="/" { "← back" } }
+            p class="login-back" { a href="/" { "← back" } }
         }
+    }
+}
+
+fn account_body(
+    actor: &session::SessionActor,
+    aliases: &[String],
+    providers: &[(&str, String)],
+    claim_forms: Markup,
+) -> Markup {
+    let current = actor.pseudonym.trim();
+    html! {
+        main class="panel login-page account-page" {
+            section class="login-section" {
+                h1 { "account" }
+                @if current.is_empty() {
+                    p class="muted" { "finish setup by choosing an alias below" }
+                } @else {
+                    p class="account-current" {
+                        "voting as "
+                        strong data-testid="account-current" { (current) }
+                    }
+                }
+                p class="muted small" data-testid="account-weight" {
+                    "trust weight " (format!("{:.1}", actor.trust_weight))
+                    " · rises when you link more OAuth providers"
+                }
+            }
+
+            section class="login-section" {
+                h2 { "aliases" }
+                @if aliases.is_empty() {
+                    p class="muted" data-testid="alias-list-empty" { "none yet — claim one below" }
+                } @else {
+                    ul id="alias-list" class="alias-list" data-testid="alias-list" {
+                        @for alias in aliases {
+                            @let is_current = alias == current;
+                            li class=(if is_current { "alias-item alias-current" } else { "alias-item" }) {
+                                span class="alias-name" { (alias) }
+                                @if is_current {
+                                    span class="alias-badge" data-testid="alias-current-badge" { "current" }
+                                } @else {
+                                    form class="alias-switch" method="post" action="/auth/switch"
+                                        data-navigate="full" {
+                                        input type="hidden" name="pseudonym" value=(alias);
+                                        button type="submit" class="btn-secondary"
+                                            data-testid=(format!("alias-switch-{alias}")) {
+                                            "use"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            section class="login-section" {
+                h2 { "add alias" }
+                p class="muted small" { "each alias is unique across sorter2" }
+                (claim_forms)
+            }
+
+            @if !providers.is_empty() {
+                section class="login-section" {
+                    h2 { "linked sign-in" }
+                    p class="muted small" { "sign in again with the same provider to return to this account" }
+                    ul class="oauth-provider-list" {
+                        @for (name, href) in providers {
+                            li {
+                                a href=(href) class="btn-secondary oauth-provider"
+                                    data-testid=(format!("oauth-relink-{}", name.to_lowercase())) {
+                                    (format!("Re-link {name}"))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            section class="login-section login-actions" {
+                form method="post" action="/auth/logout" data-navigate="full" {
+                    button type="submit" class="btn-secondary" data-testid="account-logout" { "log out" }
+                }
+            }
+
+            p class="login-back" { a href="/" { "← back" } }
+        }
+    }
+}
+
+fn login_body(
+    session: Option<&session::SessionActor>,
+    aliases: &[String],
+    providers: &[(&str, String)],
+    claim_forms: Option<Markup>,
+) -> Markup {
+    match (session, claim_forms) {
+        (Some(actor), Some(forms)) => account_body(actor, aliases, providers, forms),
+        _ => signed_out_body(providers),
     }
 }
 
@@ -150,7 +256,7 @@ pub async fn login_page(
     State(state): State<AppState>,
     jar: CookieJar,
     Query(query): Query<LoginQuery>,
-) -> Response {
+) -> Result<Response, StatusCode> {
     let return_to = return_from_query_or_jar(&jar, query.return_to.as_deref());
     let jar = jar.add(session::auth_return_cookie_value(&return_to));
 
@@ -164,16 +270,26 @@ pub async fn login_page(
         .unwrap_or_default();
     let providers = oauth_providers(&base_url_from_env(state.cfg.port), &return_to);
 
+    let claim_forms = if session.is_some() {
+        Some(alias_claim_forms("/login", "claim alias")?)
+    } else {
+        None
+    };
+
     let markup = layout(
-        "login · sorter2",
-        login_body(session.as_ref(), &aliases, &providers),
+        if session.is_some() {
+            "account · sorter2"
+        } else {
+            "login · sorter2"
+        },
+        login_body(session.as_ref(), &aliases, &providers, claim_forms),
         state.views.get_views("/login"),
         session
             .as_ref()
             .filter(|s| !s.pseudonym.trim().is_empty())
             .map(|s| s.pseudonym.as_str()),
     );
-    (jar, Html(markup.into_string())).into_response()
+    Ok((jar, Html(markup.into_string())).into_response())
 }
 
 pub async fn alias_page(
@@ -186,38 +302,17 @@ pub async fn alias_page(
     let db = state.projection_store.db();
     let session = session::load_valid_session(db, &session_id).ok_or(StatusCode::UNAUTHORIZED)?;
     if session::session_has_pseudonym(&session) {
-        return Ok(Redirect::to(&return_to).into_response());
+        // Already onboarded — manage aliases on the account page.
+        return Ok(Redirect::to("/login").into_response());
     }
 
-    let check_rpc = template_json_compact(&serde_json::json!({
-        "action": "check_pseudonym",
-        "pseudonym": {"$form": "pseudonym"},
-    }))
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let claim_rpc = template_json_compact(&serde_json::json!({
-        "action": "claim_pseudonym",
-        "pseudonym": {"$form": "pseudonym"},
-        "return_to": return_to,
-    }))
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
+    let claim_forms = alias_claim_forms(&return_to, "continue")?;
     let body = html! {
         main class="panel alias-page" {
             h1 { "choose alias" }
             p class="muted" { "pick a unique display name for your votes" }
-            form id="alias-check-form" method="POST" action="/ui" {
-                input type="hidden" name=(UI_RPC_FIELD) value=(check_rpc);
-                label { "alias" }
-                input type="text" id="alias-input" name="pseudonym" autocomplete="off"
-                    data-testid="alias-input" maxlength="64";
-                p id="alias-status" class="muted" data-testid="alias-status" { "type to check availability" }
-            }
-            form id="alias-claim-form" method="POST" action="/ui" {
-                input type="hidden" name=(UI_RPC_FIELD) value=(claim_rpc);
-                input type="hidden" name="pseudonym" id="alias-claim-field" value="";
-                button type="submit" class="btn-primary" data-testid="alias-claim" { "continue" }
-            }
-            p { a href="/login" { "← back to login" } }
+            (claim_forms)
+            p class="login-back" { a href="/login" { "← back to login" } }
         }
     };
 

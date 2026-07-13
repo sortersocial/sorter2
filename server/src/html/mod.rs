@@ -149,7 +149,7 @@ pub(crate) fn layout(title: &str, body: Markup, views: u64, nav_user: Option<&st
                 nav class="top-nav" {
                     @if let Some(name) = nav_user {
                         span class="top-nav-user" data-testid="nav-user" { (name) }
-                        a href="/login" { "account" }
+                        a href="/login" data-testid="nav-account" { "account" }
                         form class="top-nav-logout" method="post" action="/auth/logout" data-navigate="full" {
                             button type="submit" data-testid="nav-logout" { "log out" }
                         }

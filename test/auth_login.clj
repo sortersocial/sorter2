@@ -55,7 +55,6 @@
             (move-vote-slider-left pg)
             (loc/click (page/get-by-test-id pg "vote-post"))
             (page/wait-for-selector pg "[data-testid=oauth-github]" {:timeout 15000})
-            (is (str/includes? (or (element-text pg "alias-list-empty") "") "none yet"))
             (loc/click (page/get-by-test-id pg "oauth-github"))
             (page/wait-for-selector pg "[data-testid=alias-input]" {:timeout 15000})
             (type-alias! pg "seeder")

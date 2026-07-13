@@ -108,6 +108,152 @@ body {
   cursor: wait;
 }
 
+.panel {
+  max-width: 36rem;
+  margin: 1.5rem auto;
+  padding: 1.25rem 1.5rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.login-page h1,
+.alias-page h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.5rem;
+}
+
+.login-page h2,
+.alias-page h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.login-section {
+  margin-bottom: 1.5rem;
+}
+
+.login-section:last-of-type {
+  margin-bottom: 0.75rem;
+}
+
+.account-current {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+.oauth-provider-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.oauth-provider-list a {
+  text-align: center;
+  text-decoration: none;
+  margin-top: 0;
+}
+
+.alias-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.alias-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.alias-item.alias-current {
+  border-color: var(--accent);
+}
+
+.alias-name {
+  font-weight: 600;
+}
+
+.alias-badge {
+  font-size: 0.75rem;
+  color: var(--accent);
+  text-transform: lowercase;
+}
+
+.alias-switch {
+  margin: 0;
+}
+
+.alias-switch .btn-secondary {
+  margin-top: 0;
+}
+
+.alias-claim label {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.alias-claim input[type="text"] {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font: inherit;
+}
+
+.alias-claim input[type="text"]:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+
+#alias-status {
+  margin: 0.4rem 0 0.75rem;
+  min-height: 1.25em;
+}
+
+#alias-status.alias-ok {
+  color: #8fd19e;
+}
+
+#alias-status.alias-bad {
+  color: #e8a0a0;
+}
+
+.login-actions {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.login-actions .btn-secondary {
+  margin-top: 0;
+}
+
+.login-back {
+  margin: 1rem 0 0;
+}
+
+.login-back a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.login-back a:hover {
+  color: var(--fg);
+}
+
 .fetch-entity-form {
   margin-top: 0.5rem;
 }
