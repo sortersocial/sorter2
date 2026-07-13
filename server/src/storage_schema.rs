@@ -103,6 +103,25 @@ pub fn oauth_link_owner(db: &Db, provider: &str, provider_id: &str) -> durable::
         .get(db)
 }
 
+/// Provider names linked to a UUID (`github`, `reddit`, …). Private — for the
+/// account owner's page only; never expose which providers are linked publicly.
+pub fn linked_providers_for_uuid(db: &Db, uuid: &str) -> durable::Result<Vec<String>> {
+    let mut providers = Vec::new();
+    for (key, owner) in Store::root().oauth_links().iter(db)? {
+        if owner != uuid {
+            continue;
+        }
+        let Some((provider, _)) = key.split_once(':') else {
+            continue;
+        };
+        if !providers.iter().any(|p| p == provider) {
+            providers.push(provider.to_string());
+        }
+    }
+    providers.sort();
+    Ok(providers)
+}
+
 pub const RECENT_VOTES_CAP: u64 = 200;
 
 fn id_key(id: &ItemId) -> String {

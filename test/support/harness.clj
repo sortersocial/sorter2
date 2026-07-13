@@ -48,12 +48,15 @@
          "GITHUB_CLIENT_SECRET" "test-secret"
          "GITHUB_OAUTH_BASE" (str "http://127.0.0.1:" oauth-port)
          "GITHUB_API_BASE" (str "http://127.0.0.1:" oauth-port)
+         ;; Reddit import fixtures + Reddit OAuth on reddit-port.
          "REDDIT_API_BASE" (str "http://127.0.0.1:" reddit-port)
+         "REDDIT_CLIENT_ID" "test-reddit"
+         "REDDIT_CLIENT_SECRET" "test-reddit-secret"
          "REDDIT_OAUTH_BASE" (str "http://127.0.0.1:" reddit-port)
-         "REDDIT_CLIENT_ID" ""
-         "REDDIT_CLIENT_SECRET" ""
-         "REDDIT_APP_ID" ""
-         "REDDIT_APP_SECRET" ""}))
+         "REDDIT_OAUTH_AUTHORIZE_BASE" (str "http://127.0.0.1:" reddit-port)
+         "REDDIT_OAUTH_TOKEN_BASE" (str "http://127.0.0.1:" reddit-port)
+         "REDDIT_OAUTH_API_BASE" (str "http://127.0.0.1:" reddit-port)
+         "REDDIT_USER_AGENT" "web:sorter2-test:v0 (by /u/test)"}))
 
 (defn with-auth-servers
   "Start mock Reddit + mock OAuth + release sorter2-server.

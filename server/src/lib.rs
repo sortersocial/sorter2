@@ -47,6 +47,8 @@ pub fn create_app(state: AppState) -> Router {
         .route("/login/alias", get(crate::auth::alias_page))
         .route("/auth/github", get(crate::auth::github_start))
         .route("/auth/github/callback", get(crate::auth::github_callback))
+        .route("/auth/reddit", get(crate::auth::reddit_start))
+        .route("/auth/reddit/callback", get(crate::auth::reddit_callback))
         .route("/auth/logout", post(crate::auth::logout))
         .route("/auth/switch", post(crate::auth::switch_pseudonym))
         .route("/ui", post(crate::api::ui_html::post_ui_html))

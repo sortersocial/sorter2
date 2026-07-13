@@ -35,8 +35,11 @@ Environment variables (defaults in `server/src/state.rs`):
 - `SORTER2_DATA_DIR` — default `./data` (created on startup)
 - `SORTER2_EVENT_LOG` — default `{data_dir}/events.jsonl`
 - `SORTER2_BASE_URL` — public origin (also drives Secure cookies when `https://`)
-- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` — GitHub OAuth (optional; login disabled if unset)
-- `SORTER2_ALLOW_MOCK_OAUTH=1` — allow `mock_user` on `/auth/github` (tests only)
+- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` — GitHub OAuth linking (optional)
+- `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` (or `REDDIT_APP_*`) — Reddit API import + OAuth linking (optional)
+- `SORTER2_ALLOW_MOCK_OAUTH=1` — allow `mock_user` on `/auth/github` and `/auth/reddit` (tests only)
+
+Identity: UUID is canonical. OAuth providers only *link* to a UUID (first link creates the principal). Linked providers are private to the account owner.
 
 Health check: `GET /healthz` → `ok`.
 

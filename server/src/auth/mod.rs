@@ -1,4 +1,8 @@
-//! GitHub OAuth login, session cookies, and vote actor resolution.
+//! OAuth linking, session cookies, and vote actor resolution.
+//!
+//! Canonical identity is a UUID. OAuth providers only *link* to that UUID
+//! (first link creates the principal; later links attach while logged in).
+//! Which providers are linked is private to the account owner.
 
 pub mod config;
 pub mod identity;
@@ -22,7 +26,9 @@ use crate::{
     form_template::template_json_compact,
     html::layout,
     state::AppState,
-    storage_schema::{oauth_link_owner, pseudonym_owner, Store, StoreFields},
+    storage_schema::{
+        linked_providers_for_uuid, oauth_link_owner, pseudonym_owner, Store, StoreFields,
+    },
     ui_action::UI_RPC_FIELD,
 };
 
@@ -53,10 +59,12 @@ fn new_actor_uuid() -> String {
 pub struct LoginQuery {
     #[serde(default)]
     pub return_to: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct GitHubStartQuery {
+pub struct OAuthStartQuery {
     #[serde(default)]
     pub return_to: Option<String>,
     #[serde(default)]
@@ -72,15 +80,22 @@ fn return_from_query_or_jar(jar: &CookieJar, query: Option<&str>) -> String {
         .unwrap_or_else(|| "/".to_string())
 }
 
-fn oauth_providers(base_url: &str, return_to: &str) -> Vec<(&'static str, String)> {
+/// Available OAuth link targets: `(provider_key, label, start_href)`.
+fn oauth_providers(base_url: &str, return_to: &str) -> Vec<(&'static str, &'static str, String)> {
     let mut out = Vec::new();
+    let enc = urlencoding::encode(return_to);
     if oauth::GitHubConfig::from_env(base_url).is_some() {
         out.push((
-            "GitHub",
-            format!(
-                "/auth/github?return_to={}",
-                urlencoding::encode(return_to)
-            ),
+            "github",
+            oauth::provider_label("github"),
+            format!("/auth/github?return_to={enc}"),
+        ));
+    }
+    if oauth::RedditConfig::from_env(base_url).is_some() {
+        out.push((
+            "reddit",
+            oauth::provider_label("reddit"),
+            format!("/auth/reddit?return_to={enc}"),
         ));
     }
     out
@@ -125,23 +140,41 @@ fn alias_claim_forms(return_to: &str, submit_label: &str) -> Result<Markup, Stat
     })
 }
 
-fn signed_out_body(providers: &[(&str, String)]) -> Markup {
+fn login_error_message(code: Option<&str>) -> Option<&'static str> {
+    match code {
+        Some("oauth_taken") => {
+            Some("that OAuth account is already linked to a different sorter2 account")
+        }
+        Some("oauth_failed") => Some("OAuth failed — try again"),
+        _ => None,
+    }
+}
+
+fn signed_out_body(
+    providers: &[(&str, &str, String)],
+    error: Option<&str>,
+) -> Markup {
     html! {
         main class="panel login-page" {
             section class="login-section" {
                 h1 { "sign in" }
-                p class="muted" { "link an account to vote under a lasting alias" }
+                p class="muted" {
+                    "link an OAuth account to create your identity, then claim an alias to vote"
+                }
+                @if let Some(msg) = login_error_message(error) {
+                    p class="alias-bad" data-testid="login-error" { (msg) }
+                }
                 @if providers.is_empty() {
                     p class="muted" {
-                        "OAuth is not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET."
+                        "OAuth is not configured. Set GitHub and/or Reddit client credentials."
                     }
                 } @else {
                     ul class="oauth-provider-list" {
-                        @for (name, href) in providers {
+                        @for (key, label, href) in providers {
                             li {
                                 a href=(href) class="btn-primary oauth-provider"
-                                    data-testid=(format!("oauth-{}", name.to_lowercase())) {
-                                    (format!("Continue with {name}"))
+                                    data-testid=(format!("oauth-{key}")) {
+                                    (format!("Link {label}"))
                                 }
                             }
                         }
@@ -156,7 +189,10 @@ fn signed_out_body(providers: &[(&str, String)]) -> Markup {
 fn account_body(
     actor: &session::SessionActor,
     aliases: &[String],
-    providers: &[(&str, String)],
+    // Provider keys already linked to this UUID (private).
+    linked: &[String],
+    // Providers available to link: not yet attached.
+    unlinkable: &[(&str, &str, String)],
     claim_forms: Markup,
 ) -> Markup {
     let current = actor.pseudonym.trim();
@@ -212,16 +248,29 @@ fn account_body(
                 (claim_forms)
             }
 
-            @if !providers.is_empty() {
-                section class="login-section" {
-                    h2 { "linked sign-in" }
-                    p class="muted small" { "sign in again with the same provider to return to this account" }
+            section class="login-section" {
+                h2 { "linked sign-in" }
+                p class="muted small" {
+                    "private to you — linking more providers raises trust weight without publishing which accounts you use"
+                }
+                @if linked.is_empty() {
+                    p class="muted" data-testid="linked-providers-empty" { "none yet" }
+                } @else {
+                    ul class="linked-provider-list" data-testid="linked-providers" {
+                        @for key in linked {
+                            li data-testid=(format!("linked-{key}")) {
+                                (oauth::provider_label(key))
+                            }
+                        }
+                    }
+                }
+                @if !unlinkable.is_empty() {
                     ul class="oauth-provider-list" {
-                        @for (name, href) in providers {
+                        @for (key, label, href) in unlinkable {
                             li {
                                 a href=(href) class="btn-secondary oauth-provider"
-                                    data-testid=(format!("oauth-relink-{}", name.to_lowercase())) {
-                                    (format!("Re-link {name}"))
+                                    data-testid=(format!("oauth-link-{key}")) {
+                                    (format!("Link {label}"))
                                 }
                             }
                         }
@@ -243,12 +292,21 @@ fn account_body(
 fn login_body(
     session: Option<&session::SessionActor>,
     aliases: &[String],
-    providers: &[(&str, String)],
+    linked: &[String],
+    providers: &[(&str, &str, String)],
     claim_forms: Option<Markup>,
+    error: Option<&str>,
 ) -> Markup {
     match (session, claim_forms) {
-        (Some(actor), Some(forms)) => account_body(actor, aliases, providers, forms),
-        _ => signed_out_body(providers),
+        (Some(actor), Some(forms)) => {
+            let unlinkable: Vec<_> = providers
+                .iter()
+                .filter(|(key, _, _)| !linked.iter().any(|p| p == key))
+                .cloned()
+                .collect();
+            account_body(actor, aliases, linked, &unlinkable, forms)
+        }
+        _ => signed_out_body(providers, error),
     }
 }
 
@@ -268,6 +326,10 @@ pub async fn login_page(
         .as_ref()
         .map(|s| alias_list(db, &s.uuid))
         .unwrap_or_default();
+    let linked = session
+        .as_ref()
+        .map(|s| linked_providers_for_uuid(db, &s.uuid).unwrap_or_default())
+        .unwrap_or_default();
     let providers = oauth_providers(&base_url_from_env(state.cfg.port), &return_to);
 
     let claim_forms = if session.is_some() {
@@ -282,7 +344,14 @@ pub async fn login_page(
         } else {
             "login · sorter2"
         },
-        login_body(session.as_ref(), &aliases, &providers, claim_forms),
+        login_body(
+            session.as_ref(),
+            &aliases,
+            &linked,
+            &providers,
+            claim_forms,
+            query.error.as_deref(),
+        ),
         state.views.get_views("/login"),
         session
             .as_ref()
@@ -302,7 +371,6 @@ pub async fn alias_page(
     let db = state.projection_store.db();
     let session = session::load_valid_session(db, &session_id).ok_or(StatusCode::UNAUTHORIZED)?;
     if session::session_has_pseudonym(&session) {
-        // Already onboarded — manage aliases on the account page.
         return Ok(Redirect::to("/login").into_response());
     }
 
@@ -331,7 +399,7 @@ pub async fn alias_page(
 pub async fn github_start(
     State(state): State<AppState>,
     jar: CookieJar,
-    Query(query): Query<GitHubStartQuery>,
+    Query(query): Query<OAuthStartQuery>,
 ) -> Result<Response, StatusCode> {
     let cfg = oauth::GitHubConfig::from_env(&base_url_from_env(state.cfg.port))
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
@@ -342,7 +410,28 @@ pub async fn github_start(
     } else {
         None
     };
-    let url = oauth::authorize_url(&cfg, &state_token, mock_user);
+    let url = oauth::github_authorize_url(&cfg, &state_token, mock_user);
+    let jar = jar
+        .add(session::oauth_state_cookie_value(&state_token))
+        .add(session::auth_return_cookie_value(&return_to));
+    Ok((jar, Redirect::temporary(&url)).into_response())
+}
+
+pub async fn reddit_start(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<OAuthStartQuery>,
+) -> Result<Response, StatusCode> {
+    let cfg = oauth::RedditConfig::from_env(&base_url_from_env(state.cfg.port))
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let return_to = return_from_query_or_jar(&jar, query.return_to.as_deref());
+    let state_token = session::new_oauth_state();
+    let mock_user = if config::mock_oauth_allowed() {
+        query.mock_user.as_deref()
+    } else {
+        None
+    };
+    let url = oauth::reddit_authorize_url(&cfg, &state_token, mock_user);
     let jar = jar
         .add(session::oauth_state_cookie_value(&state_token))
         .add(session::auth_return_cookie_value(&return_to));
@@ -355,6 +444,13 @@ pub struct OAuthCallbackQuery {
     pub state: String,
 }
 
+/// Link `provider:provider_id` to a UUID.
+///
+/// - Logged in + new provider → attach to session UUID
+/// - Logged in + already ours → no-op
+/// - Logged in + owned by someone else → conflict
+/// - Logged out + known link → resume that UUID
+/// - Logged out + unknown → create principal + first link
 async fn finish_oauth_login(
     state: &AppState,
     jar: CookieJar,
@@ -364,11 +460,41 @@ async fn finish_oauth_login(
     let db = state.projection_store.db();
     let return_to = return_from_query_or_jar(&jar, None);
 
-    let uuid = match oauth_link_owner(db, provider, &provider_id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    {
-        Some(existing) => existing,
-        None => {
+    let existing_owner = oauth_link_owner(db, provider, &provider_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let session_uuid = session::session_id_from_jar(&jar)
+        .as_deref()
+        .and_then(|id| session::load_valid_session(db, id))
+        .map(|s| s.uuid);
+    let linking_while_logged_in = session_uuid.is_some();
+
+    let uuid = match (session_uuid, existing_owner) {
+        (Some(session_uuid), Some(owner)) if owner == session_uuid => session_uuid,
+        (Some(_), Some(_)) => {
+            return Ok((
+                jar.add(session::clear_oauth_state_cookie()),
+                "/login?error=oauth_taken".into(),
+            ));
+        }
+        (Some(session_uuid), None) => {
+            let ts = now_ms();
+            state
+                .append_identity_events(vec![Event::OauthLinked {
+                    uuid: session_uuid.clone(),
+                    provider: provider.to_string(),
+                    provider_id,
+                    ts,
+                }])
+                .await
+                .map_err(|e| {
+                    tracing::warn!(err = %e, "oauth link append failed");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+            session_uuid
+        }
+        (None, Some(owner)) => owner,
+        (None, None) => {
             let uuid = new_actor_uuid();
             let ts = now_ms();
             state
@@ -409,6 +535,9 @@ async fn finish_oauth_login(
             "/login/alias?return_to={}",
             urlencoding::encode(&return_to)
         )
+    } else if linking_while_logged_in {
+        // Additional link while already in an account → stay on account page.
+        "/login".to_string()
     } else {
         return_to
     };
@@ -434,22 +563,57 @@ pub async fn github_callback(
         .build()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let token = oauth::exchange_code(&client, &cfg, &query.code)
+    let token = oauth::github_exchange_code(&client, &cfg, &query.code)
         .await
         .map_err(|e| {
             tracing::warn!(err = %e, "github oauth token exchange failed");
             StatusCode::BAD_GATEWAY
         })?;
-    let user = oauth::fetch_user(&client, &cfg.api_base, &token)
+    let user = oauth::github_fetch_user(&client, &cfg.api_base, &token)
         .await
         .map_err(|e| {
             tracing::warn!(err = %e, "github user fetch failed");
             StatusCode::BAD_GATEWAY
         })?;
 
-    let provider = "github";
-    let provider_id = oauth::provider_id(&user);
-    let (jar, dest) = finish_oauth_login(&state, jar, provider, provider_id).await?;
+    let (jar, dest) =
+        finish_oauth_login(&state, jar, "github", oauth::github_provider_id(&user)).await?;
+    Ok((jar, Redirect::to(&dest)).into_response())
+}
+
+pub async fn reddit_callback(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<OAuthCallbackQuery>,
+) -> Result<Response, StatusCode> {
+    let cfg = oauth::RedditConfig::from_env(&base_url_from_env(state.cfg.port))
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let expected_state = session::oauth_state_from_jar(&jar).ok_or(StatusCode::BAD_REQUEST)?;
+    if expected_state != query.state {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let token = oauth::reddit_exchange_code(&client, &cfg, &query.code)
+        .await
+        .map_err(|e| {
+            tracing::warn!(err = %e, "reddit oauth token exchange failed");
+            StatusCode::BAD_GATEWAY
+        })?;
+    let user = oauth::reddit_fetch_user(&client, &cfg, &token)
+        .await
+        .map_err(|e| {
+            tracing::warn!(err = %e, "reddit user fetch failed");
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    let (jar, dest) =
+        finish_oauth_login(&state, jar, "reddit", oauth::reddit_provider_id(&user)).await?;
     Ok((jar, Redirect::to(&dest)).into_response())
 }
 

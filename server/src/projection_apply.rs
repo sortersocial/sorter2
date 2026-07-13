@@ -4,6 +4,8 @@
 //! child links, recent-vote appends) plus a cursor advance, all committed in
 //! one atomic `DisableWal` batch.
 
+use std::collections::HashMap;
+
 use crate::{
     event_log::EventLogError,
     events::{Event, EventRecord},
@@ -44,6 +46,8 @@ pub fn apply_records(
     let db = projection_store.db();
     let mut batch = db.batch();
     let mut last_seq = 0u64;
+    // Weight reads must see earlier writes in this same batch.
+    let mut pending_weights: HashMap<String, f64> = HashMap::new();
 
     for record in records {
         match &record.event {
@@ -85,6 +89,7 @@ pub fn apply_records(
                 ensure_path_writes(&mut batch, &parsed);
             }
             Event::PrincipalCreated { uuid, .. } => {
+                pending_weights.insert(uuid.clone(), BASE_TRUST_WEIGHT);
                 batch.write(
                     Store::root()
                         .user_weights()
@@ -112,17 +117,25 @@ pub fn apply_records(
                     }
                 } else {
                     batch.write(Store::root().oauth_links().key(&link_key).set(uuid));
-                    let current = Store::root()
-                        .user_weights()
-                        .key(&uuid.clone())
-                        .get(db)
-                        .map_err(|e| EventLogError::Apply(e.to_string()))?
+                    let current = pending_weights
+                        .get(uuid)
+                        .copied()
+                        .or_else(|| {
+                            Store::root()
+                                .user_weights()
+                                .key(&uuid.clone())
+                                .get(db)
+                                .ok()
+                                .flatten()
+                        })
                         .unwrap_or(BASE_TRUST_WEIGHT);
+                    let next = trust_weight_after_link(current);
+                    pending_weights.insert(uuid.clone(), next);
                     batch.write(
                         Store::root()
                             .user_weights()
                             .key(&uuid.clone())
-                            .set(&trust_weight_after_link(current)),
+                            .set(&next),
                     );
                 }
             }
@@ -205,6 +218,15 @@ mod tests {
                 ),
                 record(
                     3,
+                    Event::OauthLinked {
+                        uuid: uuid.into(),
+                        provider: "reddit".into(),
+                        provider_id: "t2_abc".into(),
+                        ts,
+                    },
+                ),
+                record(
+                    4,
                     Event::PseudonymClaimed {
                         uuid: uuid.into(),
                         pseudonym: "octocat".into(),
@@ -219,8 +241,12 @@ mod tests {
             oauth_link_owner(store.db(), "github", "42").unwrap(),
             Some(uuid.to_string())
         );
+        assert_eq!(
+            crate::storage_schema::linked_providers_for_uuid(store.db(), uuid).unwrap(),
+            vec!["github".to_string(), "reddit".to_string()]
+        );
         assert_eq!(resolve_actor_uuid(store.db(), "octocat").unwrap(), uuid);
-        assert_eq!(user_trust_weight(store.db(), uuid).unwrap(), 1.5);
+        assert_eq!(user_trust_weight(store.db(), uuid).unwrap(), 2.0);
         let aliases = Store::root()
             .user_pseudonyms()
             .key(&uuid.to_string())
