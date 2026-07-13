@@ -28,10 +28,8 @@ body {
 }
 
 .view-meta {
-  position: fixed;
-  top: 0.1rem;
-  right: 0.5rem;
   font-size: 0.75rem;
+  margin-right: auto;
 }
 
 .top-nav {

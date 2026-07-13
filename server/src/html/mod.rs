@@ -143,10 +143,10 @@ pub(crate) fn layout(title: &str, body: Markup, views: u64, nav_user: Option<&st
                 script src="https://unpkg.com/idiomorph@0.3.0/dist/idiomorph.min.js" {}
             }
             body class="home" {
-                @if views > 0 {
-                    span class="view-meta muted" { (views) " views" }
-                }
                 nav class="top-nav" {
+                    @if views > 0 {
+                        span class="view-meta muted" { (views) " views" }
+                    }
                     @if let Some(name) = nav_user {
                         span class="top-nav-user" data-testid="nav-user" { (name) }
                         a href="/login" data-testid="nav-account" { "account" }
