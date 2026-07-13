@@ -5,6 +5,7 @@ primary_region = "iad"
   dockerfile = "Dockerfile"
 
 [env]
+  SORTER2_BASE_URL = "https://reddit.sorter.social"
   SORTER2_DATA_DIR = "/data"
   SORTER2_EVENT_LOG = "/data/events.jsonl"
   PORT = "8080"

@@ -283,26 +283,35 @@ async fn reddit_worker(
         );
         tokio::time::sleep(current_delay).await;
 
-        if let Some(c) = &creds {
-            oauth = ensure_oauth_token(&client, &oauth_token_base, c, oauth.take()).await;
-        }
-
-        let token = oauth.as_ref().map(|t| t.access_token.as_str());
-        let fetch_base = if token.is_some() {
-            tracing::debug!(
-                item = %fetch_id,
-                base = %oauth_api_base,
-                "reddit fetch using OAuth bearer"
-            );
-            &oauth_api_base
-        } else {
-            &api_base
+        let outcome = match &creds {
+            Some(c) => {
+                // OAuth is required when credentials are configured — never fall
+                // back to the public www.reddit.com JSON endpoints (cloud IPs
+                // get blocked with a 403 HTML interstitial).
+                fetch_with_oauth(
+                    &client,
+                    &oauth_token_base,
+                    &oauth_api_base,
+                    c,
+                    &mut oauth,
+                    &fetch_id,
+                    kind,
+                )
+                .await
+            }
+            None => {
+                let url = match kind {
+                    FetchKind::SelfEntity => map_item_to_reddit_api(&fetch_id, &api_base),
+                    FetchKind::Children => map_children_url(&fetch_id, &api_base),
+                };
+                match do_fetch(&client, &url, &fetch_id, None).await {
+                    Ok(FetchOutcome::AuthRejected { status, detail }) => {
+                        Err(format!("Reddit API {status}: {detail}"))
+                    }
+                    other => other,
+                }
+            }
         };
-        let url = match kind {
-            FetchKind::SelfEntity => map_item_to_reddit_api(&fetch_id, fetch_base),
-            FetchKind::Children => map_children_url(&fetch_id, fetch_base),
-        };
-        let outcome = do_fetch(&client, &url, &fetch_id, token).await;
 
         match outcome {
             Ok(FetchOutcome::Payload(payload)) => {
@@ -342,6 +351,12 @@ async fn reddit_worker(
                 current_delay = (current_delay * 2).min(Duration::from_secs(60));
                 notify(done, FetchJobResult::RateLimited { reset_secs });
             }
+            Ok(FetchOutcome::AuthRejected { status, detail }) => {
+                let e = format!("Reddit API {status}: {detail}");
+                tracing::warn!(item = %fetch_id, err = %e, "reddit fetch auth rejected");
+                current_delay = (current_delay * 2).min(Duration::from_secs(60));
+                notify(done, FetchJobResult::Failed(e));
+            }
             Err(e) => {
                 tracing::warn!(item = %fetch_id, err = %e, "reddit fetch failed");
                 current_delay = (current_delay * 2).min(Duration::from_secs(60));
@@ -357,6 +372,60 @@ enum FetchOutcome {
     Payload(Value),
     NotFound,
     RateLimited { reset_secs: u64 },
+    /// Bearer rejected — caller should drop the cached token and retry once.
+    AuthRejected { status: StatusCode, detail: String },
+}
+
+async fn fetch_with_oauth(
+    client: &Client,
+    oauth_token_base: &str,
+    oauth_api_base: &str,
+    creds: &RedditCredentials,
+    oauth: &mut Option<OAuthToken>,
+    fetch_id: &ItemId,
+    kind: FetchKind,
+) -> Result<FetchOutcome, String> {
+    for attempt in 0..2 {
+        let force_refresh = attempt > 0;
+        *oauth = Some(
+            ensure_oauth_token(client, oauth_token_base, creds, oauth.take(), force_refresh)
+                .await?,
+        );
+        let token = oauth
+            .as_ref()
+            .expect("token set above")
+            .access_token
+            .clone();
+
+        tracing::debug!(
+            item = %fetch_id,
+            base = %oauth_api_base,
+            attempt,
+            "reddit fetch using OAuth bearer"
+        );
+
+        let url = match kind {
+            FetchKind::SelfEntity => map_item_to_reddit_api(fetch_id, oauth_api_base),
+            FetchKind::Children => map_children_url(fetch_id, oauth_api_base),
+        };
+        match do_fetch(client, &url, fetch_id, Some(&token)).await? {
+            FetchOutcome::AuthRejected { status, detail } if attempt == 0 => {
+                tracing::warn!(
+                    item = %fetch_id,
+                    %status,
+                    %detail,
+                    "reddit OAuth rejected; refreshing token and retrying"
+                );
+                *oauth = None;
+                continue;
+            }
+            FetchOutcome::AuthRejected { status, detail } => {
+                return Err(format!("Reddit API {status}: {detail}"));
+            }
+            other => return Ok(other),
+        }
+    }
+    unreachable!("loop always returns")
 }
 
 async fn ensure_oauth_token(
@@ -364,35 +433,35 @@ async fn ensure_oauth_token(
     oauth_base: &str,
     creds: &RedditCredentials,
     existing: Option<OAuthToken>,
-) -> Option<OAuthToken> {
-    if let Some(t) = existing {
-        if Instant::now() < t.expires_at - Duration::from_secs(60) {
-            tracing::debug!("reddit OAuth token still valid");
-            return Some(t);
+    force_refresh: bool,
+) -> Result<OAuthToken, String> {
+    if !force_refresh {
+        if let Some(t) = existing {
+            if Instant::now() < t.expires_at - Duration::from_secs(60) {
+                tracing::debug!("reddit OAuth token still valid");
+                return Ok(t);
+            }
         }
     }
 
     let url = format!("{}/api/v1/access_token", oauth_base.trim_end_matches('/'));
-    tracing::debug!(%url, "reddit OAuth token request");
+    tracing::debug!(%url, force_refresh, "reddit OAuth token request");
 
     let resp = client
         .post(&url)
         .basic_auth(&creds.client_id, Some(&creds.client_secret))
         .form(&[("grant_type", "client_credentials")])
         .send()
-        .await;
-
-    let resp = match resp {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("reddit OAuth token request failed: {e}");
-            return None;
-        }
-    };
+        .await
+        .map_err(|e| format!("Reddit OAuth token request failed: {e}"))?;
 
     if !resp.status().is_success() {
-        tracing::warn!("reddit OAuth token HTTP {}", resp.status());
-        return None;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "Reddit OAuth token HTTP {status}: {}",
+            truncate_for_error(&body)
+        ));
     }
 
     #[derive(Deserialize)]
@@ -401,19 +470,38 @@ async fn ensure_oauth_token(
         expires_in: u64,
     }
 
-    let body: TokenResponse = match resp.json().await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!("reddit OAuth token parse failed: {e}");
-            return None;
-        }
-    };
+    let body: TokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Reddit OAuth token parse failed: {e}"))?;
 
-    tracing::debug!(expires_in = body.expires_in, "reddit OAuth token acquired");
-    Some(OAuthToken {
+    tracing::info!(expires_in = body.expires_in, "reddit OAuth token acquired");
+    Ok(OAuthToken {
         access_token: body.access_token,
         expires_at: Instant::now() + Duration::from_secs(body.expires_in),
     })
+}
+
+fn truncate_for_error(body: &str) -> String {
+    let compact: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return "(empty body)".into();
+    }
+    // Prefer the human-readable block message over dumping Reddit's CSS.
+    if let Some(idx) = compact.find("You've been blocked") {
+        let slice: String = compact.chars().skip(idx).take(160).collect();
+        return if compact.chars().count() > idx + 160 {
+            format!("{slice}…")
+        } else {
+            slice
+        };
+    }
+    let chars: String = compact.chars().take(200).collect();
+    if compact.chars().count() > 200 {
+        format!("{chars}…")
+    } else {
+        chars
+    }
 }
 
 async fn do_fetch(
@@ -460,15 +548,16 @@ async fn do_fetch(
 
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
+        let detail = truncate_for_error(&body);
         tracing::debug!(
             item = %id,
             %status,
             body_len = body.len(),
-            body_prefix = %body.chars().take(240).collect::<String>(),
+            %detail,
             "reddit non-success body"
         );
         if status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED {
-            return Err(format!("Reddit API {status}: {body}"));
+            return Ok(FetchOutcome::AuthRejected { status, detail });
         }
         return Ok(FetchOutcome::NotFound);
     }
@@ -715,6 +804,15 @@ fn reddit_direct_image_url(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_error_prefers_block_message() {
+        let html = r#"<style>.x{color:red}</style><div>You've been blocked by network security. To continue, log in</div>"#;
+        let msg = truncate_for_error(html);
+        assert!(msg.starts_with("You've been blocked"));
+        assert!(msg.len() < 200);
+        assert!(!msg.contains(".x{color"));
+    }
 
     #[test]
     fn map_subreddit_about_url() {
