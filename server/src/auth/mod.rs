@@ -380,7 +380,11 @@ pub async fn alias_page(
             h1 { "choose alias" }
             p class="muted" { "pick a unique display name for your votes" }
             (claim_forms)
-            p class="login-back" { a href="/login" { "← back to login" } }
+            p class="login-back" {
+                a href=(format!("/login?return_to={}", urlencoding::encode(&return_to))) {
+                    "← back to login"
+                }
+            }
         }
     };
 
