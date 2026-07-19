@@ -72,9 +72,18 @@
           log2 (slurp (io/file log-path))]
       (is (str/includes? after-children "Announcing Rust 1.99"))
       (is (str/includes? after-children "Unranked"))
+      (is (str/includes? after-children "Refresh ranking"))
       (is (str/includes? log2 "\"type\":\"node_ensured\""))
       (is (str/includes? log2 "/comments/"))
-      (is (not (str/includes? log2 "\"selftext\""))))))
+      (is (not (str/includes? log2 "\"selftext\""))))
+    (let [log-before-ranked (slurp (io/file log-path))
+          ranked-sse (curl-fetch-ui-sse app-base "reddit.com/r/rust" "ranked")]
+      (is (zero? (:exit ranked-sse)) "POST /ui fetch_entity (ranked) SSE succeeds")
+      (is (str/includes? (:out ranked-sse) "Idiomorph.morph"))
+      (is (str/includes? (:out ranked-sse) "Announcing Rust 1.99"))
+      (is (str/includes? (:out ranked-sse) "What are you working on this week?"))
+      ;; Ranked refresh must not append more structure events.
+      (is (= log-before-ranked (slurp (io/file log-path)))))))
 
 (deftest reddit-fetch-via-mock-api
   (testing "Fetch caches display content ephemerally; log records structure only"

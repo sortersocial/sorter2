@@ -89,6 +89,10 @@
                    (send-json exchange 200
                               (str "{\"id\":\"" (:id user) "\",\"name\":\"" (:login user) "\"}")))
 
+                 ;; `/api/info?id=t3_…` — same listing shape as subreddit children.
+                 (str/includes? path "/api/info")
+                 (send-bytes exchange 200 listing "application/json")
+
                  ;; `/r/<sub>/about.json` → subreddit entity; `/r/<sub>.json` → listing.
                  :else
                  (let [body (if (str/includes? path "/about") about listing)]

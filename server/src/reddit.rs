@@ -29,11 +29,13 @@ pub enum FetchJobResult {
     Failed(String),
 }
 
-/// What to import for a node: the node's own entity, or its child listing.
+/// What to import for a node: itself, a child listing, or ranked posts already present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FetchKind {
     SelfEntity,
     Children,
+    /// Batch-refresh display content for posts already under this scope (`/api/info`).
+    Ranked,
 }
 
 pub struct RedditCommand {
@@ -186,6 +188,11 @@ pub fn is_children_fetchable(id: &ItemId) -> bool {
     !map_children_url(id, "https://example.com").is_empty()
 }
 
+/// Can we batch-refresh posts already ranked under this node (same scopes as children)?
+pub fn is_ranked_fetchable(id: &ItemId) -> bool {
+    is_children_fetchable(id)
+}
+
 pub fn entity_view_from_payload(
     id: &ItemId,
     payload: &Value,
@@ -213,6 +220,9 @@ async fn import_fetched_payload(
     let imports: Vec<(ItemId, Value)> = match kind {
         FetchKind::SelfEntity => vec![(fetch_id.clone(), payload)],
         FetchKind::Children => parse_children(fetch_id, &payload),
+        FetchKind::Ranked => {
+            return Err("ranked import uses import_ranked_payload".into());
+        }
     };
 
     for (id, child_payload) in &imports {
@@ -234,6 +244,56 @@ async fn import_fetched_payload(
         journal.append_many(events).await?;
     }
     Ok(written)
+}
+
+/// Refresh ephemeral display content for posts already under `parent`.
+/// Does not append `NodeEnsured` (structure already persisted). Clears cache for
+/// requested posts missing from Reddit's `/api/info` response.
+fn import_ranked_payload(
+    requested: &[ItemId],
+    payloads: &[Value],
+    projection_store: &ProjectionStore,
+) -> Result<usize, String> {
+    let requested_set: HashSet<ItemId> = requested.iter().cloned().collect();
+    let fetched_at = now_ms();
+    let mut found: HashSet<ItemId> = HashSet::new();
+
+    for payload in payloads {
+        for (id, child_payload) in parse_children(&ItemId::root(), payload) {
+            if !requested_set.contains(&id) {
+                continue;
+            }
+            if let Some(view) = entity_view_from_payload(&id, &child_payload) {
+                projection_store
+                    .put_ephemeral_content(&id, &view, fetched_at)
+                    .map_err(|e| e.to_string())?;
+            }
+            found.insert(id);
+        }
+    }
+
+    for id in requested {
+        if !found.contains(id) {
+            projection_store
+                .clear_ephemeral_content(id)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(found.len())
+}
+
+fn ranked_posts_under(parent: &ItemId, projection_store: &ProjectionStore) -> Vec<ItemId> {
+    let Ok(Some(node)) = projection_store.load_node(parent) else {
+        return Vec::new();
+    };
+    let mut posts: Vec<ItemId> = node
+        .children
+        .into_iter()
+        .filter(|c| crate::render::reddit::is_reddit_post(c) && reddit_post_fullname_id(c).is_some())
+        .collect();
+    posts.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    posts
 }
 
 async fn reddit_worker(
@@ -283,6 +343,96 @@ async fn reddit_worker(
         );
         tokio::time::sleep(current_delay).await;
 
+        if kind == FetchKind::Ranked {
+            let posts = ranked_posts_under(&fetch_id, &projection_store);
+            if posts.is_empty() {
+                tracing::debug!(item = %fetch_id, "reddit ranked fetch: no posts under scope");
+                notify(done, FetchJobResult::NotFound);
+                in_flight.remove(&key);
+                continue;
+            }
+
+            let urls = map_info_urls(&posts, if creds.is_some() { &oauth_api_base } else { &api_base });
+            let mut payloads = Vec::new();
+            let mut ranked_err: Option<FetchJobResult> = None;
+
+            for url in urls {
+                let outcome = match &creds {
+                    Some(c) => {
+                        fetch_url_with_oauth(
+                            &client,
+                            &oauth_token_base,
+                            c,
+                            &mut oauth,
+                            &fetch_id,
+                            &url,
+                        )
+                        .await
+                    }
+                    None => match do_fetch(&client, &url, &fetch_id, None).await {
+                        Ok(FetchOutcome::AuthRejected { status, detail }) => {
+                            Err(format!("Reddit API {status}: {detail}"))
+                        }
+                        other => other,
+                    },
+                };
+                match outcome {
+                    Ok(FetchOutcome::Payload(payload)) => payloads.push(payload),
+                    Ok(FetchOutcome::NotFound) => {
+                        // Empty chunk / all deleted — keep going; missing ids cleared on import.
+                    }
+                    Ok(FetchOutcome::RateLimited { reset_secs }) => {
+                        tracing::warn!(
+                            item = %fetch_id,
+                            reset_secs,
+                            "reddit rate limited (ranked)"
+                        );
+                        tokio::time::sleep(Duration::from_secs(reset_secs.max(1))).await;
+                        current_delay = (current_delay * 2).min(Duration::from_secs(60));
+                        ranked_err = Some(FetchJobResult::RateLimited { reset_secs });
+                        break;
+                    }
+                    Ok(FetchOutcome::AuthRejected { status, detail }) => {
+                        let e = format!("Reddit API {status}: {detail}");
+                        tracing::warn!(item = %fetch_id, err = %e, "reddit ranked auth rejected");
+                        current_delay = (current_delay * 2).min(Duration::from_secs(60));
+                        ranked_err = Some(FetchJobResult::Failed(e));
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!(item = %fetch_id, err = %e, "reddit ranked fetch failed");
+                        current_delay = (current_delay * 2).min(Duration::from_secs(60));
+                        ranked_err = Some(FetchJobResult::Failed(e));
+                        break;
+                    }
+                }
+            }
+
+            if let Some(err) = ranked_err {
+                notify(done, err);
+            } else {
+                match import_ranked_payload(&posts, &payloads, &projection_store) {
+                    Err(e) => {
+                        tracing::warn!(item = %fetch_id, err = %e, "reddit ranked import failed");
+                        notify(done, FetchJobResult::Failed(e));
+                    }
+                    Ok(written) => {
+                        recently_fetched.insert(key.clone(), Instant::now());
+                        current_delay = Duration::from_millis(600);
+                        tracing::info!(
+                            item = %fetch_id,
+                            written,
+                            requested = posts.len(),
+                            "reddit ranked import complete"
+                        );
+                        notify(done, FetchJobResult::Imported(written));
+                    }
+                }
+            }
+            in_flight.remove(&key);
+            continue;
+        }
+
         let outcome = match &creds {
             Some(c) => {
                 // OAuth is required when credentials are configured — never fall
@@ -303,6 +453,7 @@ async fn reddit_worker(
                 let url = match kind {
                     FetchKind::SelfEntity => map_item_to_reddit_api(&fetch_id, &api_base),
                     FetchKind::Children => map_children_url(&fetch_id, &api_base),
+                    FetchKind::Ranked => unreachable!("ranked handled above"),
                 };
                 match do_fetch(&client, &url, &fetch_id, None).await {
                     Ok(FetchOutcome::AuthRejected { status, detail }) => {
@@ -385,6 +536,24 @@ async fn fetch_with_oauth(
     fetch_id: &ItemId,
     kind: FetchKind,
 ) -> Result<FetchOutcome, String> {
+    let url = match kind {
+        FetchKind::SelfEntity => map_item_to_reddit_api(fetch_id, oauth_api_base),
+        FetchKind::Children => map_children_url(fetch_id, oauth_api_base),
+        FetchKind::Ranked => {
+            return Err("ranked fetch uses fetch_url_with_oauth".into());
+        }
+    };
+    fetch_url_with_oauth(client, oauth_token_base, creds, oauth, fetch_id, &url).await
+}
+
+async fn fetch_url_with_oauth(
+    client: &Client,
+    oauth_token_base: &str,
+    creds: &RedditCredentials,
+    oauth: &mut Option<OAuthToken>,
+    fetch_id: &ItemId,
+    url: &str,
+) -> Result<FetchOutcome, String> {
     for attempt in 0..2 {
         let force_refresh = attempt > 0;
         *oauth = Some(
@@ -399,16 +568,12 @@ async fn fetch_with_oauth(
 
         tracing::debug!(
             item = %fetch_id,
-            base = %oauth_api_base,
+            %url,
             attempt,
             "reddit fetch using OAuth bearer"
         );
 
-        let url = match kind {
-            FetchKind::SelfEntity => map_item_to_reddit_api(fetch_id, oauth_api_base),
-            FetchKind::Children => map_children_url(fetch_id, oauth_api_base),
-        };
-        match do_fetch(client, &url, fetch_id, Some(&token)).await? {
+        match do_fetch(client, url, fetch_id, Some(&token)).await? {
             FetchOutcome::AuthRejected { status, detail } if attempt == 0 => {
                 tracing::warn!(
                     item = %fetch_id,
@@ -658,6 +823,33 @@ pub fn map_children_url(id: &ItemId, api_base: &str) -> String {
     String::new()
 }
 
+/// Reddit fullname (`t3_<id>`) for a post ItemId, if the path has `/comments/<id>`.
+pub fn reddit_post_fullname_id(id: &ItemId) -> Option<String> {
+    let segments = reddit_path_segments(id)?;
+    let i = segments.iter().position(|p| p == "comments")?;
+    let post_id = segments.get(i + 1)?;
+    if post_id.is_empty() {
+        return None;
+    }
+    Some(format!("t3_{post_id}"))
+}
+
+/// Reddit allows up to 100 fullnames per `/api/info` request.
+const REDDIT_INFO_BATCH_SIZE: usize = 100;
+
+/// Build `/api/info` URLs chunked to Reddit's batch limit.
+pub fn map_info_urls(ids: &[ItemId], api_base: &str) -> Vec<String> {
+    let base = api_base.trim_end_matches('/');
+    let thing_ids: Vec<String> = ids.iter().filter_map(reddit_post_fullname_id).collect();
+    if thing_ids.is_empty() {
+        return Vec::new();
+    }
+    thing_ids
+        .chunks(REDDIT_INFO_BATCH_SIZE)
+        .map(|chunk| format!("{base}/api/info?id={}&raw_json=1", chunk.join(",")))
+        .collect()
+}
+
 /// Parse a subreddit listing payload into `(child_id, child_payload)` entries.
 /// Each child id is the post's permalink under `reddit.com/…`, and the payload
 /// is the raw `{kind, data}` listing element (persisted per child).
@@ -837,6 +1029,24 @@ mod tests {
         assert_eq!(
             map_item_to_reddit_api(&id, "https://oauth.reddit.com"),
             "https://oauth.reddit.com/r/rust/about.json?raw_json=1"
+        );
+    }
+
+    #[test]
+    fn reddit_post_fullname_id_from_canonical_url() {
+        let id = ItemId::from_url("https://reddit.com/r/rust/comments/aaa/slug").unwrap();
+        assert_eq!(reddit_post_fullname_id(&id).as_deref(), Some("t3_aaa"));
+        let sub = ItemId::from_url("https://reddit.com/r/rust").unwrap();
+        assert_eq!(reddit_post_fullname_id(&sub), None);
+    }
+
+    #[test]
+    fn map_info_urls_chunks_and_joins() {
+        let a = ItemId::from_url("https://reddit.com/r/rust/comments/aaa").unwrap();
+        let b = ItemId::from_url("https://reddit.com/r/rust/comments/bbb").unwrap();
+        assert_eq!(
+            map_info_urls(&[a, b], "https://oauth.reddit.com"),
+            vec!["https://oauth.reddit.com/api/info?id=t3_aaa,t3_bbb&raw_json=1".to_string()]
         );
     }
 
