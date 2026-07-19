@@ -215,8 +215,25 @@ async fn import_fetched_payload(
         FetchKind::Children => parse_children(fetch_id, &payload),
     };
 
+    // When importing a subreddit's posts, inherit the parent's NSFW flag so
+    // children stay marked even if a listing element omits `over_18` (or the
+    // parent about was fetched first and posts later).
+    let parent_nsfw = match kind {
+        FetchKind::Children => projection_store
+            .load_node(fetch_id)
+            .ok()
+            .flatten()
+            .and_then(|n| n.data)
+            .map(|d| d.over_18)
+            .unwrap_or(false),
+        FetchKind::SelfEntity => false,
+    };
+
     for (id, child_payload) in &imports {
-        if let Some(view) = entity_view_from_payload(id, child_payload) {
+        if let Some(mut view) = entity_view_from_payload(id, child_payload) {
+            if parent_nsfw {
+                view.over_18 = true;
+            }
             projection_store
                 .put_ephemeral_content(id, &view, fetched_at)
                 .map_err(|e| e.to_string())?;
@@ -726,6 +743,7 @@ fn parse_subreddit_about(v: &Value) -> Option<crate::reducer::EntityData> {
         title,
         author: None,
         body_html,
+        over_18: reddit_bool(data, &["over18", "over_18"]),
         thumb_url,
         image_url: None,
         link_url: None,
@@ -756,6 +774,7 @@ fn parse_post_listing(v: &Value) -> Option<crate::reducer::EntityData> {
         .and_then(|t| t.as_str())
         .filter(|s| s.starts_with("http"))
         .map(|s| s.to_string());
+    let over_18 = reddit_post_over_18(child);
     let image_url = reddit_post_image_url(child);
     let link_url = reddit_post_link_url(child);
 
@@ -763,10 +782,26 @@ fn parse_post_listing(v: &Value) -> Option<crate::reducer::EntityData> {
         title,
         author,
         body_html,
+        over_18,
         thumb_url,
         image_url,
         link_url,
     })
+}
+
+fn reddit_bool(data: &Value, keys: &[&str]) -> bool {
+    keys.iter()
+        .any(|key| data.get(*key).and_then(|v| v.as_bool()).unwrap_or(false))
+}
+
+/// Post NSFW: explicit `over_18` / `over18`, or Reddit's `thumbnail: "nsfw"` sentinel.
+fn reddit_post_over_18(data: &Value) -> bool {
+    if reddit_bool(data, &["over_18", "over18"]) {
+        return true;
+    }
+    data.get("thumbnail")
+        .and_then(|t| t.as_str())
+        .is_some_and(|t| t.eq_ignore_ascii_case("nsfw"))
 }
 
 fn reddit_post_link_url(data: &Value) -> Option<String> {
@@ -848,6 +883,7 @@ mod tests {
             entity_view_from_payload(&ItemId::from_url("https://reddit.com/r/rust").unwrap(), &v)
                 .unwrap();
         assert_eq!(entity.title, "The Rust Programming Language");
+        assert!(!entity.over_18);
     }
 
     #[test]
@@ -858,6 +894,7 @@ mod tests {
             ItemId::from_url("https://reddit.com/r/nsfw/comments/1tpy6a1/angel_eyes").unwrap();
         let entity = entity_view_from_payload(&id, &v).unwrap();
         assert_eq!(entity.title, "Angel Eyes");
+        assert!(entity.over_18);
         assert!(entity.thumb_url.as_ref().unwrap().contains("width=140"));
         assert!(entity.image_url.as_ref().unwrap().contains("auto=webp"));
         assert!(!entity.image_url.as_ref().unwrap().contains("redgifs"));
@@ -865,6 +902,43 @@ mod tests {
             entity.link_url.as_deref(),
             Some("http://v3.redgifs.com/watch/impossibleprestigioushedgehog")
         );
+    }
+
+    #[test]
+    fn parse_nsfw_post_listing_marks_over_18() {
+        let v = serde_json::json!({
+            "kind": "t3",
+            "data": {
+                "title": "adult post",
+                "author": "alice",
+                "over_18": true,
+                "thumbnail": "https://example.com/thumb.jpg",
+                "url": "https://i.redd.it/adult.jpg",
+                "selftext_html": "<p>adult body</p>"
+            }
+        });
+        let id = ItemId::from_url("https://reddit.com/r/nsfw/comments/abc/adult_post").unwrap();
+        let entity = entity_view_from_payload(&id, &v).unwrap();
+        assert!(entity.over_18);
+        assert_eq!(
+            entity.image_url.as_deref(),
+            Some("https://i.redd.it/adult.jpg")
+        );
+    }
+
+    #[test]
+    fn parse_post_thumbnail_nsfw_sentinel_marks_over_18() {
+        let v = serde_json::json!({
+            "kind": "t3",
+            "data": {
+                "title": "blurred",
+                "thumbnail": "nsfw",
+                "url": "https://i.redd.it/x.jpg"
+            }
+        });
+        let id = ItemId::from_url("https://reddit.com/r/pics/comments/abc/blurred").unwrap();
+        let entity = entity_view_from_payload(&id, &v).unwrap();
+        assert!(entity.over_18);
     }
 
     #[test]

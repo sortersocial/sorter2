@@ -20,8 +20,13 @@ pub fn sanitize_return_to(raw: &str) -> String {
     if s.is_empty() || !s.starts_with('/') || s.starts_with("//") || s.starts_with("/\\") {
         return "/".to_string();
     }
-    // Reject scheme-relative and protocol-smuggling forms.
-    if s.contains("://") || s.contains('\\') {
+    if s.contains('\\') {
+        return "/".to_string();
+    }
+    // Browse paths embed a canonical URL after `/~/`
+    // (`/~/https://reddit.com/r/rust`). That is still a same-origin path, not
+    // an open redirect — only reject bare scheme URLs / smuggling forms.
+    if s.contains("://") && !s.starts_with("/~/") {
         return "/".to_string();
     }
     s.to_string()
@@ -38,5 +43,9 @@ mod tests {
         assert_eq!(sanitize_return_to("/\\evil.com"), "/");
         assert_eq!(sanitize_return_to("https://evil.com"), "/");
         assert_eq!(sanitize_return_to("/vote?parent=x"), "/vote?parent=x");
+        assert_eq!(
+            sanitize_return_to("/~/https://reddit.com/r/rust"),
+            "/~/https://reddit.com/r/rust"
+        );
     }
 }

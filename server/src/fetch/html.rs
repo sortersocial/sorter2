@@ -5,6 +5,7 @@ use maud::{html, Markup};
 use crate::{
     form_template::template_json_compact,
     html::sanitize::entity_body_html,
+    nsfw::entity_is_nsfw,
     path_types::ItemId,
     reddit::{is_children_fetchable, is_fetchable},
     reducer::NodeState,
@@ -16,8 +17,8 @@ pub fn entity_section_selector(item: &ItemId) -> String {
     format!(r#"[data-entity-section="{}"]"#, item.as_str())
 }
 
-pub fn entity_panel(node: &NodeState) -> Markup {
-    if let Some(markup) = crate::render::reddit::entity_markup(node) {
+pub fn entity_panel(node: &NodeState, nsfw_ok: bool) -> Markup {
+    if let Some(markup) = crate::render::reddit::entity_markup(node, nsfw_ok) {
         return markup;
     }
     html! {
@@ -27,7 +28,16 @@ pub fn entity_panel(node: &NodeState) -> Markup {
                 @if let Some(author) = &data.author {
                     p class="muted small" { "by " (author) }
                 }
-                @if let Some(body) = &data.body_html {
+                @if entity_is_nsfw(data) {
+                    p class="muted small" {
+                        span class="nsfw-badge" { "NSFW" }
+                    }
+                }
+                @if entity_is_nsfw(data) && !nsfw_ok {
+                    div class="nsfw-gate" data-testid="nsfw-gate" {
+                        p { "NSFW content is hidden until you opt in." }
+                    }
+                } @else if let Some(body) = &data.body_html {
                     div class="entity-body" { (maud::PreEscaped(entity_body_html(body))) }
                 }
             }
@@ -82,12 +92,30 @@ pub fn fetch_entity_panel(item: &ItemId, has_data: bool, fetching: bool) -> Mark
     }
 }
 
+/// Age-gate CTA for the current page when content is NSFW and the user has not opted in.
+pub fn nsfw_enter_panel(return_to: &str) -> Markup {
+    html! {
+        div class="nsfw-gate-panel demo-panel" data-testid="nsfw-enter-panel" {
+            h2 { "NSFW dimension" }
+            p {
+                "This page contains adult content. Nothing NSFW is listed or shown until you confirm you are 18 or older."
+            }
+            form method="post" action="/nsfw/enter" data-navigate="full" {
+                input type="hidden" name="return_to" value=(return_to);
+                button type="submit" class="btn-primary" data-testid="nsfw-enter" {
+                    "Yes, I am 18+"
+                }
+            }
+        }
+    }
+}
+
 /// Entity card + fetch control (morph target [`entity_section_selector`]).
-pub fn entity_section(item: &ItemId, node: &NodeState, fetching: bool) -> Markup {
+pub fn entity_section(item: &ItemId, node: &NodeState, fetching: bool, nsfw_ok: bool) -> Markup {
     let has_data = node.data.is_some();
     html! {
         section class="entity-section demo-panel" data-entity-section=(item.as_str()) {
-            (entity_panel(node))
+            (entity_panel(node, nsfw_ok))
             (fetch_entity_panel(item, has_data, fetching))
         }
     }

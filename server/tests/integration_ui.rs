@@ -4,7 +4,12 @@ use std::net::SocketAddr;
 use axum::Router;
 use sorter2_server::{
     auth::session::SESSION_COOKIE,
-    create_app, create_app_state, path_types::ItemId, state::AppConfig, ui_action::UI_RPC_FIELD,
+    create_app, create_app_state,
+    nsfw::NSFW_COOKIE,
+    path_types::ItemId,
+    reducer::EntityData,
+    state::AppConfig,
+    ui_action::UI_RPC_FIELD,
 };
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -201,6 +206,148 @@ async fn vote_page_renders_live_ranking_sidebar() {
     assert!(html.contains("--rank-fg: #"));
     assert!(html.contains("data-rank-item=\"alpha\""));
     assert!(html.contains("is-compared"));
+}
+
+#[tokio::test]
+async fn nsfw_items_hidden_until_opt_in_and_leave_returns() {
+    let tmp = TempDir::new().unwrap();
+    let data = tmp.path().to_string_lossy().into_owned();
+    let cfg = AppConfig {
+        data_dir: data.clone(),
+        event_log_path: format!("{data}/events.jsonl"),
+        views_log_path: format!("{data}/views.jsonl"),
+        port: 0,
+    };
+    let state = create_app_state(cfg).await;
+    let parent = ItemId::from_url("https://reddit.com/r/mixed").unwrap();
+    let sfw = ItemId::from_url("https://reddit.com/r/mixed/comments/aaa/safe").unwrap();
+    let nsfw = ItemId::from_url("https://reddit.com/r/mixed/comments/bbb/adult").unwrap();
+    state.ensure_node(&parent).await.unwrap();
+    state.ensure_node(&sfw).await.unwrap();
+    state.ensure_node(&nsfw).await.unwrap();
+    state
+        .projection_store
+        .put_ephemeral_content(
+            &sfw,
+            &EntityData {
+                title: "safe post".into(),
+                author: None,
+                body_html: None,
+                over_18: false,
+                thumb_url: None,
+                image_url: None,
+                link_url: None,
+            },
+            1,
+        )
+        .unwrap();
+    state
+        .projection_store
+        .put_ephemeral_content(
+            &nsfw,
+            &EntityData {
+                title: "adult post".into(),
+                author: None,
+                body_html: Some("<p>secret</p>".into()),
+                over_18: true,
+                thumb_url: Some("https://example.com/nsfw.jpg".into()),
+                image_url: Some("https://example.com/nsfw-full.jpg".into()),
+                link_url: Some("https://example.com/out".into()),
+            },
+            1,
+        )
+        .unwrap();
+
+    let app: Router = create_app(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let parent_url = format!("http://{addr}/~/https://reddit.com/r/mixed");
+
+    let html = client
+        .get(&parent_url)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains("safe post"), "SFW should list: {html}");
+    assert!(
+        !html.contains("adult post"),
+        "NSFW must not list without opt-in: {html}"
+    );
+
+    let nsfw_page = client
+        .get(format!("http://{addr}/~/https://reddit.com/r/mixed/comments/bbb"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        nsfw_page.contains("Yes, I am 18+"),
+        "direct NSFW URL should gate: {nsfw_page}"
+    );
+    assert!(
+        !nsfw_page.contains("https://example.com/nsfw-full.jpg"),
+        "gated page must hide media: {nsfw_page}"
+    );
+
+    let enter = client
+        .post(format!("http://{addr}/nsfw/enter"))
+        .form(&[("return_to", "/~/https://reddit.com/r/mixed")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(enter.status(), reqwest::StatusCode::SEE_OTHER);
+    let set_cookie = enter
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap())
+        .collect::<Vec<_>>()
+        .join(";");
+    assert!(set_cookie.contains(NSFW_COOKIE));
+
+    let opted = client
+        .get(&parent_url)
+        .header("Cookie", format!("{NSFW_COOKIE}=1"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(opted.contains("adult post"), "opted-in should list NSFW: {opted}");
+    assert!(
+        opted.contains("Exit NSFW"),
+        "opted-in nav should offer leave: {opted}"
+    );
+
+    let leave = client
+        .post(format!("http://{addr}/nsfw/leave"))
+        .header("Cookie", format!("{NSFW_COOKIE}=1"))
+        .form(&[("return_to", "/~/https://reddit.com/r/mixed/comments/bbb")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(leave.status(), reqwest::StatusCode::SEE_OTHER);
+    let loc = leave
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(loc, "/~/https://reddit.com/r/mixed");
 }
 
 #[tokio::test]

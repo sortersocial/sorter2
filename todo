@@ -2,6 +2,6 @@ reddit import (only on explicit request)
 reddit rendering
 vote redering
 pair chosing
-nsfw gate
+nsfw gate (strict dimension + enter/leave cookie)
 
 logins (uuid user, two sides, oauths, and pseudonyms)
