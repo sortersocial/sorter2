@@ -189,9 +189,18 @@
     }
   });
 
+  function initNavLoginReturnTo() {
+    var login = document.querySelector('[data-testid="nav-login"]');
+    if (!login) return;
+    login.href =
+      '/login?return_to=' +
+      encodeURIComponent(window.location.pathname + window.location.search);
+  }
+
   function initSorterUi() {
     initVoteSlider();
     initAliasInput();
+    initNavLoginReturnTo();
     document.addEventListener('submit', async function (e) {
       var f = e.target;
       if (!f || f.tagName !== 'FORM') return;

@@ -228,3 +228,125 @@ async fn post_ui_parse_query_redirects_to_subreddit() {
     assert!(body.contains("window.location.href"));
     assert!(body.contains("/~/https://reddit.com/r/rust"));
 }
+
+#[tokio::test]
+async fn anonymous_record_vote_redirects_to_login_with_return_to() {
+    let (addr, _tmp, _session_cookie) = start_test_server().await;
+    let rpc = serde_json::json!({
+        "action": "record_vote",
+        "a": "alpha",
+        "b": "beta",
+        "ratio_left": 2,
+        "ratio_right": 1,
+        "scope": "https://reddit.com/r/rust",
+        "vote_compare": true,
+    })
+    .to_string();
+    let mut form = HashMap::new();
+    form.insert(UI_RPC_FIELD.to_string(), rpc);
+
+    let client = reqwest::Client::new();
+    let body = client
+        .post(format!("http://{addr}/ui"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(
+        body.contains("/login?return_to="),
+        "anonymous vote should send browser to login with return_to, got: {body}"
+    );
+    assert!(
+        body.contains("encodeURIComponent(window.location.pathname+window.location.search)"),
+        "return_to must capture the current pair URL path+query, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn login_page_preserves_pair_return_to_in_oauth_link() {
+    let (addr, _tmp, _session_cookie) = start_test_server().await;
+    let pair_return = "/vote?parent=https%3A%2F%2Freddit.com%2Fr%2Frust&left=https%3A%2F%2Freddit.com%2Fr%2Frust%2Fcomments%2Faaa&right=https%3A%2F%2Freddit.com%2Fr%2Frust%2Fcomments%2Fbbb";
+    let enc = urlencoding::encode(pair_return);
+
+    // OAuth provider buttons only render when credentials are configured.
+    std::env::set_var("GITHUB_CLIENT_ID", "test-client");
+    std::env::set_var("GITHUB_CLIENT_SECRET", "test-secret");
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let html = client
+        .get(format!("http://{addr}/login?return_to={enc}"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(
+        html.contains(&format!("/auth/github?return_to={enc}")),
+        "login page should pass pair return_to into GitHub OAuth start, got: {html}"
+    );
+}
+
+#[tokio::test]
+async fn claim_pseudonym_redirects_to_pair_return_to() {
+    let tmp = TempDir::new().unwrap();
+    let data = tmp.path().to_string_lossy().into_owned();
+    let cfg = AppConfig {
+        data_dir: data.clone(),
+        event_log_path: format!("{data}/events.jsonl"),
+        views_log_path: format!("{data}/views.jsonl"),
+        port: 0,
+    };
+    let state = create_app_state(cfg).await;
+    let session_id = state
+        .create_session(sorter2_server::identity::DEFAULT_ACTOR_UUID, "")
+        .unwrap();
+    let session_cookie = format!("{SESSION_COOKIE}={session_id}");
+    let app: Router = create_app(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let pair_return = "/vote?parent=https%3A%2F%2Freddit.com%2Fr%2Frust&left=https%3A%2F%2Freddit.com%2Fr%2Frust%2Fcomments%2Faaa&right=https%3A%2F%2Freddit.com%2Fr%2Frust%2Fcomments%2Fbbb";
+    let rpc = serde_json::json!({
+        "action": "claim_pseudonym",
+        "pseudonym": {"$form": "pseudonym"},
+        "return_to": pair_return,
+    })
+    .to_string();
+    let mut form = HashMap::new();
+    form.insert(UI_RPC_FIELD.to_string(), rpc);
+    form.insert("pseudonym".into(), "fresh-alias".into());
+
+    let client = reqwest::Client::new();
+    let body = client
+        .post(format!("http://{addr}/ui"))
+        .header("Cookie", &session_cookie)
+        .form(&form)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    let expected = serde_json::to_string(pair_return).unwrap();
+    assert!(
+        body.contains("window.location.href="),
+        "claim should redirect, got: {body}"
+    );
+    assert!(
+        body.contains(&expected),
+        "claim redirect must send user back to the shared pair, got: {body}"
+    );
+}

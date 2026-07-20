@@ -38,5 +38,11 @@ mod tests {
         assert_eq!(sanitize_return_to("/\\evil.com"), "/");
         assert_eq!(sanitize_return_to("https://evil.com"), "/");
         assert_eq!(sanitize_return_to("/vote?parent=x"), "/vote?parent=x");
+        assert_eq!(
+            sanitize_return_to(
+                "/vote?parent=https%3A%2F%2Freddit.com%2Fr%2Frust&left=https%3A%2F%2Freddit.com%2Fr%2Frust%2Fcomments%2Faaa&right=https%3A%2F%2Freddit.com%2Fr%2Frust%2Fcomments%2Fbbb"
+            ),
+            "/vote?parent=https%3A%2F%2Freddit.com%2Fr%2Frust&left=https%3A%2F%2Freddit.com%2Fr%2Frust%2Fcomments%2Faaa&right=https%3A%2F%2Freddit.com%2Fr%2Frust%2Fcomments%2Fbbb"
+        );
     }
 }
