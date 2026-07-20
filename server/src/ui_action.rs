@@ -8,14 +8,18 @@ use thiserror::Error;
 
 pub const UI_RPC_FIELD: &str = "__rpc__";
 
-/// What a `fetch_entity` action targets: the node itself, or its children.
+/// What a `fetch_entity` action targets: the node itself, its listing, or ranked posts.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum FetchTarget {
     #[default]
     #[serde(rename = "self")]
     SelfEntity,
+    /// Import a fresh Reddit listing (`/r/<sub>.json`) — may add new posts.
     #[serde(rename = "children")]
     Children,
+    /// Re-fetch display content for posts already in this ranking via `/api/info`.
+    #[serde(rename = "ranked")]
+    Ranked,
 }
 
 /// HTML form / fetch `POST /ui` payload after template fill and deserialization.
