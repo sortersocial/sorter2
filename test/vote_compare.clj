@@ -7,6 +7,21 @@
             [test.support.harness :as harness]
             [test.support.seed-auth :as seed-auth]))
 
+(defn- element-text [pg selector]
+  (let [raw (page/evaluate pg
+                           (str "document.querySelector(" (pr-str selector) ")?.textContent || ''"))]
+    (when (string? raw) (str/trim raw))))
+
+(defn- wait-for-history-includes [pg needle timeout-ms]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (let [got (or (element-text pg "#vote-edge-history-region") "")]
+        (cond
+          (str/includes? got needle) got
+          (< (System/currentTimeMillis) deadline) (do (Thread/sleep 100) (recur))
+          :else (throw (ex-info "timeout waiting for edge history update"
+                                {:want needle :got got})))))))
+
 (deftest vote-compare-shows-recorded-vote-after-post
   (testing "post vote on /vote morphs edge history (mock Reddit + auth session)"
     (let [servers (harness/with-auth-servers
@@ -20,12 +35,15 @@
             (page/wait-for-selector pg ".top-nav" {:timeout 15000})
             (page/navigate pg vote-url)
             (page/wait-for-selector pg "#vote-compare-form")
-            (let [before (loc/text-content (page/locator pg "#vote-edge-history-region"))]
+            (let [before (or (element-text pg "#vote-edge-history-region") "")]
               (is (str/includes? before "votes on this pair")
                   "seeded seeder vote visible before our vote")
+              (is (str/includes? before "3:1")
+                  "seeded 3:1 ratio visible before our vote")
+              ;; Default slider posts 1:1. Wait for that text — `.vote-edge-history-title`
+              ;; already exists before the click, so waiting on it races the async morph.
               (loc/click (page/get-by-test-id pg "vote-post"))
-              (page/wait-for-selector pg ".vote-edge-history-title")
-              (let [after (loc/text-content (page/locator pg "#vote-edge-history-region"))]
+              (let [after (wait-for-history-includes pg "1:1" 15000)]
                 (is (str/includes? after "votes on this pair")
                     "shows edge history title after vote")
                 (is (not= before after)

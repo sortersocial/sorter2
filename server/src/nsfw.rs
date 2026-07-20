@@ -70,6 +70,28 @@ pub fn item_is_nsfw(tree: &GlobalTree, id: &ItemId) -> bool {
     false
 }
 
+/// Lightweight NSFW check that walks ancestors via `load_node` instead of
+/// materializing a full scope tree (used on the vote write path).
+pub fn item_is_nsfw_in_store(
+    store: &crate::projection_store::ProjectionStore,
+    id: &ItemId,
+) -> bool {
+    let mut cur = Some(id.clone());
+    while let Some(item) = cur {
+        if store
+            .load_node(&item)
+            .ok()
+            .flatten()
+            .and_then(|n| n.data)
+            .is_some_and(|d| d.over_18)
+        {
+            return true;
+        }
+        cur = item.parent();
+    }
+    false
+}
+
 /// Children visible in the current dimension (SFW-only unless `nsfw_ok`).
 pub fn visible_children(tree: &GlobalTree, parent: &ItemId, nsfw_ok: bool) -> Vec<ItemId> {
     let Some(node) = tree.get(parent) else {

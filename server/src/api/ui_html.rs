@@ -13,7 +13,7 @@ use crate::{
     },
     fetch,
     html::{input_panel, js_string_literal, ranking_panel, JsBuilder},
-    nsfw::{item_is_nsfw, nsfw_allowed},
+    nsfw::{item_is_nsfw_in_store, nsfw_allowed},
     parser::parse_reddit_url,
     path_types::ItemId,
     state::{parse_item_param, AppState},
@@ -88,13 +88,10 @@ pub async fn post_ui_html(
             let right = parse_item_param(&b);
             // Strict boundary: refuse votes that would surface NSFW without opt-in.
             if !nsfw_ok {
-                let tree = match state.scope_tree(&parent) {
-                    Ok(tree) => tree,
-                    Err(e) => return ui_js_warn(&e).into_response(),
-                };
-                if item_is_nsfw(&tree, &parent)
-                    || item_is_nsfw(&tree, &left)
-                    || item_is_nsfw(&tree, &right)
+                let store = &state.projection_store;
+                if item_is_nsfw_in_store(store, &parent)
+                    || item_is_nsfw_in_store(store, &left)
+                    || item_is_nsfw_in_store(store, &right)
                 {
                     return ui_js_warn("NSFW opt-in required").into_response();
                 }
