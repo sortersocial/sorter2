@@ -169,11 +169,7 @@ impl AppState {
         catch_up_projection(&event_log, &projection_store).await?;
         let next_seq = event_log.last_sequence().await? + 1;
 
-        let journal = JournalClient::spawn(
-            event_log.clone(),
-            projection_store.clone(),
-            next_seq,
-        );
+        let journal = JournalClient::spawn(event_log.clone(), projection_store.clone(), next_seq);
         let reddit = RedditBroker::spawn(
             journal.clone(),
             projection_store.clone(),
@@ -266,16 +262,35 @@ impl AppState {
         self.journal.append(event).await
     }
 
+    pub async fn set_item_skipped(
+        &self,
+        uuid: &str,
+        item: &ItemId,
+        skipped: bool,
+    ) -> Result<(), String> {
+        let ts = crate::html::now_ms();
+        let event = if skipped {
+            Event::ItemSkipped {
+                uuid: uuid.to_string(),
+                item: item.as_str().to_string(),
+                ts,
+            }
+        } else {
+            Event::ItemUnskipped {
+                uuid: uuid.to_string(),
+                item: item.as_str().to_string(),
+                ts,
+            }
+        };
+        self.journal.append(event).await
+    }
+
     /// Append identity events (OAuth link, pseudonym claim, etc.).
     pub async fn append_identity_events(&self, events: Vec<Event>) -> Result<(), String> {
         self.journal.append_many(events).await
     }
 
-    pub async fn claim_pseudonym(
-        &self,
-        uuid: &str,
-        pseudonym: &str,
-    ) -> Result<(), String> {
+    pub async fn claim_pseudonym(&self, uuid: &str, pseudonym: &str) -> Result<(), String> {
         let ts = crate::html::now_ms();
         self.journal
             .append(Event::PseudonymClaimed {
@@ -349,7 +364,12 @@ mod tests {
                 1,
             )
             .unwrap();
-        assert!(projection_store.load_node(&id).unwrap().unwrap().data.is_some());
+        assert!(projection_store
+            .load_node(&id)
+            .unwrap()
+            .unwrap()
+            .data
+            .is_some());
         drop(projection_store);
         drop(db);
 
@@ -536,11 +556,21 @@ mod tests {
         .await;
 
         let err = state
-            .record_vote(&ItemId::root(), "alpha", "beta", 0, 0, &crate::auth::VoteActor::anon())
+            .record_vote(
+                &ItemId::root(),
+                "alpha",
+                "beta",
+                0,
+                0,
+                &crate::auth::VoteActor::anon(),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("positive preference"));
-        assert_eq!(state.projection_store.last_applied_event_count().unwrap(), 0);
+        assert_eq!(
+            state.projection_store.last_applied_event_count().unwrap(),
+            0
+        );
     }
 
     #[tokio::test]

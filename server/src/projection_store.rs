@@ -11,14 +11,14 @@ use crate::{
     path_types::ItemId,
     reducer::{EntityData, GlobalTree, NodeState},
     storage_schema::{
-        entity_content_clear_writes, entity_content_writes, load_node_state, node, NodeSchemaFields,
-        Store, StoreFields,
+        entity_content_clear_writes, entity_content_writes, load_node_state, node,
+        NodeSchemaFields, Store, StoreFields,
     },
 };
 
 const PROJECTION_CURSOR_KEY: &str = "cursor";
 const PROJECTION_SCHEMA_KEY: &str = "schema_version";
-const PROJECTION_SCHEMA_VERSION: u64 = 6;
+const PROJECTION_SCHEMA_VERSION: u64 = 7;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectionStoreError {
@@ -51,8 +51,7 @@ impl ProjectionStore {
         if version != Some(PROJECTION_SCHEMA_VERSION) {
             store.reset()?;
         }
-        crate::identity::seed_default_pseudonym(db)
-            .map_err(ProjectionStoreError::Durable)?;
+        crate::identity::seed_default_pseudonym(db).map_err(ProjectionStoreError::Durable)?;
         Ok(store)
     }
 
@@ -80,7 +79,11 @@ impl ProjectionStore {
     pub fn reset(&self) -> Result<(), ProjectionStoreError> {
         let root = Store::root();
         self.db.apply(
-            &[root.nodes().clear(), root.proj_meta().clear()],
+            &[
+                root.nodes().clear(),
+                root.user_skips().clear(),
+                root.proj_meta().clear(),
+            ],
             Durability::SyncWal,
         )?;
         self.db.run(
@@ -142,6 +145,13 @@ impl ProjectionStore {
         let mut tree = GlobalTree::new();
         self.hydrate_scope(&mut tree, id)?;
         Ok(tree)
+    }
+
+    pub fn user_skips(
+        &self,
+        uuid: &str,
+    ) -> Result<std::collections::HashSet<ItemId>, ProjectionStoreError> {
+        Ok(crate::storage_schema::load_user_skips(&self.db, uuid)?)
     }
 
     /// Cache Reddit display content outside the event log (must be evicted per policy).

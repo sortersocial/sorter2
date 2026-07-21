@@ -32,6 +32,7 @@ pub fn load_valid_session(db: &Db, session_id: &str) -> Option<SessionDataV1> {
 
 #[derive(Debug, Clone)]
 pub struct VoteActor {
+    pub uuid: String,
     pub pseudonym: String,
     pub trust_weight: f64,
 }
@@ -40,6 +41,7 @@ impl VoteActor {
     /// Test / bench helper: seed votes as the default pseudonym without a session.
     pub fn anon() -> Self {
         Self {
+            uuid: DEFAULT_ACTOR_UUID.to_string(),
             pseudonym: DEFAULT_PSEUDONYM.to_string(),
             trust_weight: 1.0,
         }
@@ -103,6 +105,7 @@ pub fn resolve_vote_actor(db: &Db, session_id: Option<&str>) -> Result<VoteActor
     }
     let trust_weight = user_trust_weight(db, &session.uuid).unwrap_or(1.0);
     Ok(VoteActor {
+        uuid: session.uuid,
         pseudonym: session.current_pseudonym,
         trust_weight,
     })
@@ -155,11 +158,7 @@ pub fn create_session(
     Ok((session_id, data))
 }
 
-pub fn update_session_pseudonym(
-    db: &Db,
-    session_id: &str,
-    pseudonym: &str,
-) -> Result<(), String> {
+pub fn update_session_pseudonym(db: &Db, session_id: &str, pseudonym: &str) -> Result<(), String> {
     let mut session = load_session(db, session_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "session not found".to_string())?;
@@ -226,7 +225,10 @@ mod tests {
     fn missing_session_is_error() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
-        assert_eq!(resolve_vote_actor(&db, None).unwrap_err(), "sign in to vote");
+        assert_eq!(
+            resolve_vote_actor(&db, None).unwrap_err(),
+            "sign in to vote"
+        );
     }
 
     #[test]

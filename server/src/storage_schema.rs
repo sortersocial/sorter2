@@ -11,7 +11,7 @@ use durable::{Batch, Db, Durable, Leaf, List, Map};
 
 use crate::{
     path_types::ItemId,
-    reducer::{EntityData, NodeState, ScopeVotes, VoteData, UuidVoteKey, uuid_vote_key},
+    reducer::{uuid_vote_key, EntityData, NodeState, ScopeVotes, UuidVoteKey, VoteData},
     storage_dto::{
         decode_entity_data, decode_vote, encode_entity_data, encode_vote, parse_stored_id,
         SessionDataV1, StoredEntityDataV1, StoredVoteV1,
@@ -39,6 +39,7 @@ pub struct Store {
     pub pseudonyms: Map<String, Leaf<String>>,
     pub user_pseudonyms: Map<String, List<Leaf<String>>>,
     pub user_weights: Map<String, Leaf<f64>>,
+    pub user_skips: Map<String, Map<String, Leaf<bool>>>,
     pub proj_meta: Map<String, Leaf<u64>>,
     pub view_counts: Map<String, Leaf<u64>>,
     pub view_meta: Map<String, Leaf<u64>>,
@@ -96,7 +97,11 @@ pub fn pseudonym_owner(db: &Db, pseudonym: &str) -> durable::Result<Option<Strin
         .get(db)
 }
 
-pub fn oauth_link_owner(db: &Db, provider: &str, provider_id: &str) -> durable::Result<Option<String>> {
+pub fn oauth_link_owner(
+    db: &Db,
+    provider: &str,
+    provider_id: &str,
+) -> durable::Result<Option<String>> {
     Store::root()
         .oauth_links()
         .key(&oauth_link_key(provider, provider_id))
@@ -126,6 +131,36 @@ pub const RECENT_VOTES_CAP: u64 = 200;
 
 fn id_key(id: &ItemId) -> String {
     id.as_str().to_string()
+}
+
+pub fn load_user_skips(db: &Db, uuid: &str) -> durable::Result<HashSet<ItemId>> {
+    Store::root()
+        .user_skips()
+        .key(&uuid.to_string())
+        .keys(db)?
+        .into_iter()
+        .map(|key| parse_storage_id(&key))
+        .collect()
+}
+
+pub fn skip_item_write(batch: &mut Batch, uuid: &str, item: &ItemId) {
+    batch.write(
+        Store::root()
+            .user_skips()
+            .key(&uuid.to_string())
+            .key(&id_key(item))
+            .set(&true),
+    );
+}
+
+pub fn unskip_item_write(batch: &mut Batch, uuid: &str, item: &ItemId) {
+    batch.write(
+        Store::root()
+            .user_skips()
+            .key(&uuid.to_string())
+            .key(&id_key(item))
+            .delete(),
+    );
 }
 
 pub fn node(id: &ItemId) -> durable::Path<NodeSchema> {
@@ -328,8 +363,14 @@ mod tests {
         );
 
         let node_state = load_node_state(&db, &parent).unwrap().unwrap();
-        assert_eq!(node_state.votes.recent_votes.len(), RECENT_VOTES_CAP as usize);
-        assert_eq!(node_state.votes.recent_votes.first().map(|v| v.ts), Some(10));
+        assert_eq!(
+            node_state.votes.recent_votes.len(),
+            RECENT_VOTES_CAP as usize
+        );
+        assert_eq!(
+            node_state.votes.recent_votes.first().map(|v| v.ts),
+            Some(10)
+        );
     }
 
     #[test]

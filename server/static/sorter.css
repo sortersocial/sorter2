@@ -196,6 +196,39 @@ body {
   margin-top: 0;
 }
 
+.skip-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.skip-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.skip-item a {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
+
+.skip-item form {
+  flex: 0 0 auto;
+}
+
+.skip-item .btn-secondary {
+  margin-top: 0;
+}
+
 .alias-claim label {
   display: block;
   margin-bottom: 0.35rem;
@@ -587,6 +620,15 @@ h1 {
 
 .vote-compare-side .entity-section {
   margin: 0;
+}
+
+.vote-skip-form {
+  margin: 0.4rem 0 0;
+  text-align: center;
+}
+
+.vote-skip-form .btn-secondary {
+  margin-top: 0;
 }
 
 .vote-compare-nav {

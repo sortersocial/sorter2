@@ -6,8 +6,8 @@
 
 pub mod html;
 
-use std::convert::Infallible;
 use std::time::Duration;
+use std::{collections::HashSet, convert::Infallible};
 
 use async_stream::stream;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -50,6 +50,7 @@ pub fn fetch_entity_stream(
     id: ItemId,
     target: FetchTarget,
     nsfw_ok: bool,
+    skipped: HashSet<ItemId>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let kind = match target {
         FetchTarget::SelfEntity => FetchKind::SelfEntity,
@@ -123,7 +124,10 @@ pub fn fetch_entity_stream(
                 let mut b = JsBuilder::new()
                     .morph_selector(&sel, html::entity_section(&id, node, false, nsfw_ok));
                 if kind == FetchKind::Children || kind == FetchKind::Ranked {
-                    b = b.morph_selector("#ranking-panel", ranking_panel(&id, node, &tree, nsfw_ok));
+                    b = b.morph_selector(
+                        "#ranking-panel",
+                        ranking_panel(&id, node, &tree, nsfw_ok, &skipped),
+                    );
                 }
                 yield Ok(js_event(b.build()));
             }
