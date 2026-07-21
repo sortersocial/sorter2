@@ -47,5 +47,11 @@ mod tests {
             sanitize_return_to("/~/https://reddit.com/r/rust"),
             "/~/https://reddit.com/r/rust"
         );
+        assert_eq!(
+            sanitize_return_to(
+                "/vote?parent=https%3A%2F%2Freddit.com%2Fr%2Frust&left=https%3A%2F%2Freddit.com%2Fr%2Frust%2Fcomments%2Faaa&right=https%3A%2F%2Freddit.com%2Fr%2Frust%2Fcomments%2Fbbb"
+            ),
+            "/vote?parent=https%3A%2F%2Freddit.com%2Fr%2Frust&left=https%3A%2F%2Freddit.com%2Fr%2Frust%2Fcomments%2Faaa&right=https%3A%2F%2Freddit.com%2Fr%2Frust%2Fcomments%2Fbbb"
+        );
     }
 }

@@ -54,6 +54,7 @@ pub fn fetch_entity_stream(
     let kind = match target {
         FetchTarget::SelfEntity => FetchKind::SelfEntity,
         FetchTarget::Children => FetchKind::Children,
+        FetchTarget::Ranked => FetchKind::Ranked,
     };
     tracing::debug!(item = %id, ?kind, "fetch entity stream opened");
 
@@ -66,11 +67,23 @@ pub fn fetch_entity_stream(
         let fetchable = match kind {
             FetchKind::SelfEntity => crate::reddit::is_fetchable(&id),
             FetchKind::Children => crate::reddit::is_children_fetchable(&id),
+            FetchKind::Ranked => crate::reddit::is_ranked_fetchable(&id),
         };
         if !fetchable {
             tracing::debug!(item = %id, ?kind, "fetch stream: not fetchable");
             yield Ok(js_event(error_js("This page cannot be fetched from Reddit.")));
             return;
+        }
+
+        if kind == FetchKind::Ranked {
+            let tree = state.scope_tree(&id).unwrap_or_else(|_| crate::reducer::GlobalTree::new());
+            let empty = NodeState::default();
+            let node = tree.get(&id).unwrap_or(&empty);
+            let has_posts = node.children.iter().any(crate::render::reddit::is_reddit_post);
+            if !has_posts {
+                yield Ok(js_event(error_js("No posts in this ranking to refresh.")));
+                return;
+            }
         }
 
         // Optimistic "Fetching…" morph of the entity section.
@@ -109,7 +122,7 @@ pub fn fetch_entity_stream(
                 let sel = html::entity_section_selector(&id);
                 let mut b = JsBuilder::new()
                     .morph_selector(&sel, html::entity_section(&id, node, false, nsfw_ok));
-                if kind == FetchKind::Children {
+                if kind == FetchKind::Children || kind == FetchKind::Ranked {
                     b = b.morph_selector("#ranking-panel", ranking_panel(&id, node, &tree, nsfw_ok));
                 }
                 yield Ok(js_event(b.build()));

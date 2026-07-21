@@ -288,12 +288,17 @@ impl AppState {
 
     /// Session id for the seeded default pseudonym (tests and local dev helpers).
     pub fn create_default_session(&self) -> Result<String, String> {
-        crate::auth::session::create_session(
-            self.projection_store.db(),
+        self.create_session(
             crate::identity::DEFAULT_ACTOR_UUID,
             crate::identity::DEFAULT_PSEUDONYM,
         )
-        .map(|(id, _)| id)
+    }
+
+    /// Create a session cookie id for `uuid` with the given current pseudonym
+    /// (empty string = alias still required). Used by integration tests.
+    pub fn create_session(&self, uuid: &str, pseudonym: &str) -> Result<String, String> {
+        crate::auth::session::create_session(self.projection_store.db(), uuid, pseudonym)
+            .map(|(id, _)| id)
     }
 }
 

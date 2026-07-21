@@ -7,8 +7,9 @@ use crate::{
     html::sanitize::entity_body_html,
     nsfw::entity_is_nsfw,
     path_types::ItemId,
-    reddit::{is_children_fetchable, is_fetchable},
+    reddit::{is_children_fetchable, is_fetchable, is_ranked_fetchable},
     reducer::NodeState,
+    render::reddit::is_reddit_post,
     ui_action::UI_RPC_FIELD,
 };
 
@@ -45,7 +46,7 @@ pub fn entity_panel(node: &NodeState, nsfw_ok: bool) -> Markup {
     }
 }
 
-/// One `fetch_entity` form/button targeting `kind` ("self" or "children").
+/// One `fetch_entity` form/button targeting `kind` ("self", "children", or "ranked").
 fn fetch_button(item: &ItemId, kind: &str, label: &str, fetching: bool) -> Markup {
     let rpc = template_json_compact(&serde_json::json!({
         "action": "fetch_entity",
@@ -67,10 +68,13 @@ fn fetch_button(item: &ItemId, kind: &str, label: &str, fetching: bool) -> Marku
 
 /// Reddit/API import controls — `POST /ui` with `fetch_entity` returns an SSE
 /// stream whose events are JS snippets to `eval`.
-pub fn fetch_entity_panel(item: &ItemId, has_data: bool, fetching: bool) -> Markup {
+pub fn fetch_entity_panel(item: &ItemId, node: &NodeState, fetching: bool) -> Markup {
+    let has_data = node.data.is_some();
     let self_ok = is_fetchable(item);
     let children_ok = is_children_fetchable(item);
-    if !self_ok && !children_ok {
+    let ranked_ok =
+        is_ranked_fetchable(item) && node.children.iter().any(is_reddit_post);
+    if !self_ok && !children_ok && !ranked_ok {
         return html! {};
     }
     let self_label = if fetching {
@@ -87,6 +91,14 @@ pub fn fetch_entity_panel(item: &ItemId, has_data: bool, fetching: bool) -> Mark
             }
             @if children_ok {
                 (fetch_button(item, "children", if fetching { "Fetching…" } else { "Fetch posts" }, fetching))
+            }
+            @if ranked_ok {
+                (fetch_button(
+                    item,
+                    "ranked",
+                    if fetching { "Fetching…" } else { "Refresh ranking" },
+                    fetching
+                ))
             }
         }
     }
@@ -112,11 +124,10 @@ pub fn nsfw_enter_panel(return_to: &str) -> Markup {
 
 /// Entity card + fetch control (morph target [`entity_section_selector`]).
 pub fn entity_section(item: &ItemId, node: &NodeState, fetching: bool, nsfw_ok: bool) -> Markup {
-    let has_data = node.data.is_some();
     html! {
         section class="entity-section demo-panel" data-entity-section=(item.as_str()) {
             (entity_panel(node, nsfw_ok))
-            (fetch_entity_panel(item, has_data, fetching))
+            (fetch_entity_panel(item, node, fetching))
         }
     }
 }

@@ -159,6 +159,16 @@ impl ProjectionStore {
         Ok(())
     }
 
+    /// Drop cached display content for one node (votes and tree structure remain).
+    pub fn clear_ephemeral_content(&self, id: &ItemId) -> Result<(), ProjectionStoreError> {
+        let mut batch = self.db.batch();
+        entity_content_clear_writes(&mut batch, id);
+        batch
+            .commit_with(Durability::DisableWal)
+            .map_err(ProjectionStoreError::from)?;
+        Ok(())
+    }
+
     /// Drop cached display content older than `cutoff_ms` (votes and tree structure remain).
     pub fn evict_content_older_than(&self, cutoff_ms: i64) -> Result<usize, ProjectionStoreError> {
         let keys = Store::root().nodes().keys(&self.db)?;

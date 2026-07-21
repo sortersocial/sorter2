@@ -40,6 +40,17 @@
           (< (System/currentTimeMillis) deadline) (do (Thread/sleep 200) (recur))
           :else (throw (ex-info "timeout waiting for text" {:test-id test-id :want text :got got})))))))
 
+(defn- url-query-params [url]
+  (let [q (.getRawQuery (java.net.URI. url))]
+    (into {}
+          (for [pair (when (seq q) (str/split q #"&"))
+                :let [[k v] (str/split pair #"=" 2)]
+                :when (seq k)]
+            [k (java.net.URLDecoder/decode (or v "") "UTF-8")]))))
+
+(defn- query-param [url key]
+  (get (url-query-params url) key))
+
 (deftest new-user-login-flow-returns-to-vote-pair
   (testing "anonymous vote redirects through OAuth + alias chooser back to the same pair"
     (let [servers (harness/with-auth-servers
@@ -48,13 +59,22 @@
       (try
         (harness/seed-rust-children! (:app-base servers))
         (let [vote-url (seed-auth/seeder-pair-vote-url (:app-base servers))
-              alias "newbie-alias"]
+              alias "newbie-alias"
+              expected-params {"parent" seed-auth/rust-scope
+                               "left" seed-auth/post-a
+                               "right" seed-auth/post-b}]
           (core/with-testing-page [pg]
             (page/navigate pg vote-url)
             (page/wait-for-selector pg "#vote-compare-form")
             (move-vote-slider-left pg)
             (loc/click (page/get-by-test-id pg "vote-post"))
             (page/wait-for-selector pg "[data-testid=oauth-github]" {:timeout 15000})
+            (let [login-url (page/url pg)
+                  return-to (query-param login-url "return_to")]
+              (is (str/includes? login-url "/login?"))
+              (is (string? return-to) "login must carry return_to")
+              (is (= expected-params (url-query-params (str "http://local" return-to)))
+                  "login return_to must point at the shared pair"))
             (loc/click (page/get-by-test-id pg "oauth-github"))
             (page/wait-for-selector pg "[data-testid=alias-input]" {:timeout 15000})
             (type-alias! pg "seeder")
@@ -63,7 +83,10 @@
             (wait-for-text pg "alias-status" "available" 15000)
             (loc/click (page/get-by-test-id pg "alias-claim"))
             (page/wait-for-selector pg "#vote-compare-form" {:timeout 15000})
-            (is (str/includes? (page/url pg) "/vote?"))
+            (let [after-url (page/url pg)]
+              (is (str/includes? after-url "/vote?"))
+              (is (= expected-params (url-query-params after-url))
+                  "after login, land on the same shared pair"))
             (loc/click (page/get-by-test-id pg "vote-post"))
             (page/wait-for-selector pg ".vote-edge-history-title" {:timeout 15000})
             (let [history (or (element-text pg "#vote-edge-history-region") "")]
