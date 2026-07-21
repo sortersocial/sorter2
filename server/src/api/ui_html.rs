@@ -197,7 +197,24 @@ pub async fn post_ui_html(
             if let Err(e) = state.set_item_skipped(&session.uuid, &item, true).await {
                 return ui_js_warn(&e).into_response();
             }
-            redirect_js(&crate::html::vote::vote_href(&parent_from_scope(&parent))).into_response()
+            let parent = parent_from_scope(&parent);
+            let destination = state
+                .scope_tree(&parent)
+                .ok()
+                .map(|tree| {
+                    let skipped = load_user_skips(state.projection_store.db(), &session.uuid)
+                        .unwrap_or_default();
+                    if crate::skip::visible_unskipped_children(&tree, &parent, nsfw_ok, &skipped)
+                        .len()
+                        >= 2
+                    {
+                        crate::html::vote::vote_href(&parent)
+                    } else {
+                        parent.browse_href()
+                    }
+                })
+                .unwrap_or_else(|| parent.browse_href());
+            redirect_js(&destination).into_response()
         }
         HtmlUiAction::UnskipItem { item } => {
             let session_id = match session_id_from_jar(&jar) {

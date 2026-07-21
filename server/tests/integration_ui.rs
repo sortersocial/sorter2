@@ -380,6 +380,31 @@ async fn skipset_filters_pairs_and_rankings_per_user_and_is_editable() {
         .unwrap();
     assert!(restored.contains("data-rank-item=\"alpha\""));
 
+    for item in ["alpha", "beta"] {
+        let rpc = serde_json::json!({
+            "action": "skip_item",
+            "item": item,
+            "parent": "",
+        })
+        .to_string();
+        let response = client
+            .post(format!("http://{addr}/ui"))
+            .header("Cookie", &user_a_cookie)
+            .form(&[(UI_RPC_FIELD, rpc.as_str())])
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        if item == "beta" {
+            assert!(
+                response.contains("window.location.href=\"/\""),
+                "one remaining candidate should return to the ranking: {response}"
+            );
+        }
+    }
+
     let log = std::fs::read_to_string(tmp.path().join("events.jsonl")).unwrap();
     assert!(log.contains("\"type\":\"item_skipped\""));
     assert!(log.contains("\"type\":\"item_unskipped\""));
