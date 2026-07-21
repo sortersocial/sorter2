@@ -125,6 +125,7 @@
     var leftInput = document.getElementById('vote-ratio-left');
     var rightInput = document.getElementById('vote-ratio-right');
     var ratioDisplay = document.getElementById('vote-ratio-display');
+    var comparePair = document.querySelector('.vote-compare-pair');
     function gcd(a, b) {
       a = Math.abs(a);
       b = Math.abs(b);
@@ -153,6 +154,9 @@
       if (rightInput) rightInput.value = String(right);
       var winner = left > right ? 'left' : (right > left ? 'right' : 'even');
       slider.dataset.winner = winner;
+      // On mobile the pair uses data-winner to show only the selected side
+      // (or both at 50:50 when tied). Keep the attribute in sync for CSS.
+      if (comparePair) comparePair.dataset.winner = winner;
       if (ratioDisplay) {
         var label = winner === 'even' ? 'tie' : (winner + ' wins');
         ratioDisplay.textContent = left + ':' + right + ' \u00b7 ' + label;

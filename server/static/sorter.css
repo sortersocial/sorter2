@@ -809,8 +809,82 @@ h1 {
 }
 
 @media (max-width: 640px) {
+  .scope-theme {
+    padding: 0.75rem;
+    padding-bottom: 0.5rem;
+    overflow-x: clip;
+  }
+
   .vote-page {
-    --vote-hud-height: 7.5rem;
+    /* stacked hud: ratio + slider + actions */
+    --vote-hud-height: 8.25rem;
+  }
+
+  .vote-compare-shell h1 {
+    font-size: 1.35rem;
+  }
+
+  .vote-compare-pair {
+    /* Slider doubles as selector: one full post, or mini both at 1:1. */
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.65rem;
+    margin: 0.75rem 0;
+    align-items: stretch;
+  }
+
+  .vote-compare-pair .vote-compare-vs {
+    display: none;
+  }
+
+  .vote-compare-pair[data-winner="left"] .vote-compare-right,
+  .vote-compare-pair[data-winner="right"] .vote-compare-left {
+    display: none;
+  }
+
+  .vote-compare-pair[data-winner="even"] {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+  }
+
+  .vote-compare-pair[data-winner="even"] .vote-compare-side {
+    min-height: 0;
+  }
+
+  .vote-compare-pair[data-winner="even"] .entity-card h2 {
+    font-size: 0.95rem;
+    line-height: 1.25;
+  }
+
+  .vote-compare-pair[data-winner="even"] .entity-body,
+  .vote-compare-pair[data-winner="even"] .reddit-post-url,
+  .vote-compare-pair[data-winner="even"] .fetch-controls {
+    display: none;
+  }
+
+  .vote-compare-pair[data-winner="even"] .reddit-post-image {
+    max-height: 9rem;
+    width: 100%;
+    object-fit: cover;
+  }
+
+  .vote-compare-pair[data-winner="even"] .entity-section {
+    padding: 0.65rem;
+  }
+
+  .vote-compare-side {
+    min-width: 0;
+  }
+
+  .vote-compare-side .entity-section {
+    overflow-wrap: anywhere;
+  }
+
+  .reddit-post-image {
+    max-height: min(55vh, 22rem);
+    width: 100%;
+    object-fit: contain;
+    background: color-mix(in oklch, var(--panel) 70%, black);
   }
 
   .vote-hud-inner {
@@ -821,17 +895,43 @@ h1 {
     --vote-actions-col: 100%;
   }
 
-  .vote-hud .vote-ratio-readout,
-  .vote-hud .vote-compare-actions {
+  .vote-hud .vote-ratio-readout {
     width: auto;
     min-width: 0;
+    text-align: center;
+  }
+
+  .vote-hud .vote-ratio-readout .small {
+    display: inline;
   }
 
   .vote-hud .vote-compare-actions {
+    width: auto;
+    min-width: 0;
     justify-content: center;
   }
 
   .vote-hud {
-    padding-bottom: max(0.45rem, env(safe-area-inset-bottom));
+    padding: 0.55rem 0.65rem;
+    padding-bottom: max(0.55rem, env(safe-area-inset-bottom));
+  }
+
+  .vote-hud-slider input[type="range"] {
+    height: 2rem;
+  }
+
+  .vote-hud-slider input[type="range"]::-webkit-slider-thumb {
+    width: 1.35rem;
+    height: 1.6rem;
+    margin-top: -0.55rem;
+  }
+
+  .vote-hud-slider input[type="range"]::-moz-range-thumb {
+    width: 1.35rem;
+    height: 1.6rem;
+  }
+
+  .vote-edge-history-row {
+    margin-bottom: 0.55rem;
   }
 }

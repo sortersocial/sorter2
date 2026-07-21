@@ -178,7 +178,7 @@ fn vote_hud_form(
                     }
                     label class="vote-hud-slider" {
                         input type="range" id="vote-preference-slider" min="0" max="100" value="50"
-                            data-winner="left"
+                            data-winner="even"
                             aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"
                             aria-label=(format!("Preference: {} vs {}", left.as_str(), right.as_str()));
                     }
@@ -314,7 +314,7 @@ pub async fn vote_page(
                 section class="vote-compare-shell" {
                     h1 { "compare" }
                     (breadcrumb_path(&parent))
-                    div class="vote-compare-pair" {
+                    div class="vote-compare-pair" data-winner="even" {
                         (vote_compare_item_card(&tree, &left, "vote-compare-left"))
                         span class="vote-compare-vs" { "vs" }
                         (vote_compare_item_card(&tree, &right, "vote-compare-right"))
