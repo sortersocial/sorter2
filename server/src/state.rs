@@ -169,11 +169,7 @@ impl AppState {
         catch_up_projection(&event_log, &projection_store).await?;
         let next_seq = event_log.last_sequence().await? + 1;
 
-        let journal = JournalClient::spawn(
-            event_log.clone(),
-            projection_store.clone(),
-            next_seq,
-        );
+        let journal = JournalClient::spawn(event_log.clone(), projection_store.clone(), next_seq);
         let reddit = RedditBroker::spawn(
             journal.clone(),
             projection_store.clone(),
@@ -271,11 +267,7 @@ impl AppState {
         self.journal.append_many(events).await
     }
 
-    pub async fn claim_pseudonym(
-        &self,
-        uuid: &str,
-        pseudonym: &str,
-    ) -> Result<(), String> {
+    pub async fn claim_pseudonym(&self, uuid: &str, pseudonym: &str) -> Result<(), String> {
         let ts = crate::html::now_ms();
         self.journal
             .append(Event::PseudonymClaimed {
@@ -315,7 +307,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rebuild_projection_drops_ephemeral_content() {
+    async fn rebuild_projection_drops_ephemeral_content_but_restores_nsfw_classification() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().to_string_lossy().into_owned();
         let log = EventLog::new(format!("{data_dir}/events.jsonl"));
@@ -323,6 +315,15 @@ mod tests {
             1,
             Event::NodeEnsured {
                 id: "https://reddit.com/r/rust".into(),
+            },
+        ))
+        .await
+        .unwrap();
+        log.append(&event_record(
+            2,
+            Event::NsfwClassified {
+                id: "https://reddit.com/r/rust".into(),
+                over_18: true,
             },
         ))
         .await
@@ -349,7 +350,12 @@ mod tests {
                 1,
             )
             .unwrap();
-        assert!(projection_store.load_node(&id).unwrap().unwrap().data.is_some());
+        assert!(projection_store
+            .load_node(&id)
+            .unwrap()
+            .unwrap()
+            .data
+            .is_some());
         drop(projection_store);
         drop(db);
 
@@ -366,6 +372,8 @@ mod tests {
         let projection_store = ProjectionStore::from_db(&db).unwrap();
         let node = projection_store.load_node(&id).unwrap().unwrap();
         assert!(node.data.is_none());
+        assert_eq!(node.nsfw_classification, Some(true));
+        assert!(crate::nsfw::item_is_nsfw_in_store(&projection_store, &id));
     }
 
     #[tokio::test]
@@ -536,11 +544,21 @@ mod tests {
         .await;
 
         let err = state
-            .record_vote(&ItemId::root(), "alpha", "beta", 0, 0, &crate::auth::VoteActor::anon())
+            .record_vote(
+                &ItemId::root(),
+                "alpha",
+                "beta",
+                0,
+                0,
+                &crate::auth::VoteActor::anon(),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("positive preference"));
-        assert_eq!(state.projection_store.last_applied_event_count().unwrap(), 0);
+        assert_eq!(
+            state.projection_store.last_applied_event_count().unwrap(),
+            0
+        );
     }
 
     #[tokio::test]

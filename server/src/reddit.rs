@@ -9,8 +9,8 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    events::Event, fetch::now_ms, journal::JournalClient,
-    path_types::ItemId, projection_store::ProjectionStore,
+    events::Event, fetch::now_ms, journal::JournalClient, nsfw::node_is_nsfw, path_types::ItemId,
+    projection_store::ProjectionStore,
 };
 
 /// Reddit display content must not be retained longer than this (API policy).
@@ -233,13 +233,16 @@ async fn import_fetched_payload(
             .load_node(fetch_id)
             .ok()
             .flatten()
-            .and_then(|n| n.data)
-            .map(|d| d.over_18)
+            .map(|n| node_is_nsfw(&n))
             .unwrap_or(false),
         FetchKind::SelfEntity => false,
     };
 
+    let mut events = Vec::with_capacity(imports.len() * 2);
     for (id, child_payload) in &imports {
+        events.push(Event::NodeEnsured {
+            id: id.as_str().to_string(),
+        });
         if let Some(mut view) = entity_view_from_payload(id, child_payload) {
             if parent_nsfw {
                 view.over_18 = true;
@@ -247,16 +250,14 @@ async fn import_fetched_payload(
             projection_store
                 .put_ephemeral_content(id, &view, fetched_at)
                 .map_err(|e| e.to_string())?;
+            events.push(Event::NsfwClassified {
+                id: id.as_str().to_string(),
+                over_18: view.over_18,
+            });
         }
     }
 
-    let events: Vec<Event> = imports
-        .iter()
-        .map(|(id, _)| Event::NodeEnsured {
-            id: id.as_str().to_string(),
-        })
-        .collect();
-    let written = events.len();
+    let written = imports.len();
     if !events.is_empty() {
         journal.append_many(events).await?;
     }
@@ -264,13 +265,15 @@ async fn import_fetched_payload(
 }
 
 /// Refresh ephemeral display content for posts already under `parent`.
-/// Does not append `NodeEnsured` (structure already persisted). Clears cache for
-/// requested posts missing from Reddit's `/api/info` response.
-fn import_ranked_payload(
+/// Does not append `NodeEnsured` (structure already persisted), but persists
+/// refreshed safety classifications. Clears cache for requested posts missing
+/// from Reddit's `/api/info` response.
+async fn import_ranked_payload(
     parent: &ItemId,
     requested: &[ItemId],
     payloads: &[Value],
     projection_store: &ProjectionStore,
+    journal: &JournalClient,
 ) -> Result<usize, String> {
     let requested_set: HashSet<ItemId> = requested.iter().cloned().collect();
     let fetched_at = now_ms();
@@ -279,9 +282,9 @@ fn import_ranked_payload(
         .load_node(parent)
         .ok()
         .flatten()
-        .and_then(|n| n.data)
-        .map(|d| d.over_18)
+        .map(|n| node_is_nsfw(&n))
         .unwrap_or(false);
+    let mut classification_events = Vec::new();
 
     for payload in payloads {
         for (id, child_payload) in parse_children(&ItemId::root(), payload) {
@@ -295,6 +298,10 @@ fn import_ranked_payload(
                 projection_store
                     .put_ephemeral_content(&id, &view, fetched_at)
                     .map_err(|e| e.to_string())?;
+                classification_events.push(Event::NsfwClassified {
+                    id: id.as_str().to_string(),
+                    over_18: view.over_18,
+                });
             }
             found.insert(id);
         }
@@ -308,6 +315,10 @@ fn import_ranked_payload(
         }
     }
 
+    if !classification_events.is_empty() {
+        journal.append_many(classification_events).await?;
+    }
+
     Ok(found.len())
 }
 
@@ -318,7 +329,9 @@ fn ranked_posts_under(parent: &ItemId, projection_store: &ProjectionStore) -> Ve
     let mut posts: Vec<ItemId> = node
         .children
         .into_iter()
-        .filter(|c| crate::render::reddit::is_reddit_post(c) && reddit_post_fullname_id(c).is_some())
+        .filter(|c| {
+            crate::render::reddit::is_reddit_post(c) && reddit_post_fullname_id(c).is_some()
+        })
         .collect();
     posts.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     posts
@@ -380,7 +393,14 @@ async fn reddit_worker(
                 continue;
             }
 
-            let urls = map_info_urls(&posts, if creds.is_some() { &oauth_api_base } else { &api_base });
+            let urls = map_info_urls(
+                &posts,
+                if creds.is_some() {
+                    &oauth_api_base
+                } else {
+                    &api_base
+                },
+            );
             let mut payloads = Vec::new();
             let mut ranked_err: Option<FetchJobResult> = None;
 
@@ -439,7 +459,15 @@ async fn reddit_worker(
             if let Some(err) = ranked_err {
                 notify(done, err);
             } else {
-                match import_ranked_payload(&fetch_id, &posts, &payloads, &projection_store) {
+                match import_ranked_payload(
+                    &fetch_id,
+                    &posts,
+                    &payloads,
+                    &projection_store,
+                    &journal,
+                )
+                .await
+                {
                     Err(e) => {
                         tracing::warn!(item = %fetch_id, err = %e, "reddit ranked import failed");
                         notify(done, FetchJobResult::Failed(e));
@@ -550,9 +578,14 @@ async fn reddit_worker(
 enum FetchOutcome {
     Payload(Value),
     NotFound,
-    RateLimited { reset_secs: u64 },
+    RateLimited {
+        reset_secs: u64,
+    },
     /// Bearer rejected — caller should drop the cached token and retry once.
-    AuthRejected { status: StatusCode, detail: String },
+    AuthRejected {
+        status: StatusCode,
+        detail: String,
+    },
 }
 
 async fn fetch_with_oauth(
@@ -1111,8 +1144,7 @@ mod tests {
     fn parse_post_listing_extracts_thumb_and_full_preview() {
         let json = include_str!("../../test/fixtures/reddit/post_preview.json");
         let v: Value = serde_json::from_str(json).unwrap();
-        let id =
-            ItemId::from_url("https://reddit.com/r/nsfw/comments/1tpy6a1/angel_eyes").unwrap();
+        let id = ItemId::from_url("https://reddit.com/r/nsfw/comments/1tpy6a1/angel_eyes").unwrap();
         let entity = entity_view_from_payload(&id, &v).unwrap();
         assert_eq!(entity.title, "Angel Eyes");
         assert!(entity.over_18);
@@ -1145,6 +1177,39 @@ mod tests {
             entity.image_url.as_deref(),
             Some("https://i.redd.it/adult.jpg")
         );
+    }
+
+    #[tokio::test]
+    async fn nsfw_import_persists_classification_in_projection_and_event_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = durable::Db::open(tmp.path().join("store")).unwrap();
+        let store = ProjectionStore::from_db(&db).unwrap();
+        let log_path = tmp.path().join("events.jsonl");
+        let log = std::sync::Arc::new(crate::event_log::EventLog::new(&log_path));
+        let journal = JournalClient::spawn(log, store.clone(), 1);
+        let id = ItemId::from_url("https://reddit.com/r/nsfw/comments/abc/adult_post").unwrap();
+        let payload = serde_json::json!({
+            "kind": "t3",
+            "data": {
+                "title": "adult post",
+                "over_18": true,
+                "thumbnail": "https://example.com/thumb.jpg"
+            }
+        });
+
+        let imported =
+            import_fetched_payload(FetchKind::SelfEntity, &id, payload, &store, &journal)
+                .await
+                .unwrap();
+
+        assert_eq!(imported, 1);
+        let node = store.load_node(&id).unwrap().unwrap();
+        assert_eq!(node.nsfw_classification, Some(true));
+        assert!(node.data.unwrap().over_18);
+        let jsonl = std::fs::read_to_string(log_path).unwrap();
+        assert!(jsonl.contains(r#""type":"node_ensured""#));
+        assert!(jsonl.contains(r#""type":"nsfw_classified""#));
+        assert!(jsonl.contains(r#""over_18":true"#));
     }
 
     #[test]

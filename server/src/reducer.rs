@@ -101,6 +101,10 @@ pub struct NodeState {
     pub id: ItemId,
     /// Ephemeral display view (Reddit title/author/etc.; not event-logged).
     pub data: Option<EntityData>,
+    /// Durable Reddit safety classification. `None` means the node has not yet
+    /// been classified and must not appear in listings.
+    #[serde(default)]
+    pub nsfw_classification: Option<bool>,
     pub children: HashSet<ItemId>,
     pub votes: ScopeVotes,
 }
@@ -215,16 +219,7 @@ mod tests {
 
     #[test]
     fn from_event_rejects_same_item() {
-        assert!(VoteData::from_event(
-            1,
-            "a",
-            "a",
-            2,
-            1,
-            "anon".into(),
-            1.0
-        )
-        .is_none());
+        assert!(VoteData::from_event(1, "a", "a", 2, 1, "anon".into(), 1.0).is_none());
     }
 
     #[test]

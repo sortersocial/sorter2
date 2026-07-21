@@ -7,14 +7,15 @@
 use std::collections::HashMap;
 
 use crate::{
+    auth::identity::{trust_weight_after_link, BASE_TRUST_WEIGHT},
     event_log::EventLogError,
     events::{Event, EventRecord},
-    auth::identity::{trust_weight_after_link, BASE_TRUST_WEIGHT},
     path_types::ItemId,
     projection_store::ProjectionStore,
     reducer::VoteData,
     storage_schema::{
-        ensure_path_writes, oauth_link_key, pseudonym_owner, vote_writes, Store, StoreFields,
+        ensure_path_writes, nsfw_classification_writes, oauth_link_key, pseudonym_owner,
+        vote_writes, Store, StoreFields,
     },
 };
 
@@ -68,16 +69,11 @@ pub fn apply_records(
                         "invalid vote event: zero weights ({a} vs {b})"
                     )));
                 }
-                let vote = VoteData::from_event(
-                    *ts,
-                    a,
-                    b,
-                    left,
-                    right,
-                    pseudonym.clone(),
-                    *trust_weight,
-                )
-                .ok_or_else(|| EventLogError::Apply(format!("invalid vote event: {a} vs {b}")))?;
+                let vote =
+                    VoteData::from_event(*ts, a, b, left, right, pseudonym.clone(), *trust_weight)
+                        .ok_or_else(|| {
+                            EventLogError::Apply(format!("invalid vote event: {a} vs {b}"))
+                        })?;
                 let actor_uuid = crate::identity::resolve_actor_uuid(db, pseudonym)
                     .map_err(|e| EventLogError::Apply(e))?;
                 let parent = parent_from_event_scope(scope);
@@ -87,6 +83,10 @@ pub fn apply_records(
             Event::NodeEnsured { id } => {
                 let parsed = parse_event_id(id)?;
                 ensure_path_writes(&mut batch, &parsed);
+            }
+            Event::NsfwClassified { id, over_18 } => {
+                let parsed = parse_event_id(id)?;
+                nsfw_classification_writes(&mut batch, &parsed, *over_18);
             }
             Event::PrincipalCreated { uuid, .. } => {
                 pending_weights.insert(uuid.clone(), BASE_TRUST_WEIGHT);
@@ -131,15 +131,12 @@ pub fn apply_records(
                         .unwrap_or(BASE_TRUST_WEIGHT);
                     let next = trust_weight_after_link(current);
                     pending_weights.insert(uuid.clone(), next);
-                    batch.write(
-                        Store::root()
-                            .user_weights()
-                            .key(&uuid.clone())
-                            .set(&next),
-                    );
+                    batch.write(Store::root().user_weights().key(&uuid.clone()).set(&next));
                 }
             }
-            Event::PseudonymClaimed { uuid, pseudonym, .. } => {
+            Event::PseudonymClaimed {
+                uuid, pseudonym, ..
+            } => {
                 if let Some(owner) = pseudonym_owner(db, pseudonym)
                     .map_err(|e| EventLogError::Apply(e.to_string()))?
                 {
@@ -149,12 +146,7 @@ pub fn apply_records(
                         )));
                     }
                 } else {
-                    batch.write(
-                        Store::root()
-                            .pseudonyms()
-                            .key(&pseudonym.clone())
-                            .set(uuid),
-                    );
+                    batch.write(Store::root().pseudonyms().key(&pseudonym.clone()).set(uuid));
                     batch
                         .push(
                             &Store::root().user_pseudonyms().key(&uuid.clone()),

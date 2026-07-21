@@ -11,7 +11,7 @@ use durable::{Batch, Db, Durable, Leaf, List, Map};
 
 use crate::{
     path_types::ItemId,
-    reducer::{EntityData, NodeState, ScopeVotes, VoteData, UuidVoteKey, uuid_vote_key},
+    reducer::{uuid_vote_key, EntityData, NodeState, ScopeVotes, UuidVoteKey, VoteData},
     storage_dto::{
         decode_entity_data, decode_vote, encode_entity_data, encode_vote, parse_stored_id,
         SessionDataV1, StoredEntityDataV1, StoredVoteV1,
@@ -24,6 +24,7 @@ use crate::{
 pub struct NodeSchema {
     pub present: Leaf<bool>,
     pub data: Leaf<StoredEntityDataV1>,
+    pub nsfw_classification: Leaf<bool>,
     pub children: Map<String, Leaf<bool>>,
     pub uuid_votes: Map<UuidVoteKey, Leaf<StoredVoteV1>>,
     pub recent_votes: List<Leaf<StoredVoteV1>>,
@@ -96,7 +97,11 @@ pub fn pseudonym_owner(db: &Db, pseudonym: &str) -> durable::Result<Option<Strin
         .get(db)
 }
 
-pub fn oauth_link_owner(db: &Db, provider: &str, provider_id: &str) -> durable::Result<Option<String>> {
+pub fn oauth_link_owner(
+    db: &Db,
+    provider: &str,
+    provider_id: &str,
+) -> durable::Result<Option<String>> {
     Store::root()
         .oauth_links()
         .key(&oauth_link_key(provider, provider_id))
@@ -139,8 +144,14 @@ pub fn load_node_state(db: &Db, id: &ItemId) -> durable::Result<Option<NodeState
     let children_keys = np.children().keys(db)?;
     let uuid_vote_entries = np.uuid_votes().iter(db)?;
     let data = np.data().get(db)?;
+    let nsfw_classification = np.nsfw_classification().get(db)?;
 
-    if !present && children_keys.is_empty() && uuid_vote_entries.is_empty() && data.is_none() {
+    if !present
+        && children_keys.is_empty()
+        && uuid_vote_entries.is_empty()
+        && data.is_none()
+        && nsfw_classification.is_none()
+    {
         return Ok(None);
     }
 
@@ -154,6 +165,7 @@ pub fn load_node_state(db: &Db, id: &ItemId) -> durable::Result<Option<NodeState
     Ok(Some(NodeState {
         id: id.clone(),
         data: data.map(decode_entity_data),
+        nsfw_classification,
         children,
         votes,
     }))
@@ -200,6 +212,11 @@ pub fn ensure_path_writes(batch: &mut Batch, id: &ItemId) {
             }
         }
     }
+}
+
+pub fn nsfw_classification_writes(batch: &mut Batch, id: &ItemId, over_18: bool) {
+    ensure_path_writes(batch, id);
+    batch.write(node(id).nsfw_classification().set(&over_18));
 }
 
 pub fn vote_writes(
@@ -328,8 +345,14 @@ mod tests {
         );
 
         let node_state = load_node_state(&db, &parent).unwrap().unwrap();
-        assert_eq!(node_state.votes.recent_votes.len(), RECENT_VOTES_CAP as usize);
-        assert_eq!(node_state.votes.recent_votes.first().map(|v| v.ts), Some(10));
+        assert_eq!(
+            node_state.votes.recent_votes.len(),
+            RECENT_VOTES_CAP as usize
+        );
+        assert_eq!(
+            node_state.votes.recent_votes.first().map(|v| v.ts),
+            Some(10)
+        );
     }
 
     #[test]

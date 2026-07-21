@@ -3,13 +3,8 @@ use std::net::SocketAddr;
 
 use axum::Router;
 use sorter2_server::{
-    auth::session::SESSION_COOKIE,
-    create_app, create_app_state,
-    nsfw::NSFW_COOKIE,
-    path_types::ItemId,
-    reducer::EntityData,
-    state::AppConfig,
-    ui_action::UI_RPC_FIELD,
+    auth::session::SESSION_COOKIE, create_app, create_app_state, nsfw::NSFW_COOKIE,
+    path_types::ItemId, reducer::EntityData, state::AppConfig, ui_action::UI_RPC_FIELD,
 };
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -39,9 +34,11 @@ async fn start_test_server() -> (SocketAddr, TempDir, String) {
 #[tokio::test]
 async fn post_ui_vote_compare_morphs_edge_history() {
     let (addr, _tmp, session_cookie) = start_test_server().await;
-    let parent = "reddit.com/r/rust";
-    let a = "reddit.com/r/rust/comments/aaa/announcing_rust_199";
-    let b = "reddit.com/r/rust/comments/bbb/what_are_you_working_on";
+    // This test exercises vote morphing, not Reddit classification. Opaque
+    // entities remain safe by default; unclassified Reddit URLs fail closed.
+    let parent = "project";
+    let a = "alpha";
+    let b = "beta";
 
     let rpc = serde_json::json!({
         "action": "record_vote",
@@ -228,6 +225,22 @@ async fn nsfw_items_hidden_until_opt_in_and_leave_returns() {
     state
         .projection_store
         .put_ephemeral_content(
+            &parent,
+            &EntityData {
+                title: "mixed".into(),
+                author: None,
+                body_html: None,
+                over_18: false,
+                thumb_url: None,
+                image_url: None,
+                link_url: None,
+            },
+            1,
+        )
+        .unwrap();
+    state
+        .projection_store
+        .put_ephemeral_content(
             &sfw,
             &EntityData {
                 title: "safe post".into(),
@@ -286,7 +299,9 @@ async fn nsfw_items_hidden_until_opt_in_and_leave_returns() {
     );
 
     let nsfw_page = client
-        .get(format!("http://{addr}/~/https://reddit.com/r/mixed/comments/bbb"))
+        .get(format!(
+            "http://{addr}/~/https://reddit.com/r/mixed/comments/bbb"
+        ))
         .send()
         .await
         .unwrap()
@@ -327,7 +342,10 @@ async fn nsfw_items_hidden_until_opt_in_and_leave_returns() {
         .text()
         .await
         .unwrap();
-    assert!(opted.contains("adult post"), "opted-in should list NSFW: {opted}");
+    assert!(
+        opted.contains("adult post"),
+        "opted-in should list NSFW: {opted}"
+    );
     assert!(
         opted.contains("Exit NSFW"),
         "opted-in nav should offer leave: {opted}"
