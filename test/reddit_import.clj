@@ -82,11 +82,16 @@
       (is (str/includes? (:out ranked-sse) "Idiomorph.morph"))
       (is (str/includes? (:out ranked-sse) "Announcing Rust 1.99"))
       (is (str/includes? (:out ranked-sse) "What are you working on this week?"))
-      ;; Ranked refresh must not append more structure events.
-      (is (= log-before-ranked (slurp (io/file log-path)))))))
+      ;; Ranked refresh persists refreshed safety classifications, but must not
+      ;; append duplicate structure events.
+      (let [log-after-ranked (slurp (io/file log-path))]
+        (is (= (count (re-seq #"\"type\":\"node_ensured\"" log-before-ranked))
+               (count (re-seq #"\"type\":\"node_ensured\"" log-after-ranked))))
+        (is (> (count (re-seq #"\"type\":\"nsfw_classified\"" log-after-ranked))
+               (count (re-seq #"\"type\":\"nsfw_classified\"" log-before-ranked))))))))
 
 (deftest reddit-fetch-via-mock-api
-  (testing "Fetch caches display content ephemerally; log records structure only"
+  (testing "Fetch caches display content ephemerally; log records structure and safety"
     (let [root (repo-root)
           fixtures (mock-reddit/fixtures-dir root)
           data-dir (.getAbsolutePath
