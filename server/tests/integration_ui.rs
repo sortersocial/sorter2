@@ -3,13 +3,8 @@ use std::net::SocketAddr;
 
 use axum::Router;
 use sorter2_server::{
-    auth::session::SESSION_COOKIE,
-    create_app, create_app_state,
-    nsfw::NSFW_COOKIE,
-    path_types::ItemId,
-    reducer::EntityData,
-    state::AppConfig,
-    ui_action::UI_RPC_FIELD,
+    auth::session::SESSION_COOKIE, create_app, create_app_state, nsfw::NSFW_COOKIE,
+    path_types::ItemId, reducer::EntityData, state::AppConfig, ui_action::UI_RPC_FIELD,
 };
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -209,6 +204,188 @@ async fn vote_page_renders_live_ranking_sidebar() {
 }
 
 #[tokio::test]
+async fn skipset_filters_pairs_and_rankings_per_user_and_is_editable() {
+    let tmp = TempDir::new().unwrap();
+    let data = tmp.path().to_string_lossy().into_owned();
+    let state = create_app_state(AppConfig {
+        data_dir: data.clone(),
+        event_log_path: format!("{data}/events.jsonl"),
+        views_log_path: format!("{data}/views.jsonl"),
+        port: 0,
+    })
+    .await;
+    state
+        .record_vote(
+            &ItemId::root(),
+            "alpha",
+            "beta",
+            2,
+            1,
+            &sorter2_server::auth::VoteActor::anon(),
+        )
+        .await
+        .unwrap();
+    state
+        .record_vote(
+            &ItemId::root(),
+            "beta",
+            "gamma",
+            2,
+            1,
+            &sorter2_server::auth::VoteActor::anon(),
+        )
+        .await
+        .unwrap();
+    let user_a_cookie = format!(
+        "{SESSION_COOKIE}={}",
+        state.create_session("user-a", "alice").unwrap()
+    );
+    let user_b_cookie = format!(
+        "{SESSION_COOKIE}={}",
+        state.create_session("user-b", "bob").unwrap()
+    );
+
+    let app: Router = create_app(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = reqwest::Client::new();
+
+    let skip_rpc = serde_json::json!({
+        "action": "skip_item",
+        "item": "alpha",
+        "parent": "",
+    })
+    .to_string();
+    let skip_response = client
+        .post(format!("http://{addr}/ui"))
+        .header("Cookie", &user_a_cookie)
+        .form(&[(UI_RPC_FIELD, skip_rpc.as_str())])
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(skip_response.contains("window.location.href"));
+    assert!(skip_response.contains("/vote?parent="));
+
+    let ranking_a = client
+        .get(format!("http://{addr}/"))
+        .header("Cookie", &user_a_cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!ranking_a.contains("data-rank-item=\"alpha\""));
+    assert!(ranking_a.contains("data-rank-item=\"beta\""));
+
+    let ranking_b = client
+        .get(format!("http://{addr}/"))
+        .header("Cookie", &user_b_cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(ranking_b.contains("data-rank-item=\"alpha\""));
+
+    let pair_a = client
+        .get(format!("http://{addr}/vote?parent="))
+        .header("Cookie", &user_a_cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        !pair_a.contains(">alpha<"),
+        "skipped item leaked into pair: {pair_a}"
+    );
+    assert!(pair_a.contains("data-testid=\"vote-skip-left\""));
+    assert!(pair_a.contains("data-testid=\"vote-skip-right\""));
+
+    let account_a = client
+        .get(format!("http://{addr}/login"))
+        .header("Cookie", &user_a_cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(account_a.contains("data-testid=\"skipped-items\""));
+    assert!(account_a.contains("data-skip-item=\"alpha\""));
+    assert!(account_a.contains("data-testid=\"unskip-item\""));
+
+    let account_b = client
+        .get(format!("http://{addr}/login"))
+        .header("Cookie", &user_b_cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(account_b.contains("data-testid=\"skipped-items-empty\""));
+    assert!(!account_b.contains("data-skip-item=\"alpha\""));
+
+    let stale_vote_rpc = serde_json::json!({
+        "action": "record_vote",
+        "a": "alpha",
+        "b": "beta",
+        "ratio_left": 1,
+        "ratio_right": 1,
+    })
+    .to_string();
+    let stale_vote = client
+        .post(format!("http://{addr}/ui"))
+        .header("Cookie", &user_a_cookie)
+        .form(&[(UI_RPC_FIELD, stale_vote_rpc.as_str())])
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(stale_vote.contains("restore skipped items"));
+
+    let unskip_rpc = serde_json::json!({
+        "action": "unskip_item",
+        "item": "alpha",
+    })
+    .to_string();
+    client
+        .post(format!("http://{addr}/ui"))
+        .header("Cookie", &user_a_cookie)
+        .form(&[(UI_RPC_FIELD, unskip_rpc.as_str())])
+        .send()
+        .await
+        .unwrap();
+
+    let restored = client
+        .get(format!("http://{addr}/"))
+        .header("Cookie", &user_a_cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(restored.contains("data-rank-item=\"alpha\""));
+
+    let log = std::fs::read_to_string(tmp.path().join("events.jsonl")).unwrap();
+    assert!(log.contains("\"type\":\"item_skipped\""));
+    assert!(log.contains("\"type\":\"item_unskipped\""));
+}
+
+#[tokio::test]
 async fn nsfw_items_hidden_until_opt_in_and_leave_returns() {
     let tmp = TempDir::new().unwrap();
     let data = tmp.path().to_string_lossy().into_owned();
@@ -286,7 +463,9 @@ async fn nsfw_items_hidden_until_opt_in_and_leave_returns() {
     );
 
     let nsfw_page = client
-        .get(format!("http://{addr}/~/https://reddit.com/r/mixed/comments/bbb"))
+        .get(format!(
+            "http://{addr}/~/https://reddit.com/r/mixed/comments/bbb"
+        ))
         .send()
         .await
         .unwrap()
@@ -327,7 +506,10 @@ async fn nsfw_items_hidden_until_opt_in_and_leave_returns() {
         .text()
         .await
         .unwrap();
-    assert!(opted.contains("adult post"), "opted-in should list NSFW: {opted}");
+    assert!(
+        opted.contains("adult post"),
+        "opted-in should list NSFW: {opted}"
+    );
     assert!(
         opted.contains("Exit NSFW"),
         "opted-in nav should offer leave: {opted}"
