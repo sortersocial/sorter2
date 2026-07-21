@@ -34,9 +34,11 @@ async fn start_test_server() -> (SocketAddr, TempDir, String) {
 #[tokio::test]
 async fn post_ui_vote_compare_morphs_edge_history() {
     let (addr, _tmp, session_cookie) = start_test_server().await;
-    let parent = "reddit.com/r/rust";
-    let a = "reddit.com/r/rust/comments/aaa/announcing_rust_199";
-    let b = "reddit.com/r/rust/comments/bbb/what_are_you_working_on";
+    // This test exercises vote morphing, not Reddit classification. Opaque
+    // entities remain safe by default; unclassified Reddit URLs fail closed.
+    let parent = "project";
+    let a = "alpha";
+    let b = "beta";
 
     let rpc = serde_json::json!({
         "action": "record_vote",
