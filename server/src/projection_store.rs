@@ -256,6 +256,7 @@ mod tests {
                     title: "Rust".into(),
                     author: None,
                     body_html: None,
+                    over_18: false,
                     thumb_url: None,
                     image_url: None,
                     link_url: None,

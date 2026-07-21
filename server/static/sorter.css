@@ -797,6 +797,57 @@ h1 {
   margin: 0 0 0.5rem;
 }
 
+.nsfw-badge {
+  display: inline-block;
+  margin-right: 0.35rem;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg);
+  background: oklch(35% 0.08 25);
+  border: 1px solid oklch(48% 0.1 25);
+  border-radius: 0.25rem;
+  vertical-align: middle;
+}
+
+.nsfw-gate,
+.nsfw-gate-panel {
+  margin-top: 0.75rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: color-mix(in oklab, var(--panel) 88%, oklch(40% 0.08 25));
+}
+
+.nsfw-gate-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.15rem;
+}
+
+.nsfw-gate-panel form {
+  margin-top: 0.85rem;
+}
+
+.nsfw-dimension-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: oklch(78% 0.08 25);
+}
+
+.top-nav-nsfw {
+  display: inline;
+  margin: 0;
+}
+
+.top-nav-nsfw .btn-secondary {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.55rem;
+}
+
 @media (max-width: 900px) {
   .vote-page-grid {
     grid-template-columns: 1fr;
