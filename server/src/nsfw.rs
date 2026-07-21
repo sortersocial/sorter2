@@ -10,7 +10,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use crate::{
     auth::config,
     path_types::ItemId,
-    reducer::{EntityData, GlobalTree},
+    reducer::{EntityData, GlobalTree, NodeState},
 };
 
 pub const NSFW_COOKIE: &str = "sorter2_nsfw";
@@ -49,47 +49,107 @@ pub fn entity_is_nsfw(data: &EntityData) -> bool {
     data.over_18
 }
 
-/// True if this item or any loaded ancestor is marked NSFW.
-///
-/// Posts imported from a listing carry their own `over_18` even when the
-/// parent subreddit is still a data-less stub. When the parent *is* known
-/// NSFW, children inherit that status here even if their own flag was lost
-/// (e.g. after ephemeral eviction).
-pub fn item_is_nsfw(tree: &GlobalTree, id: &ItemId) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NsfwStatus {
+    Safe,
+    Nsfw,
+    /// Reddit entity metadata has not been fetched/classified yet.
+    Unknown,
+}
+
+pub fn node_nsfw_status(node: &NodeState) -> NsfwStatus {
+    if node.nsfw_classification == Some(true) || node.data.as_ref().is_some_and(entity_is_nsfw) {
+        NsfwStatus::Nsfw
+    } else if node.nsfw_classification == Some(false) || node.data.is_some() {
+        NsfwStatus::Safe
+    } else {
+        NsfwStatus::Unknown
+    }
+}
+
+pub fn node_is_nsfw(node: &NodeState) -> bool {
+    node_nsfw_status(node) == NsfwStatus::Nsfw
+}
+
+fn needs_reddit_classification(id: &ItemId) -> bool {
+    crate::reddit::is_fetchable(id)
+}
+
+/// Classification inherited from this Reddit entity and its concrete Reddit
+/// ancestors. Unknown metadata fails closed at listing boundaries.
+pub fn item_nsfw_status(tree: &GlobalTree, id: &ItemId) -> NsfwStatus {
+    if !needs_reddit_classification(id) {
+        return NsfwStatus::Safe;
+    }
+
+    let mut unknown = false;
     let mut cur = Some(id.clone());
     while let Some(item) = cur {
-        if tree
-            .get(&item)
-            .and_then(|n| n.data.as_ref())
-            .is_some_and(entity_is_nsfw)
-        {
-            return true;
+        if needs_reddit_classification(&item) {
+            match tree.get(&item).map(node_nsfw_status) {
+                Some(NsfwStatus::Nsfw) => return NsfwStatus::Nsfw,
+                Some(NsfwStatus::Safe) => {}
+                Some(NsfwStatus::Unknown) | None => unknown = true,
+            }
         }
         cur = item.parent();
     }
-    false
+    if unknown {
+        NsfwStatus::Unknown
+    } else {
+        NsfwStatus::Safe
+    }
+}
+
+pub fn item_is_nsfw(tree: &GlobalTree, id: &ItemId) -> bool {
+    item_nsfw_status(tree, id) == NsfwStatus::Nsfw
 }
 
 /// Lightweight NSFW check that walks ancestors via `load_node` instead of
 /// materializing a full scope tree (used on the vote write path).
+pub fn item_nsfw_status_in_store(
+    store: &crate::projection_store::ProjectionStore,
+    id: &ItemId,
+) -> NsfwStatus {
+    if !needs_reddit_classification(id) {
+        return NsfwStatus::Safe;
+    }
+
+    let mut unknown = false;
+    let mut cur = Some(id.clone());
+    while let Some(item) = cur {
+        if needs_reddit_classification(&item) {
+            match store.load_node(&item) {
+                Ok(Some(node)) => match node_nsfw_status(&node) {
+                    NsfwStatus::Nsfw => return NsfwStatus::Nsfw,
+                    NsfwStatus::Safe => {}
+                    NsfwStatus::Unknown => unknown = true,
+                },
+                Ok(None) | Err(_) => unknown = true,
+            }
+        }
+        cur = item.parent();
+    }
+    if unknown {
+        NsfwStatus::Unknown
+    } else {
+        NsfwStatus::Safe
+    }
+}
+
 pub fn item_is_nsfw_in_store(
     store: &crate::projection_store::ProjectionStore,
     id: &ItemId,
 ) -> bool {
-    let mut cur = Some(id.clone());
-    while let Some(item) = cur {
-        if store
-            .load_node(&item)
-            .ok()
-            .flatten()
-            .and_then(|n| n.data)
-            .is_some_and(|d| d.over_18)
-        {
-            return true;
-        }
-        cur = item.parent();
+    item_nsfw_status_in_store(store, id) == NsfwStatus::Nsfw
+}
+
+pub fn item_is_visible(status: NsfwStatus, nsfw_ok: bool) -> bool {
+    match status {
+        NsfwStatus::Safe => true,
+        NsfwStatus::Nsfw => nsfw_ok,
+        NsfwStatus::Unknown => false,
     }
-    false
 }
 
 /// Children visible in the current dimension (SFW-only unless `nsfw_ok`).
@@ -100,7 +160,7 @@ pub fn visible_children(tree: &GlobalTree, parent: &ItemId, nsfw_ok: bool) -> Ve
     let mut children: Vec<ItemId> = node
         .children
         .iter()
-        .filter(|c| nsfw_ok || !item_is_nsfw(tree, c))
+        .filter(|c| item_is_visible(item_nsfw_status(tree, c), nsfw_ok))
         .cloned()
         .collect();
     children.sort_by(|a, b| a.as_str().cmp(b.as_str()));
@@ -139,8 +199,7 @@ mod tests {
     #[test]
     fn post_over_18_is_nsfw_even_when_parent_is_stub() {
         let parent = ItemId::from_url("https://reddit.com/r/nsfw").unwrap();
-        let post =
-            ItemId::from_url("https://reddit.com/r/nsfw/comments/abc/adult").unwrap();
+        let post = ItemId::from_url("https://reddit.com/r/nsfw/comments/abc/adult").unwrap();
         let mut tree = GlobalTree::new();
         tree.nodes.insert(
             parent.clone(),
@@ -166,8 +225,7 @@ mod tests {
     #[test]
     fn child_inherits_nsfw_from_fetched_parent() {
         let parent = ItemId::from_url("https://reddit.com/r/gonewild").unwrap();
-        let post =
-            ItemId::from_url("https://reddit.com/r/gonewild/comments/abc/x").unwrap();
+        let post = ItemId::from_url("https://reddit.com/r/gonewild/comments/abc/x").unwrap();
         let mut tree = GlobalTree::new();
         tree.nodes.insert(
             parent.clone(),
@@ -187,6 +245,63 @@ mod tests {
             },
         );
         assert!(item_is_nsfw(&tree, &post));
+    }
+
+    #[test]
+    fn child_inherits_durable_nsfw_after_parent_content_is_evicted() {
+        let parent = ItemId::from_url("https://reddit.com/r/gonewild").unwrap();
+        let post = ItemId::from_url("https://reddit.com/r/gonewild/comments/abc/x").unwrap();
+        let mut tree = GlobalTree::new();
+        tree.nodes.insert(
+            parent.clone(),
+            NodeState {
+                id: parent.clone(),
+                data: None,
+                nsfw_classification: Some(true),
+                children: [post.clone()].into_iter().collect(),
+                ..Default::default()
+            },
+        );
+        tree.nodes.insert(
+            post.clone(),
+            NodeState {
+                id: post.clone(),
+                data: None,
+                nsfw_classification: Some(false),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(item_nsfw_status(&tree, &post), NsfwStatus::Nsfw);
+        assert!(visible_children(&tree, &parent, false).is_empty());
+        assert_eq!(visible_children(&tree, &parent, true), vec![post]);
+    }
+
+    #[test]
+    fn unknown_reddit_children_fail_closed_even_with_opt_in() {
+        let parent = ItemId::from_url("https://reddit.com/r/mixed").unwrap();
+        let post = ItemId::from_url("https://reddit.com/r/mixed/comments/abc/x").unwrap();
+        let mut tree = GlobalTree::new();
+        tree.nodes.insert(
+            parent.clone(),
+            NodeState {
+                id: parent.clone(),
+                nsfw_classification: Some(false),
+                children: [post.clone()].into_iter().collect(),
+                ..Default::default()
+            },
+        );
+        tree.nodes.insert(
+            post.clone(),
+            NodeState {
+                id: post.clone(),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(item_nsfw_status(&tree, &post), NsfwStatus::Unknown);
+        assert!(visible_children(&tree, &parent, false).is_empty());
+        assert!(visible_children(&tree, &parent, true).is_empty());
     }
 
     #[test]

@@ -5,7 +5,7 @@ use maud::{html, Markup};
 use crate::{
     form_template::template_json_compact,
     html::sanitize::entity_body_html,
-    nsfw::entity_is_nsfw,
+    nsfw::node_is_nsfw,
     path_types::ItemId,
     reddit::{is_children_fetchable, is_fetchable, is_ranked_fetchable},
     reducer::NodeState,
@@ -25,21 +25,24 @@ pub fn entity_panel(node: &NodeState, nsfw_ok: bool) -> Markup {
     html! {
         @if let Some(data) = &node.data {
             div class="entity-card" {
-                h2 { (data.title) }
-                @if let Some(author) = &data.author {
-                    p class="muted small" { "by " (author) }
-                }
-                @if entity_is_nsfw(data) {
-                    p class="muted small" {
-                        span class="nsfw-badge" { "NSFW" }
-                    }
-                }
-                @if entity_is_nsfw(data) && !nsfw_ok {
+                @if node_is_nsfw(node) && !nsfw_ok {
                     div class="nsfw-gate" data-testid="nsfw-gate" {
+                        span class="nsfw-badge" { "NSFW" }
                         p { "NSFW content is hidden until you opt in." }
                     }
-                } @else if let Some(body) = &data.body_html {
-                    div class="entity-body" { (maud::PreEscaped(entity_body_html(body))) }
+                } @else {
+                    h2 { (data.title) }
+                    @if let Some(author) = &data.author {
+                        p class="muted small" { "by " (author) }
+                    }
+                    @if node_is_nsfw(node) {
+                        p class="muted small" {
+                            span class="nsfw-badge" { "NSFW" }
+                        }
+                    }
+                    @if let Some(body) = &data.body_html {
+                        div class="entity-body" { (maud::PreEscaped(entity_body_html(body))) }
+                    }
                 }
             }
         }
@@ -72,8 +75,7 @@ pub fn fetch_entity_panel(item: &ItemId, node: &NodeState, fetching: bool) -> Ma
     let has_data = node.data.is_some();
     let self_ok = is_fetchable(item);
     let children_ok = is_children_fetchable(item);
-    let ranked_ok =
-        is_ranked_fetchable(item) && node.children.iter().any(is_reddit_post);
+    let ranked_ok = is_ranked_fetchable(item) && node.children.iter().any(is_reddit_post);
     if !self_ok && !children_ok && !ranked_ok {
         return html! {};
     }

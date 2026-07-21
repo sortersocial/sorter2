@@ -3,13 +3,8 @@ use std::net::SocketAddr;
 
 use axum::Router;
 use sorter2_server::{
-    auth::session::SESSION_COOKIE,
-    create_app, create_app_state,
-    nsfw::NSFW_COOKIE,
-    path_types::ItemId,
-    reducer::EntityData,
-    state::AppConfig,
-    ui_action::UI_RPC_FIELD,
+    auth::session::SESSION_COOKIE, create_app, create_app_state, nsfw::NSFW_COOKIE,
+    path_types::ItemId, reducer::EntityData, state::AppConfig, ui_action::UI_RPC_FIELD,
 };
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -228,6 +223,22 @@ async fn nsfw_items_hidden_until_opt_in_and_leave_returns() {
     state
         .projection_store
         .put_ephemeral_content(
+            &parent,
+            &EntityData {
+                title: "mixed".into(),
+                author: None,
+                body_html: None,
+                over_18: false,
+                thumb_url: None,
+                image_url: None,
+                link_url: None,
+            },
+            1,
+        )
+        .unwrap();
+    state
+        .projection_store
+        .put_ephemeral_content(
             &sfw,
             &EntityData {
                 title: "safe post".into(),
@@ -286,7 +297,9 @@ async fn nsfw_items_hidden_until_opt_in_and_leave_returns() {
     );
 
     let nsfw_page = client
-        .get(format!("http://{addr}/~/https://reddit.com/r/mixed/comments/bbb"))
+        .get(format!(
+            "http://{addr}/~/https://reddit.com/r/mixed/comments/bbb"
+        ))
         .send()
         .await
         .unwrap()
@@ -327,7 +340,10 @@ async fn nsfw_items_hidden_until_opt_in_and_leave_returns() {
         .text()
         .await
         .unwrap();
-    assert!(opted.contains("adult post"), "opted-in should list NSFW: {opted}");
+    assert!(
+        opted.contains("adult post"),
+        "opted-in should list NSFW: {opted}"
+    );
     assert!(
         opted.contains("Exit NSFW"),
         "opted-in nav should offer leave: {opted}"

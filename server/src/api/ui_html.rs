@@ -8,12 +8,13 @@ use std::collections::HashMap;
 
 use crate::{
     auth::{
-        alias_status_js, alias_redirect_js, config, login_redirect_js, oauth, redirect_js, resolve_vote_actor,
+        alias_redirect_js, alias_status_js, config, login_redirect_js, oauth, redirect_js,
+        resolve_vote_actor,
         session::{load_valid_session, session_has_pseudonym, session_id_from_jar},
     },
     fetch,
     html::{input_panel, js_string_literal, ranking_panel, JsBuilder},
-    nsfw::{item_is_nsfw_in_store, nsfw_allowed},
+    nsfw::{item_is_visible, item_nsfw_status_in_store, nsfw_allowed},
     parser::parse_reddit_url,
     path_types::ItemId,
     state::{parse_item_param, AppState},
@@ -87,14 +88,12 @@ pub async fn post_ui_html(
             let left = parse_item_param(&a);
             let right = parse_item_param(&b);
             // Strict boundary: refuse votes that would surface NSFW without opt-in.
-            if !nsfw_ok {
-                let store = &state.projection_store;
-                if item_is_nsfw_in_store(store, &parent)
-                    || item_is_nsfw_in_store(store, &left)
-                    || item_is_nsfw_in_store(store, &right)
-                {
-                    return ui_js_warn("NSFW opt-in required").into_response();
-                }
+            let store = &state.projection_store;
+            if !item_is_visible(item_nsfw_status_in_store(store, &parent), nsfw_ok)
+                || !item_is_visible(item_nsfw_status_in_store(store, &left), nsfw_ok)
+                || !item_is_visible(item_nsfw_status_in_store(store, &right), nsfw_ok)
+            {
+                return ui_js_warn("NSFW opt-in or Reddit classification required").into_response();
             }
             if let Err(e) = state
                 .record_vote(&parent, &a, &b, ratio_left, ratio_right, &actor)
