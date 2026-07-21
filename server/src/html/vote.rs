@@ -11,10 +11,11 @@ use std::collections::HashSet;
 
 use crate::{
     auth::nav_pseudonym,
-    fetch::html::entity_section,
+    fetch::html::{entity_section, nsfw_enter_panel},
     form_template::template_json_compact,
     html::{ranking_panel_with_highlights, scope_theme_style, JsBuilder},
-    pair::{children_of, resolve_pair, suggest_next_pair_in_pool},
+    nsfw::{item_is_nsfw, nsfw_allowed, visible_children},
+    pair::{resolve_pair_in_pool, suggest_next_pair_in_pool, PairError},
     path_types::ItemId,
     reducer::{GlobalTree, NodeState, ScopeVotes, VoteData},
     state::{parse_item_param, AppState},
@@ -208,6 +209,7 @@ fn vote_ranking_sidebar(
     parent: &ItemId,
     left: &ItemId,
     right: &ItemId,
+    nsfw_ok: bool,
 ) -> Markup {
     let empty = NodeState::default();
     let node = tree.get(parent).unwrap_or(&empty);
@@ -216,7 +218,7 @@ fn vote_ranking_sidebar(
         aside id="vote-ranking-panel" class="vote-ranking-panel demo-panel" aria-live="polite" {
             h2 { "live ranking" }
             p class="muted small" { "updates as comparisons land" }
-            (ranking_panel_with_highlights(parent, node, tree, &highlighted))
+            (ranking_panel_with_highlights(parent, node, tree, &highlighted, nsfw_ok))
         }
     }
 }
@@ -227,28 +229,34 @@ pub(crate) fn vote_recorded_morph(
     parent: &ItemId,
     left: &ItemId,
     right: &ItemId,
+    nsfw_ok: bool,
 ) -> JsBuilder {
-    let pool = children_of(tree, parent);
+    let pool = visible_children(tree, parent, nsfw_ok);
     let empty = NodeState::default();
     let scope = tree.get(parent).unwrap_or(&empty).votes.clone();
     let edge_history = vote_edge_history(tree, &scope, left, right);
     let next_pair = suggest_next(&scope, left, right, &pool);
     let actions = vote_compare_actions(parent, next_pair.as_ref());
-    let sidebar = vote_ranking_sidebar(tree, parent, left, right);
+    let sidebar = vote_ranking_sidebar(tree, parent, left, right, nsfw_ok);
     JsBuilder::new()
         .morph_inner_selector("#vote-edge-history-region", edge_history)
         .morph_selector("#vote-compare-actions", actions)
         .morph_selector_flip("#vote-ranking-panel", sidebar)
 }
 
-fn vote_compare_item_card(tree: &GlobalTree, item: &ItemId, side_class: &str) -> Markup {
+fn vote_compare_item_card(
+    tree: &GlobalTree,
+    item: &ItemId,
+    side_class: &str,
+    nsfw_ok: bool,
+) -> Markup {
     let node = tree.get(item).cloned().unwrap_or_else(|| NodeState {
         id: item.clone(),
         ..Default::default()
     });
     html! {
         div class=(format!("vote-compare-side {side_class}")) {
-            (entity_section(item, &node, false))
+            (entity_section(item, &node, false, nsfw_ok))
         }
     }
 }
@@ -270,6 +278,7 @@ pub async fn vote_page(
     let parent = parse_item_param(&q.parent);
     let left_param = q.left.as_deref().map(parse_item_param);
     let right_param = q.right.as_deref().map(parse_item_param);
+    let nsfw_ok = nsfw_allowed(&jar);
 
     let tree = state
         .scope_tree(&parent)
@@ -277,8 +286,39 @@ pub async fn vote_page(
     let empty = NodeState::default();
     let parent_node = tree.get(&parent).unwrap_or(&empty);
 
+    let path = format!("/vote?parent={}", urlencoding::encode(parent.as_str()));
+    let return_to = match (&q.left, &q.right) {
+        (Some(l), Some(r)) => format!(
+            "{}&left={}&right={}",
+            path,
+            urlencoding::encode(l),
+            urlencoding::encode(r)
+        ),
+        _ => path.clone(),
+    };
+
+    if item_is_nsfw(&tree, &parent) && !nsfw_ok {
+        state.views.increment(path.clone());
+        let views = state.views.get_views(&path);
+        let nav_user = nav_pseudonym(state.projection_store.db(), &jar);
+        let body = html! {
+            div class="scope-theme vote-page" style=(scope_theme_style(&parent)) {
+                h1 { "compare" }
+                (breadcrumb_path(&parent))
+                (nsfw_enter_panel(&return_to))
+            }
+        };
+        return Html(
+            layout("vote · NSFW", body, views, nav_user.as_deref(), false, &return_to)
+                .into_string(),
+        )
+        .into_response();
+    }
+
+    let pool = visible_children(&tree, &parent, nsfw_ok);
     let (left, right) =
-        match resolve_pair(&tree, &parent, left_param.as_ref(), right_param.as_ref()) {
+        match resolve_pair_in_pool(&tree, &parent, &pool, left_param.as_ref(), right_param.as_ref())
+        {
             Ok(p) => p,
             Err(e) => {
                 let (msg, status) = e.status_message();
@@ -286,7 +326,13 @@ pub async fn vote_page(
             }
         };
 
-    let pool = children_of(&tree, &parent);
+    if (!nsfw_ok)
+        && (item_is_nsfw(&tree, &left) || item_is_nsfw(&tree, &right))
+    {
+        let (msg, status) = PairError::NotChild.status_message();
+        return (status, msg).into_response();
+    }
+
     let scope = &parent_node.votes;
     let next_pair = suggest_next(&scope, &left, &right, &pool);
     let edge_history = vote_edge_history(&tree, &scope, &left, &right);
@@ -315,26 +361,36 @@ pub async fn vote_page(
                     h1 { "compare" }
                     (breadcrumb_path(&parent))
                     div class="vote-compare-pair" {
-                        (vote_compare_item_card(&tree, &left, "vote-compare-left"))
+                        (vote_compare_item_card(&tree, &left, "vote-compare-left", nsfw_ok))
                         span class="vote-compare-vs" { "vs" }
-                        (vote_compare_item_card(&tree, &right, "vote-compare-right"))
+                        (vote_compare_item_card(&tree, &right, "vote-compare-right", nsfw_ok))
                     }
                     div id="vote-edge-history-region" {
                         (edge_history)
                     }
                 }
-                (vote_ranking_sidebar(&tree, &parent, &left, &right))
+                (vote_ranking_sidebar(&tree, &parent, &left, &right, nsfw_ok))
             }
             (vote_hud_form(&parent, &left, &right, &rpc_json, next_pair.as_ref()))
         }
     };
 
-    let path = format!("/vote?parent={}", urlencoding::encode(parent.as_str()));
     state.views.increment(path.clone());
     let views = state.views.get_views(&path);
     let nav_user = nav_pseudonym(state.projection_store.db(), &jar);
 
-    Html(layout(&title, body, views, nav_user.as_deref()).into_string()).into_response()
+    Html(
+        layout(
+            &title,
+            body,
+            views,
+            nav_user.as_deref(),
+            nsfw_ok,
+            &return_to,
+        )
+        .into_string(),
+    )
+    .into_response()
 }
 
 #[cfg(test)]

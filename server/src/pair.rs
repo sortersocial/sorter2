@@ -278,7 +278,7 @@ pub fn children_of(tree: &GlobalTree, parent: &ItemId) -> Vec<ItemId> {
     children
 }
 
-/// Resolve a pair to compare under `parent`.
+/// Resolve a pair to compare under `parent` (all children visible).
 pub fn resolve_pair(
     tree: &GlobalTree,
     parent: &ItemId,
@@ -286,10 +286,21 @@ pub fn resolve_pair(
     right: Option<&ItemId>,
 ) -> Result<(ItemId, ItemId), PairError> {
     let children = children_of(tree, parent);
-    if children.len() < 2 {
+    resolve_pair_in_pool(tree, parent, &children, left, right)
+}
+
+/// Resolve a pair from an already-filtered pool (e.g. SFW-only children).
+pub fn resolve_pair_in_pool(
+    tree: &GlobalTree,
+    parent: &ItemId,
+    pool: &[ItemId],
+    left: Option<&ItemId>,
+    right: Option<&ItemId>,
+) -> Result<(ItemId, ItemId), PairError> {
+    if pool.len() < 2 {
         return Err(PairError::TooFewChildren);
     }
-    let child_set: HashSet<_> = children.iter().collect();
+    let child_set: HashSet<_> = pool.iter().collect();
 
     match (left, right) {
         (Some(l), Some(r)) => {
@@ -307,7 +318,7 @@ pub fn resolve_pair(
                 .map(|n| &n.votes)
                 .cloned()
                 .unwrap_or_default();
-            suggest_next_pair_in_pool(&group, &children, None).ok_or(PairError::NoPair)
+            suggest_next_pair_in_pool(&group, pool, None).ok_or(PairError::NoPair)
         }
         _ => Err(PairError::IncompletePair),
     }

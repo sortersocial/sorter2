@@ -338,6 +338,7 @@ pub async fn login_page(
         None
     };
 
+    let nsfw_ok = crate::nsfw::nsfw_allowed(&jar);
     let markup = layout(
         if session.is_some() {
             "account · sorter2"
@@ -357,6 +358,8 @@ pub async fn login_page(
             .as_ref()
             .filter(|s| !s.pseudonym.trim().is_empty())
             .map(|s| s.pseudonym.as_str()),
+        nsfw_ok,
+        "/login",
     );
     Ok((jar, Html(markup.into_string())).into_response())
 }
@@ -388,12 +391,15 @@ pub async fn alias_page(
         }
     };
 
+    let nsfw_ok = crate::nsfw::nsfw_allowed(&jar);
     Ok(Html(
         layout(
             "choose alias · sorter2",
             body,
             state.views.get_views("/login/alias"),
             None,
+            nsfw_ok,
+            "/login/alias",
         )
         .into_string(),
     )

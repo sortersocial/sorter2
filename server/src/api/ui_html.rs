@@ -13,6 +13,7 @@ use crate::{
     },
     fetch,
     html::{input_panel, js_string_literal, ranking_panel, JsBuilder},
+    nsfw::{item_is_nsfw_in_store, nsfw_allowed},
     parser::parse_reddit_url,
     path_types::ItemId,
     state::{parse_item_param, AppState},
@@ -58,6 +59,8 @@ pub async fn post_ui_html(
         Err(e) => return ui_js_warn(&e.to_string()).into_response(),
     };
 
+    let nsfw_ok = nsfw_allowed(&jar);
+
     match action {
         HtmlUiAction::RecordVote {
             a,
@@ -81,6 +84,18 @@ pub async fn post_ui_html(
                         .unwrap_or_else(|| login_redirect_js().into_response());
                 }
             };
+            let left = parse_item_param(&a);
+            let right = parse_item_param(&b);
+            // Strict boundary: refuse votes that would surface NSFW without opt-in.
+            if !nsfw_ok {
+                let store = &state.projection_store;
+                if item_is_nsfw_in_store(store, &parent)
+                    || item_is_nsfw_in_store(store, &left)
+                    || item_is_nsfw_in_store(store, &right)
+                {
+                    return ui_js_warn("NSFW opt-in required").into_response();
+                }
+            }
             if let Err(e) = state
                 .record_vote(&parent, &a, &b, ratio_left, ratio_right, &actor)
                 .await
@@ -92,14 +107,13 @@ pub async fn post_ui_html(
                 Err(e) => return ui_js_warn(&e).into_response(),
             };
             if vote_compare {
-                let left = parse_item_param(&a);
-                let right = parse_item_param(&b);
-                let morph = crate::html::vote::vote_recorded_morph(&tree, &parent, &left, &right);
+                let morph =
+                    crate::html::vote::vote_recorded_morph(&tree, &parent, &left, &right, nsfw_ok);
                 return morph.into_response();
             }
             let empty = crate::reducer::NodeState::default();
             let node = tree.get(&parent).unwrap_or(&empty);
-            let panel = ranking_panel(&parent, node, &tree);
+            let panel = ranking_panel(&parent, node, &tree, nsfw_ok);
             JsBuilder::new()
                 .morph_selector("#ranking-panel", panel)
                 .into_response()
@@ -176,7 +190,7 @@ pub async fn post_ui_html(
         },
         HtmlUiAction::FetchEntity { item, kind } => {
             let id = parse_item_param(&item);
-            fetch::fetch_entity_stream(state, id, kind).into_response()
+            fetch::fetch_entity_stream(state, id, kind, nsfw_ok).into_response()
         }
     }
 }

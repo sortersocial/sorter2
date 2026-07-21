@@ -84,6 +84,9 @@ pub struct EntityData {
     pub title: String,
     pub author: Option<String>,
     pub body_html: Option<String>,
+    /// Reddit `over_18` / `over18`. Used for the NSFW content dimension.
+    #[serde(default)]
+    pub over_18: bool,
     /// Small preview (subreddit listing / child rows).
     pub thumb_url: Option<String>,
     /// Full-size still image for the post detail view.

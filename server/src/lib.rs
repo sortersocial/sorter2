@@ -7,6 +7,7 @@ pub mod form_template;
 pub mod html;
 pub mod identity;
 pub mod journal;
+pub mod nsfw;
 pub mod pair;
 pub mod parser;
 pub mod path_types;
@@ -51,6 +52,8 @@ pub fn create_app(state: AppState) -> Router {
         .route("/auth/reddit/callback", get(crate::auth::reddit_callback))
         .route("/auth/logout", post(crate::auth::logout))
         .route("/auth/switch", post(crate::auth::switch_pseudonym))
+        .route("/nsfw/enter", post(crate::html::nsfw_enter))
+        .route("/nsfw/leave", post(crate::html::nsfw_leave))
         .route("/ui", post(crate::api::ui_html::post_ui_html))
         .with_state(state)
         .layer(TraceLayer::new_for_http())

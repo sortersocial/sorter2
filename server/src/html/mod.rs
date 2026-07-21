@@ -2,17 +2,22 @@ use axum::{
     body::Body,
     extract::{Path, State},
     http::{header, StatusCode, Uri},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
+    Form,
 };
 use axum_extra::extract::cookie::CookieJar;
 use maud::{html, Markup, DOCTYPE};
+use serde::Deserialize;
 
 use std::collections::HashSet;
 
 use crate::{
-    auth::nav_pseudonym,
-    fetch::html::entity_section,
+    auth::{config::sanitize_return_to, nav_pseudonym},
+    fetch::html::{entity_section, nsfw_enter_panel},
     form_template::template_json_compact,
+    nsfw::{
+        item_is_nsfw, nsfw_allowed, nsfw_enter_cookie, nsfw_leave_cookie, visible_children,
+    },
     path_types::ItemId,
     ranking::{
         ranked_items_subset, scope_components, RankedItem, MAX_ITERS, TOL,
@@ -128,10 +133,18 @@ pub fn now_ms() -> i64 {
     t.as_millis() as i64
 }
 
-pub(crate) fn layout(title: &str, body: Markup, views: u64, nav_user: Option<&str>) -> Markup {
+pub(crate) fn layout(
+    title: &str,
+    body: Markup,
+    views: u64,
+    nav_user: Option<&str>,
+    nsfw_ok: bool,
+    return_to: &str,
+) -> Markup {
     let ver = asset_version();
     let css_href = format!("/static/sorter.css?v={ver}");
     let js_src = format!("/static/sorter_ui.js?v={ver}");
+    let safe_return = sanitize_return_to(return_to);
     html! {
         (DOCTYPE)
         html {
@@ -146,6 +159,15 @@ pub(crate) fn layout(title: &str, body: Markup, views: u64, nav_user: Option<&st
                 nav class="top-nav" {
                     @if views > 0 {
                         span class="view-meta muted" { (views) " views" }
+                    }
+                    @if nsfw_ok {
+                        span class="nsfw-dimension-label" data-testid="nsfw-dimension-on" { "NSFW on" }
+                        form class="top-nav-nsfw" method="post" action="/nsfw/leave" data-navigate="full" {
+                            input type="hidden" name="return_to" value=(safe_return.as_str());
+                            button type="submit" class="btn-secondary" data-testid="nsfw-leave" {
+                                "Exit NSFW"
+                            }
+                        }
                     }
                     @if let Some(name) = nav_user {
                         span class="top-nav-user" data-testid="nav-user" { (name) }
@@ -400,8 +422,8 @@ fn unranked_list(
     }
 }
 
-pub fn ranking_panel(item: &ItemId, node: &NodeState, tree: &GlobalTree) -> Markup {
-    ranking_panel_with_highlights(item, node, tree, &HashSet::new())
+pub fn ranking_panel(item: &ItemId, node: &NodeState, tree: &GlobalTree, nsfw_ok: bool) -> Markup {
+    ranking_panel_with_highlights(item, node, tree, &HashSet::new(), nsfw_ok)
 }
 
 pub fn ranking_panel_with_highlights(
@@ -409,20 +431,28 @@ pub fn ranking_panel_with_highlights(
     node: &NodeState,
     tree: &GlobalTree,
     highlighted: &HashSet<ItemId>,
+    nsfw_ok: bool,
 ) -> Markup {
     let scope = &node.votes;
-    let (comps, _isolates, _) =
-        scope_components(scope);
+    let visible: HashSet<ItemId> = visible_children(tree, item, nsfw_ok).into_iter().collect();
+    let (comps, _isolates, _) = scope_components(scope);
 
     // Each connected component of voted items is its own ranking; isolated and
     // never-voted children fall into the "unranked" bucket below.
+    // NSFW children are omitted entirely unless the NSFW dimension is active.
     let mut ranked_ids: HashSet<ItemId> = HashSet::new();
     let mut ranked_groups: Vec<Vec<RankedItem>> = Vec::new();
     for comp in &comps {
         if comp.len() < 2 {
             continue;
         }
-        let ranked = ranked_items_subset(scope, comp, MAX_ITERS, TOL);
+        let ranked: Vec<RankedItem> = ranked_items_subset(scope, comp, MAX_ITERS, TOL)
+            .into_iter()
+            .filter(|r| visible.contains(&r.item))
+            .collect();
+        if ranked.len() < 2 {
+            continue;
+        }
         for r in &ranked {
             ranked_ids.insert(r.item.clone());
         }
@@ -430,8 +460,7 @@ pub fn ranking_panel_with_highlights(
     }
     ranked_groups.sort_by(|a, b| b.len().cmp(&a.len()));
 
-    let mut unranked: Vec<ItemId> = node
-        .children
+    let mut unranked: Vec<ItemId> = visible
         .iter()
         .filter(|c| !ranked_ids.contains(*c))
         .cloned()
@@ -493,18 +522,26 @@ pub fn input_panel(query: &str, error: Option<&str>) -> Markup {
 
 async fn item_page(state: AppState, uri: Uri, item: ItemId, jar: CookieJar) -> Markup {
     let path = uri.path().to_string();
+    let return_to = if uri.query().map(|q| !q.is_empty()).unwrap_or(false) {
+        format!("{}?{}", uri.path(), uri.query().unwrap_or(""))
+    } else {
+        path.clone()
+    };
     state.views.increment(path.clone());
     let views = state.views.get_views(&path);
     let nav_user = nav_pseudonym(state.projection_store.db(), &jar);
+    let nsfw_ok = nsfw_allowed(&jar);
 
     let tree = state
         .scope_tree(&item)
         .unwrap_or_else(|_| GlobalTree::new());
     let empty_node = NodeState::default();
     let node = tree.get(&item).unwrap_or(&empty_node);
+    let page_is_nsfw = item_is_nsfw(&tree, &item);
+    let gated = page_is_nsfw && !nsfw_ok;
 
-    let child_count = node.children.len();
-    let vote_link = if child_count >= 2 {
+    let visible = visible_children(&tree, &item, nsfw_ok);
+    let vote_link = if !gated && visible.len() >= 2 {
         Some(vote::vote_href(&item))
     } else {
         None
@@ -515,16 +552,78 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId, jar: CookieJar) -> M
             h1 { "sorter" }
             (input_panel("", None))
             (breadcrumb_path(&item))
-            (entity_section(&item, node, false))
-            @if let Some(href) = vote_link {
-                p class="vote-cta" {
-                    a class="btn-primary" href=(href) data-testid="vote-children" { "Vote on children" }
+            @if gated {
+                (nsfw_enter_panel(&return_to))
+            } @else {
+                (entity_section(&item, node, false, nsfw_ok))
+                @if let Some(href) = vote_link {
+                    p class="vote-cta" {
+                        a class="btn-primary" href=(href) data-testid="vote-children" { "Vote on children" }
+                    }
                 }
+                (ranking_panel(&item, node, &tree, nsfw_ok))
             }
-            (ranking_panel(&item, node, &tree))
         }
     };
-    layout("sorter2", body, views, nav_user.as_deref())
+    layout(
+        "sorter2",
+        body,
+        views,
+        nav_user.as_deref(),
+        nsfw_ok,
+        &return_to,
+    )
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NsfwForm {
+    pub return_to: Option<String>,
+}
+
+pub async fn nsfw_enter(jar: CookieJar, Form(form): Form<NsfwForm>) -> impl IntoResponse {
+    let dest = sanitize_return_to(form.return_to.as_deref().unwrap_or("/"));
+    (jar.add(nsfw_enter_cookie()), Redirect::to(&dest))
+}
+
+pub async fn nsfw_leave(jar: CookieJar, Form(form): Form<NsfwForm>) -> impl IntoResponse {
+    let requested = sanitize_return_to(form.return_to.as_deref().unwrap_or("/"));
+    // Leaving the NSFW dimension from an NSFW URL would just re-show the gate;
+    // drop back to the parent browse path or home.
+    let dest = safe_leave_destination(&requested);
+    (jar.add(nsfw_leave_cookie()), Redirect::to(&dest))
+}
+
+fn safe_leave_destination(return_to: &str) -> String {
+    let path = return_to.split('?').next().unwrap_or("/");
+    if let Some(item) = ItemId::from_browse_uri(path) {
+        if let Some(parent) = item.parent() {
+            return parent.browse_href();
+        }
+        return "/".to_string();
+    }
+    if path.starts_with("/vote") {
+        return "/".to_string();
+    }
+    return_to.to_string()
+}
+
+#[cfg(test)]
+mod nsfw_nav_tests {
+    use super::safe_leave_destination;
+
+    #[test]
+    fn leave_nsfw_from_post_goes_to_parent_sub() {
+        let dest = safe_leave_destination("/~/https://reddit.com/r/nsfw/comments/abc");
+        assert_eq!(dest, "/~/https://reddit.com/r/nsfw");
+    }
+
+    #[test]
+    fn leave_nsfw_from_vote_goes_home() {
+        assert_eq!(
+            safe_leave_destination("/vote?parent=https%3A%2F%2Freddit.com%2Fr%2Fnsfw"),
+            "/"
+        );
+    }
 }
 
 pub async fn home(

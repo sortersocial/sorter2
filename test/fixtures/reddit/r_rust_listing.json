@@ -9,6 +9,7 @@
           "title": "Announcing Rust 1.99",
           "permalink": "/r/rust/comments/aaa/announcing_rust_199/",
           "author": "alice",
+          "over_18": false,
           "selftext_html": "<p>release notes</p>",
           "thumbnail": "self",
           "subreddit": "rust"
@@ -20,6 +21,7 @@
           "title": "What are you working on this week?",
           "permalink": "/r/rust/comments/bbb/what_are_you_working_on/",
           "author": "bob",
+          "over_18": false,
           "thumbnail": "default",
           "subreddit": "rust"
         }
