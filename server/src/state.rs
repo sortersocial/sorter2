@@ -330,7 +330,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rebuild_projection_drops_ephemeral_content() {
+    async fn rebuild_projection_drops_ephemeral_content_but_restores_nsfw_classification() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().to_string_lossy().into_owned();
         let log = EventLog::new(format!("{data_dir}/events.jsonl"));
@@ -338,6 +338,15 @@ mod tests {
             1,
             Event::NodeEnsured {
                 id: "https://reddit.com/r/rust".into(),
+            },
+        ))
+        .await
+        .unwrap();
+        log.append(&event_record(
+            2,
+            Event::NsfwClassified {
+                id: "https://reddit.com/r/rust".into(),
+                over_18: true,
             },
         ))
         .await
@@ -386,6 +395,8 @@ mod tests {
         let projection_store = ProjectionStore::from_db(&db).unwrap();
         let node = projection_store.load_node(&id).unwrap().unwrap();
         assert!(node.data.is_none());
+        assert_eq!(node.nsfw_classification, Some(true));
+        assert!(crate::nsfw::item_is_nsfw_in_store(&projection_store, &id));
     }
 
     #[tokio::test]

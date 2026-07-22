@@ -24,6 +24,7 @@ use crate::{
 pub struct NodeSchema {
     pub present: Leaf<bool>,
     pub data: Leaf<StoredEntityDataV1>,
+    pub nsfw_classification: Leaf<bool>,
     pub children: Map<String, Leaf<bool>>,
     pub uuid_votes: Map<UuidVoteKey, Leaf<StoredVoteV1>>,
     pub recent_votes: List<Leaf<StoredVoteV1>>,
@@ -174,8 +175,14 @@ pub fn load_node_state(db: &Db, id: &ItemId) -> durable::Result<Option<NodeState
     let children_keys = np.children().keys(db)?;
     let uuid_vote_entries = np.uuid_votes().iter(db)?;
     let data = np.data().get(db)?;
+    let nsfw_classification = np.nsfw_classification().get(db)?;
 
-    if !present && children_keys.is_empty() && uuid_vote_entries.is_empty() && data.is_none() {
+    if !present
+        && children_keys.is_empty()
+        && uuid_vote_entries.is_empty()
+        && data.is_none()
+        && nsfw_classification.is_none()
+    {
         return Ok(None);
     }
 
@@ -189,6 +196,7 @@ pub fn load_node_state(db: &Db, id: &ItemId) -> durable::Result<Option<NodeState
     Ok(Some(NodeState {
         id: id.clone(),
         data: data.map(decode_entity_data),
+        nsfw_classification,
         children,
         votes,
     }))
@@ -235,6 +243,11 @@ pub fn ensure_path_writes(batch: &mut Batch, id: &ItemId) {
             }
         }
     }
+}
+
+pub fn nsfw_classification_writes(batch: &mut Batch, id: &ItemId, over_18: bool) {
+    ensure_path_writes(batch, id);
+    batch.write(node(id).nsfw_classification().set(&over_18));
 }
 
 pub fn vote_writes(

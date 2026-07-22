@@ -26,13 +26,16 @@
             (do (Thread/sleep 200) (recur))
             false))))))
 
-(defn curl-fetch-children [base item]
+(defn curl-fetch-entity [base item kind]
   (process/shell {:out :string :err :string}
                  "curl" "-sfN" "--max-time" "20"
                  "-X" "POST" (str base "/ui")
                  "--data-urlencode"
                  (str "__rpc__={\"action\":\"fetch_entity\",\"item\":\"" item
-                      "\",\"kind\":\"children\"}")))
+                      "\",\"kind\":\"" kind "\"}")))
+
+(defn curl-fetch-children [base item]
+  (curl-fetch-entity base item "children"))
 
 (defn app-env
   [data-dir app-port oauth-port reddit-port]
@@ -103,6 +106,11 @@
        "&mock_user=" (java.net.URLEncoder/encode mock-user "UTF-8")))
 
 (defn seed-rust-children! [app-base]
-  (let [fetch (curl-fetch-children app-base "reddit.com/r/rust")]
-    (when-not (zero? (:exit fetch))
-      (throw (ex-info "fetch rust children failed" {:err (:err fetch)})))))
+  ;; Classify the subreddit before importing its posts. Unknown Reddit
+  ;; ancestors intentionally fail closed at listing and vote boundaries.
+  (let [self-fetch (curl-fetch-entity app-base "reddit.com/r/rust" "self")
+        children-fetch (curl-fetch-children app-base "reddit.com/r/rust")]
+    (when-not (zero? (:exit self-fetch))
+      (throw (ex-info "fetch rust subreddit failed" {:err (:err self-fetch)})))
+    (when-not (zero? (:exit children-fetch))
+      (throw (ex-info "fetch rust children failed" {:err (:err children-fetch)})))))

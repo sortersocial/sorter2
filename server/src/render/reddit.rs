@@ -4,7 +4,7 @@ use maud::{html, Markup};
 
 use crate::{
     html::sanitize::entity_body_html,
-    nsfw::entity_is_nsfw,
+    nsfw::{item_nsfw_status, node_is_nsfw, NsfwStatus},
     path_types::ItemId,
     reducer::{EntityData, GlobalTree, NodeState},
 };
@@ -22,7 +22,7 @@ pub fn entity_markup(node: &NodeState, nsfw_ok: bool) -> Option<Markup> {
         return None;
     }
     let data = node.data.as_ref()?;
-    Some(post_entity_card(data, nsfw_ok))
+    Some(post_entity_card(data, node_is_nsfw(node), nsfw_ok))
 }
 
 /// One row in a parent ranking list (thumbnail + title).
@@ -32,40 +32,49 @@ pub fn child_row_markup(tree: &GlobalTree, id: &ItemId, href: &str) -> Option<Ma
         return None;
     }
     let data = tree.get(id)?.data.as_ref()?;
+    let status = item_nsfw_status(tree, id);
     Some(html! {
-        @if entity_is_nsfw(data) {
+        @if status == NsfwStatus::Unknown {
+            span class="muted small" { "Unclassified Reddit item" }
+        } @else if status == NsfwStatus::Nsfw {
             span class="nsfw-badge" { "NSFW" }
-        } @else if let Some(thumb) = &data.thumb_url {
-            a class="reddit-post-thumb-link" href=(href) {
-                img class="reddit-post-thumb" src=(thumb) alt="" loading="lazy";
+            a href=(href) {
+                strong { (data.title) }
             }
-        }
-        a href=(href) {
-            strong { (data.title) }
+        } @else {
+            @if let Some(thumb) = &data.thumb_url {
+                a class="reddit-post-thumb-link" href=(href) {
+                    img class="reddit-post-thumb" src=(thumb) alt="" loading="lazy";
+                }
+            }
+            a href=(href) {
+                strong { (data.title) }
+            }
         }
     })
 }
 
-fn post_entity_card(data: &EntityData, nsfw_ok: bool) -> Markup {
+fn post_entity_card(data: &EntityData, is_nsfw: bool, nsfw_ok: bool) -> Markup {
     let image = data.image_url.as_ref().or(data.thumb_url.as_ref());
-    let gated = entity_is_nsfw(data) && !nsfw_ok;
+    let gated = is_nsfw && !nsfw_ok;
     html! {
         div class="entity-card reddit-post" {
-            h2 { (data.title) }
-            @if let Some(author) = &data.author {
-                p class="muted small" { "by " (author) }
-            }
-            @if entity_is_nsfw(data) {
-                p class="muted small" {
-                    span class="nsfw-badge" { "NSFW" }
-                    " adult Reddit content"
-                }
-            }
             @if gated {
                 div class="nsfw-gate" data-testid="nsfw-gate" {
-                    p { "This post is in the NSFW dimension. Media, body text, and links stay hidden until you opt in." }
+                    span class="nsfw-badge" { "NSFW" }
+                    p { "This post is in the NSFW dimension. Its title, media, body text, and links stay hidden until you opt in." }
                 }
             } @else {
+                h2 { (data.title) }
+                @if let Some(author) = &data.author {
+                    p class="muted small" { "by " (author) }
+                }
+                @if is_nsfw {
+                    p class="muted small" {
+                        span class="nsfw-badge" { "NSFW" }
+                        " adult Reddit content"
+                    }
+                }
                 @if let Some(url) = &data.link_url {
                     p class="reddit-post-url muted small" {
                         a href=(url) rel="noopener noreferrer" { (url) }
@@ -109,6 +118,7 @@ mod tests {
         let html = entity_markup(&nsfw_node(), false).unwrap().into_string();
         assert!(html.contains("NSFW"));
         assert!(html.contains("nsfw-gate"));
+        assert!(!html.contains("adult post"));
         assert!(!html.contains("adult body"));
         assert!(!html.contains("https://example.com/image.jpg"));
         assert!(!html.contains("https://example.com/out"));
@@ -121,5 +131,46 @@ mod tests {
         assert!(html.contains("https://example.com/image.jpg"));
         assert!(html.contains("https://example.com/out"));
         assert!(!html.contains("nsfw-gate"));
+    }
+
+    #[test]
+    fn inherited_nsfw_child_never_renders_a_thumbnail() {
+        let parent = ItemId::from_url("https://reddit.com/r/nsfw").unwrap();
+        let post = ItemId::from_url("https://reddit.com/r/nsfw/comments/abc/adult").unwrap();
+        let mut tree = GlobalTree::new();
+        tree.nodes.insert(
+            parent.clone(),
+            NodeState {
+                id: parent.clone(),
+                nsfw_classification: Some(true),
+                children: [post.clone()].into_iter().collect(),
+                ..Default::default()
+            },
+        );
+        tree.nodes.insert(
+            post.clone(),
+            NodeState {
+                id: post.clone(),
+                nsfw_classification: Some(false),
+                data: Some(EntityData {
+                    title: "inherited adult post".into(),
+                    author: None,
+                    body_html: None,
+                    over_18: false,
+                    thumb_url: Some("https://example.com/should-not-load.jpg".into()),
+                    image_url: None,
+                    link_url: None,
+                }),
+                ..Default::default()
+            },
+        );
+
+        let html = child_row_markup(&tree, &post, "/post")
+            .unwrap()
+            .into_string();
+        assert!(html.contains("NSFW"));
+        assert!(html.contains("inherited adult post"));
+        assert!(!html.contains("<img"));
+        assert!(!html.contains("should-not-load.jpg"));
     }
 }

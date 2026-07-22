@@ -18,7 +18,7 @@ use crate::{
 
 const PROJECTION_CURSOR_KEY: &str = "cursor";
 const PROJECTION_SCHEMA_KEY: &str = "schema_version";
-const PROJECTION_SCHEMA_VERSION: u64 = 7;
+const PROJECTION_SCHEMA_VERSION: u64 = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectionStoreError {
@@ -144,6 +144,16 @@ impl ProjectionStore {
     pub fn scope_tree(&self, id: &ItemId) -> Result<GlobalTree, ProjectionStoreError> {
         let mut tree = GlobalTree::new();
         self.hydrate_scope(&mut tree, id)?;
+        // Classification is inherited from Reddit ancestors. Hydrate the
+        // breadcrumb chain as well as the requested node and its children so
+        // every read/render path sees the same wall.
+        let mut ancestor = id.parent();
+        while let Some(parent) = ancestor {
+            if let Some(node_state) = self.load_node(&parent)? {
+                tree.nodes.insert(parent.clone(), node_state);
+            }
+            ancestor = parent.parent();
+        }
         Ok(tree)
     }
 
@@ -259,6 +269,25 @@ mod tests {
         let db = Db::open(tmp.path()).unwrap();
         let store = ProjectionStore::from_db(&db).unwrap();
         let id = ItemId::from_url("https://reddit.com/r/rust").unwrap();
+        projection_apply::apply_records(
+            &store,
+            &[
+                record(
+                    1,
+                    Event::NodeEnsured {
+                        id: id.as_str().to_string(),
+                    },
+                ),
+                record(
+                    2,
+                    Event::NsfwClassified {
+                        id: id.as_str().to_string(),
+                        over_18: true,
+                    },
+                ),
+            ],
+        )
+        .unwrap();
         store
             .put_ephemeral_content(
                 &id,
@@ -276,6 +305,8 @@ mod tests {
             .unwrap();
         assert!(store.load_node(&id).unwrap().unwrap().data.is_some());
         assert_eq!(store.evict_content_older_than(2_000).unwrap(), 1);
-        assert!(store.load_node(&id).unwrap().unwrap().data.is_none());
+        let node = store.load_node(&id).unwrap().unwrap();
+        assert!(node.data.is_none());
+        assert_eq!(node.nsfw_classification, Some(true));
     }
 }

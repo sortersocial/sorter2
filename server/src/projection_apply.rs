@@ -14,8 +14,8 @@ use crate::{
     projection_store::ProjectionStore,
     reducer::VoteData,
     storage_schema::{
-        ensure_path_writes, oauth_link_key, pseudonym_owner, skip_item_write, unskip_item_write,
-        vote_writes, Store, StoreFields,
+        ensure_path_writes, nsfw_classification_writes, oauth_link_key, pseudonym_owner,
+        skip_item_write, unskip_item_write, vote_writes, Store, StoreFields,
     },
 };
 
@@ -83,6 +83,10 @@ pub fn apply_records(
             Event::NodeEnsured { id } => {
                 let parsed = parse_event_id(id)?;
                 ensure_path_writes(&mut batch, &parsed);
+            }
+            Event::NsfwClassified { id, over_18 } => {
+                let parsed = parse_event_id(id)?;
+                nsfw_classification_writes(&mut batch, &parsed, *over_18);
             }
             Event::PrincipalCreated { uuid, .. } => {
                 pending_weights.insert(uuid.clone(), BASE_TRUST_WEIGHT);

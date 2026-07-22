@@ -31,6 +31,7 @@ pub fn event_timestamp(event: &Event) -> i64 {
     match event {
         Event::VoteRecorded { ts, .. } => *ts,
         Event::NodeEnsured { .. } => crate::fetch::now_ms(),
+        Event::NsfwClassified { .. } => crate::fetch::now_ms(),
         Event::PrincipalCreated { ts, .. } => *ts,
         Event::OauthLinked { ts, .. } => *ts,
         Event::PseudonymClaimed { ts, .. } => *ts,
@@ -62,6 +63,10 @@ pub enum Event {
     },
     /// Register a node path in the fractal tree (no external fetch).
     NodeEnsured { id: String },
+
+    /// Durable Reddit safety classification, stored separately from expiring
+    /// display content so the NSFW wall survives eviction and projection replay.
+    NsfwClassified { id: String, over_18: bool },
 
     /// New trust anchor (first identity event for a human).
     PrincipalCreated { uuid: String, ts: i64 },
