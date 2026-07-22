@@ -262,6 +262,29 @@ impl AppState {
         self.journal.append(event).await
     }
 
+    pub async fn set_item_skipped(
+        &self,
+        uuid: &str,
+        item: &ItemId,
+        skipped: bool,
+    ) -> Result<(), String> {
+        let ts = crate::html::now_ms();
+        let event = if skipped {
+            Event::ItemSkipped {
+                uuid: uuid.to_string(),
+                item: item.as_str().to_string(),
+                ts,
+            }
+        } else {
+            Event::ItemUnskipped {
+                uuid: uuid.to_string(),
+                item: item.as_str().to_string(),
+                ts,
+            }
+        };
+        self.journal.append(event).await
+    }
+
     /// Append identity events (OAuth link, pseudonym claim, etc.).
     pub async fn append_identity_events(&self, events: Vec<Event>) -> Result<(), String> {
         self.journal.append_many(events).await

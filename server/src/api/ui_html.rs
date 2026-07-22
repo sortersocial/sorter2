@@ -18,7 +18,7 @@ use crate::{
     parser::parse_reddit_url,
     path_types::ItemId,
     state::{parse_item_param, AppState},
-    storage_schema::pseudonym_owner,
+    storage_schema::{load_user_skips, pseudonym_owner},
     ui_action::{parse_html_ui_from_form, HtmlUiAction},
 };
 
@@ -87,6 +87,12 @@ pub async fn post_ui_html(
             };
             let left = parse_item_param(&a);
             let right = parse_item_param(&b);
+            let skipped =
+                load_user_skips(state.projection_store.db(), &actor.uuid).unwrap_or_default();
+            if skipped.contains(&left) || skipped.contains(&right) {
+                return ui_js_warn("restore skipped items from your account before voting")
+                    .into_response();
+            }
             // Strict boundary: refuse votes that would surface NSFW without opt-in.
             let store = &state.projection_store;
             if !item_is_visible(item_nsfw_status_in_store(store, &parent), nsfw_ok)
@@ -106,13 +112,14 @@ pub async fn post_ui_html(
                 Err(e) => return ui_js_warn(&e).into_response(),
             };
             if vote_compare {
-                let morph =
-                    crate::html::vote::vote_recorded_morph(&tree, &parent, &left, &right, nsfw_ok);
+                let morph = crate::html::vote::vote_recorded_morph(
+                    &tree, &parent, &left, &right, nsfw_ok, &skipped,
+                );
                 return morph.into_response();
             }
             let empty = crate::reducer::NodeState::default();
             let node = tree.get(&parent).unwrap_or(&empty);
-            let panel = ranking_panel(&parent, node, &tree, nsfw_ok);
+            let panel = ranking_panel(&parent, node, &tree, nsfw_ok, &skipped);
             JsBuilder::new()
                 .morph_selector("#ranking-panel", panel)
                 .into_response()
@@ -169,6 +176,59 @@ pub async fn post_ui_html(
             }
             redirect_js(&config::sanitize_return_to(&return_to)).into_response()
         }
+        HtmlUiAction::SkipItem { item, parent } => {
+            if let Some(resp) = vote_auth_redirect(&state, &jar) {
+                return resp;
+            }
+            let session_id = match session_id_from_jar(&jar) {
+                Some(id) => id,
+                None => return login_redirect_js().into_response(),
+            };
+            let session = match load_valid_session(state.projection_store.db(), &session_id) {
+                Some(session) => session,
+                None => return login_redirect_js().into_response(),
+            };
+            let item = parse_item_param(&item);
+            if item.is_root() {
+                return ui_js_warn("cannot skip the root item").into_response();
+            }
+            if let Err(e) = state.set_item_skipped(&session.uuid, &item, true).await {
+                return ui_js_warn(&e).into_response();
+            }
+            let parent = parent_from_scope(&parent);
+            let destination = state
+                .scope_tree(&parent)
+                .ok()
+                .map(|tree| {
+                    let skipped = load_user_skips(state.projection_store.db(), &session.uuid)
+                        .unwrap_or_default();
+                    if crate::skip::visible_unskipped_children(&tree, &parent, nsfw_ok, &skipped)
+                        .len()
+                        >= 2
+                    {
+                        crate::html::vote::vote_href(&parent)
+                    } else {
+                        parent.browse_href()
+                    }
+                })
+                .unwrap_or_else(|| parent.browse_href());
+            redirect_js(&destination).into_response()
+        }
+        HtmlUiAction::UnskipItem { item } => {
+            let session_id = match session_id_from_jar(&jar) {
+                Some(id) => id,
+                None => return login_redirect_js().into_response(),
+            };
+            let session = match load_valid_session(state.projection_store.db(), &session_id) {
+                Some(session) => session,
+                None => return login_redirect_js().into_response(),
+            };
+            let item = parse_item_param(&item);
+            if let Err(e) = state.set_item_skipped(&session.uuid, &item, false).await {
+                return ui_js_warn(&e).into_response();
+            }
+            redirect_js("/login").into_response()
+        }
         HtmlUiAction::ParseQuery { query } => match parse_reddit_url(&query) {
             Ok(item) => {
                 let _ = state.ensure_node(&item).await;
@@ -189,7 +249,8 @@ pub async fn post_ui_html(
         },
         HtmlUiAction::FetchEntity { item, kind } => {
             let id = parse_item_param(&item);
-            fetch::fetch_entity_stream(state, id, kind, nsfw_ok).into_response()
+            let skipped = crate::skip::for_jar(&state.projection_store, &jar);
+            fetch::fetch_entity_stream(state, id, kind, nsfw_ok, skipped).into_response()
         }
     }
 }

@@ -56,6 +56,14 @@ pub enum HtmlUiAction {
         #[serde(default)]
         return_to: String,
     },
+    /// Add an item to the active user's skipset and choose another pair.
+    SkipItem {
+        item: String,
+        #[serde(default)]
+        parent: String,
+    },
+    /// Remove an item from the active user's skipset.
+    UnskipItem { item: String },
 }
 
 #[derive(Debug, Error)]

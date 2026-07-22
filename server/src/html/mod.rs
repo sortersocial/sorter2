@@ -15,14 +15,11 @@ use crate::{
     auth::{config::sanitize_return_to, nav_pseudonym},
     fetch::html::{entity_section, nsfw_enter_panel},
     form_template::template_json_compact,
-    nsfw::{
-        item_is_nsfw, nsfw_allowed, nsfw_enter_cookie, nsfw_leave_cookie, visible_children,
-    },
+    nsfw::{item_is_nsfw, nsfw_allowed, nsfw_enter_cookie, nsfw_leave_cookie},
     path_types::ItemId,
-    ranking::{
-        ranked_items_subset, scope_components, RankedItem, MAX_ITERS, TOL,
-    },
+    ranking::{ranked_items_subset, scope_components, RankedItem, MAX_ITERS, TOL},
     reducer::{GlobalTree, NodeState},
+    skip::{for_jar as user_skips_for_jar, visible_unskipped_children},
     state::AppState,
     ui_action::UI_RPC_FIELD,
 };
@@ -338,7 +335,10 @@ fn rank_list(
     tree: &GlobalTree,
 ) -> Markup {
     let min_score = items.iter().map(|r| r.score).fold(f64::INFINITY, f64::min);
-    let max_score = items.iter().map(|r| r.score).fold(f64::NEG_INFINITY, f64::max);
+    let max_score = items
+        .iter()
+        .map(|r| r.score)
+        .fold(f64::NEG_INFINITY, f64::max);
     html! {
         @if !items.is_empty() {
             h3 class="rank-heading muted small" { (label) }
@@ -422,8 +422,14 @@ fn unranked_list(
     }
 }
 
-pub fn ranking_panel(item: &ItemId, node: &NodeState, tree: &GlobalTree, nsfw_ok: bool) -> Markup {
-    ranking_panel_with_highlights(item, node, tree, &HashSet::new(), nsfw_ok)
+pub fn ranking_panel(
+    item: &ItemId,
+    node: &NodeState,
+    tree: &GlobalTree,
+    nsfw_ok: bool,
+    skipped: &HashSet<ItemId>,
+) -> Markup {
+    ranking_panel_with_highlights(item, node, tree, &HashSet::new(), nsfw_ok, skipped)
 }
 
 pub fn ranking_panel_with_highlights(
@@ -432,9 +438,12 @@ pub fn ranking_panel_with_highlights(
     tree: &GlobalTree,
     highlighted: &HashSet<ItemId>,
     nsfw_ok: bool,
+    skipped: &HashSet<ItemId>,
 ) -> Markup {
     let scope = &node.votes;
-    let visible: HashSet<ItemId> = visible_children(tree, item, nsfw_ok).into_iter().collect();
+    let visible: HashSet<ItemId> = visible_unskipped_children(tree, item, nsfw_ok, skipped)
+        .into_iter()
+        .collect();
     let (comps, _isolates, _) = scope_components(scope);
 
     // Each connected component of voted items is its own ranking; isolated and
@@ -531,6 +540,7 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId, jar: CookieJar) -> M
     let views = state.views.get_views(&path);
     let nav_user = nav_pseudonym(state.projection_store.db(), &jar);
     let nsfw_ok = nsfw_allowed(&jar);
+    let skipped = user_skips_for_jar(&state.projection_store, &jar);
 
     let tree = state
         .scope_tree(&item)
@@ -540,7 +550,7 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId, jar: CookieJar) -> M
     let page_is_nsfw = item_is_nsfw(&tree, &item);
     let gated = page_is_nsfw && !nsfw_ok;
 
-    let visible = visible_children(&tree, &item, nsfw_ok);
+    let visible = visible_unskipped_children(&tree, &item, nsfw_ok, &skipped);
     let vote_link = if !gated && visible.len() >= 2 {
         Some(vote::vote_href(&item))
     } else {
@@ -561,7 +571,7 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId, jar: CookieJar) -> M
                         a class="btn-primary" href=(href) data-testid="vote-children" { "Vote on children" }
                     }
                 }
-                (ranking_panel(&item, node, &tree, nsfw_ok))
+                (ranking_panel(&item, node, &tree, nsfw_ok, &skipped))
             }
         }
     };
@@ -626,19 +636,11 @@ mod nsfw_nav_tests {
     }
 }
 
-pub async fn home(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    uri: Uri,
-) -> impl IntoResponse {
+pub async fn home(State(state): State<AppState>, jar: CookieJar, uri: Uri) -> impl IntoResponse {
     item_page(state, uri, ItemId::root(), jar).await
 }
 
-pub async fn browse(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    uri: Uri,
-) -> impl IntoResponse {
+pub async fn browse(State(state): State<AppState>, jar: CookieJar, uri: Uri) -> impl IntoResponse {
     let item = ItemId::from_browse_uri(uri.path()).unwrap_or(ItemId::root());
     item_page(state, uri, item, jar).await
 }

@@ -35,6 +35,8 @@ pub fn event_timestamp(event: &Event) -> i64 {
         Event::PrincipalCreated { ts, .. } => *ts,
         Event::OauthLinked { ts, .. } => *ts,
         Event::PseudonymClaimed { ts, .. } => *ts,
+        Event::ItemSkipped { ts, .. } => *ts,
+        Event::ItemUnskipped { ts, .. } => *ts,
     }
 }
 
@@ -83,6 +85,12 @@ pub enum Event {
         pseudonym: String,
         ts: i64,
     },
+
+    /// Hide an item from one user's comparison pool and rankings.
+    ItemSkipped { uuid: String, item: String, ts: i64 },
+
+    /// Restore a previously skipped item for one user.
+    ItemUnskipped { uuid: String, item: String, ts: i64 },
 }
 
 impl Event {

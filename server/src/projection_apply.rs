@@ -15,7 +15,7 @@ use crate::{
     reducer::VoteData,
     storage_schema::{
         ensure_path_writes, nsfw_classification_writes, oauth_link_key, pseudonym_owner,
-        vote_writes, Store, StoreFields,
+        skip_item_write, unskip_item_write, vote_writes, Store, StoreFields,
     },
 };
 
@@ -155,6 +155,14 @@ pub fn apply_records(
                         .map_err(|e| EventLogError::Apply(e.to_string()))?;
                 }
             }
+            Event::ItemSkipped { uuid, item, .. } => {
+                let item = parse_event_id(item)?;
+                skip_item_write(&mut batch, uuid, &item);
+            }
+            Event::ItemUnskipped { uuid, item, .. } => {
+                let item = parse_event_id(item)?;
+                unskip_item_write(&mut batch, uuid, &item);
+            }
         }
         last_seq = record.seq;
     }
@@ -174,7 +182,7 @@ mod tests {
         events::EventRecord,
         identity::resolve_actor_uuid,
         projection_store::ProjectionStore,
-        storage_schema::{oauth_link_owner, user_trust_weight, StoreFields},
+        storage_schema::{load_user_skips, oauth_link_owner, user_trust_weight, StoreFields},
     };
 
     fn record(seq: u64, event: Event) -> EventRecord {
@@ -279,5 +287,49 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("already claimed"));
+    }
+
+    #[test]
+    fn skip_events_are_isolated_by_user_and_reversible() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = durable::Db::open(dir.path()).unwrap();
+        let store = ProjectionStore::from_db(&db).unwrap();
+
+        apply_records(
+            &store,
+            &[
+                record(
+                    1,
+                    Event::ItemSkipped {
+                        uuid: "user-a".into(),
+                        item: "alpha".into(),
+                        ts: 1,
+                    },
+                ),
+                record(
+                    2,
+                    Event::ItemSkipped {
+                        uuid: "user-b".into(),
+                        item: "beta".into(),
+                        ts: 2,
+                    },
+                ),
+                record(
+                    3,
+                    Event::ItemUnskipped {
+                        uuid: "user-a".into(),
+                        item: "alpha".into(),
+                        ts: 3,
+                    },
+                ),
+            ],
+        )
+        .unwrap();
+
+        assert!(load_user_skips(store.db(), "user-a").unwrap().is_empty());
+        assert_eq!(
+            load_user_skips(store.db(), "user-b").unwrap(),
+            [ItemId::opaque("beta")].into_iter().collect()
+        );
     }
 }

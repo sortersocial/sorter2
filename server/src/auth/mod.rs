@@ -25,9 +25,11 @@ use crate::{
     fetch::now_ms,
     form_template::template_json_compact,
     html::layout,
+    path_types::ItemId,
     state::AppState,
     storage_schema::{
-        linked_providers_for_uuid, oauth_link_owner, pseudonym_owner, Store, StoreFields,
+        linked_providers_for_uuid, load_user_skips, oauth_link_owner, pseudonym_owner, Store,
+        StoreFields,
     },
     ui_action::UI_RPC_FIELD,
 };
@@ -35,8 +37,7 @@ use crate::{
 pub use session::{nav_pseudonym, resolve_vote_actor, session_id_from_jar, VoteActor};
 
 pub fn base_url_from_env(port: u16) -> String {
-    std::env::var("SORTER2_BASE_URL")
-        .unwrap_or_else(|_| format!("http://127.0.0.1:{port}"))
+    std::env::var("SORTER2_BASE_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{port}"))
 }
 
 fn new_actor_uuid() -> String {
@@ -49,8 +50,8 @@ fn new_actor_uuid() -> String {
         u16::from_be_bytes([bytes[6], bytes[7]]) | 0x4000,
         u16::from_be_bytes([bytes[8], bytes[9]]) | 0x8000,
         u128::from_be_bytes([
-            0, 0, bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15], 0, 0, 0, 0,
-            0, 0, 0, 0,
+            0, 0, bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15], 0, 0, 0, 0, 0,
+            0, 0, 0,
         ]) & 0x0000_FFFF_FFFF_FFFF
     )
 }
@@ -150,10 +151,7 @@ fn login_error_message(code: Option<&str>) -> Option<&'static str> {
     }
 }
 
-fn signed_out_body(
-    providers: &[(&str, &str, String)],
-    error: Option<&str>,
-) -> Markup {
+fn signed_out_body(providers: &[(&str, &str, String)], error: Option<&str>) -> Markup {
     html! {
         main class="panel login-page" {
             section class="login-section" {
@@ -189,6 +187,7 @@ fn signed_out_body(
 fn account_body(
     actor: &session::SessionActor,
     aliases: &[String],
+    skipped: &[ItemId],
     // Provider keys already linked to this UUID (private).
     linked: &[String],
     // Providers available to link: not yet attached.
@@ -249,6 +248,35 @@ fn account_body(
             }
 
             section class="login-section" {
+                h2 { "skipped items" }
+                p class="muted small" {
+                    "hidden from your comparisons and rankings"
+                }
+                @if skipped.is_empty() {
+                    p class="muted" data-testid="skipped-items-empty" { "none" }
+                } @else {
+                    ul class="skip-list" data-testid="skipped-items" {
+                        @for item in skipped {
+                            @let rpc = template_json_compact(&serde_json::json!({
+                                "action": "unskip_item",
+                                "item": item.as_str(),
+                            })).expect("unskip item rpc");
+                            li class="skip-item" data-skip-item=(item.as_str()) {
+                                a href=(item.browse_href()) { (item.as_str()) }
+                                form method="post" action="/ui" {
+                                    input type="hidden" name=(UI_RPC_FIELD) value=(rpc);
+                                    button type="submit" class="btn-secondary"
+                                        data-testid="unskip-item" {
+                                        "restore"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            section class="login-section" {
                 h2 { "linked sign-in" }
                 p class="muted small" {
                     "private to you — linking more providers raises trust weight without publishing which accounts you use"
@@ -292,6 +320,7 @@ fn account_body(
 fn login_body(
     session: Option<&session::SessionActor>,
     aliases: &[String],
+    skipped: &[ItemId],
     linked: &[String],
     providers: &[(&str, &str, String)],
     claim_forms: Option<Markup>,
@@ -304,7 +333,7 @@ fn login_body(
                 .filter(|(key, _, _)| !linked.iter().any(|p| p == key))
                 .cloned()
                 .collect();
-            account_body(actor, aliases, linked, &unlinkable, forms)
+            account_body(actor, aliases, skipped, linked, &unlinkable, forms)
         }
         _ => signed_out_body(providers, error),
     }
@@ -330,6 +359,16 @@ pub async fn login_page(
         .as_ref()
         .map(|s| linked_providers_for_uuid(db, &s.uuid).unwrap_or_default())
         .unwrap_or_default();
+    let mut skipped: Vec<ItemId> = session
+        .as_ref()
+        .map(|s| {
+            load_user_skips(db, &s.uuid)
+                .unwrap_or_default()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default();
+    skipped.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     let providers = oauth_providers(&base_url_from_env(state.cfg.port), &return_to);
 
     let claim_forms = if session.is_some() {
@@ -348,6 +387,7 @@ pub async fn login_page(
         login_body(
             session.as_ref(),
             &aliases,
+            &skipped,
             &linked,
             &providers,
             claim_forms,
@@ -541,10 +581,7 @@ async fn finish_oauth_login(
         .add(session::clear_oauth_state_cookie());
 
     let dest = if pseudonym.is_empty() {
-        format!(
-            "/login/alias?return_to={}",
-            urlencoding::encode(&return_to)
-        )
+        format!("/login/alias?return_to={}", urlencoding::encode(&return_to))
     } else if linking_while_logged_in {
         // Additional link while already in an account → stay on account page.
         "/login".to_string()
@@ -656,9 +693,8 @@ pub async fn switch_pseudonym(
     if owner != actor.uuid {
         return Err(StatusCode::FORBIDDEN);
     }
-    session::update_session_pseudonym(db, &session_id, &form.pseudonym).map_err(|_| {
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    session::update_session_pseudonym(db, &session_id, &form.pseudonym)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Redirect::to("/login").into_response())
 }
 

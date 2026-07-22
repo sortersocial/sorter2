@@ -14,10 +14,11 @@ use crate::{
     fetch::html::{entity_section, nsfw_enter_panel},
     form_template::template_json_compact,
     html::{ranking_panel_with_highlights, scope_theme_style, JsBuilder},
-    nsfw::{item_is_nsfw, nsfw_allowed, visible_children},
+    nsfw::{item_is_nsfw, nsfw_allowed},
     pair::{resolve_pair_in_pool, suggest_next_pair_in_pool, PairError},
     path_types::ItemId,
     reducer::{GlobalTree, NodeState, ScopeVotes, VoteData},
+    skip::{for_jar as user_skips_for_jar, visible_unskipped_children},
     state::{parse_item_param, AppState},
     ui_action::UI_RPC_FIELD,
 };
@@ -210,6 +211,7 @@ fn vote_ranking_sidebar(
     left: &ItemId,
     right: &ItemId,
     nsfw_ok: bool,
+    skipped: &HashSet<ItemId>,
 ) -> Markup {
     let empty = NodeState::default();
     let node = tree.get(parent).unwrap_or(&empty);
@@ -218,7 +220,7 @@ fn vote_ranking_sidebar(
         aside id="vote-ranking-panel" class="vote-ranking-panel demo-panel" aria-live="polite" {
             h2 { "live ranking" }
             p class="muted small" { "updates as comparisons land" }
-            (ranking_panel_with_highlights(parent, node, tree, &highlighted, nsfw_ok))
+            (ranking_panel_with_highlights(parent, node, tree, &highlighted, nsfw_ok, skipped))
         }
     }
 }
@@ -230,14 +232,15 @@ pub(crate) fn vote_recorded_morph(
     left: &ItemId,
     right: &ItemId,
     nsfw_ok: bool,
+    skipped: &HashSet<ItemId>,
 ) -> JsBuilder {
-    let pool = visible_children(tree, parent, nsfw_ok);
+    let pool = visible_unskipped_children(tree, parent, nsfw_ok, skipped);
     let empty = NodeState::default();
     let scope = tree.get(parent).unwrap_or(&empty).votes.clone();
     let edge_history = vote_edge_history(tree, &scope, left, right);
     let next_pair = suggest_next(&scope, left, right, &pool);
     let actions = vote_compare_actions(parent, next_pair.as_ref());
-    let sidebar = vote_ranking_sidebar(tree, parent, left, right, nsfw_ok);
+    let sidebar = vote_ranking_sidebar(tree, parent, left, right, nsfw_ok, skipped);
     JsBuilder::new()
         .morph_inner_selector("#vote-edge-history-region", edge_history)
         .morph_selector("#vote-compare-actions", actions)
@@ -246,17 +249,32 @@ pub(crate) fn vote_recorded_morph(
 
 fn vote_compare_item_card(
     tree: &GlobalTree,
+    parent: &ItemId,
     item: &ItemId,
     side_class: &str,
+    side_name: &str,
     nsfw_ok: bool,
 ) -> Markup {
     let node = tree.get(item).cloned().unwrap_or_else(|| NodeState {
         id: item.clone(),
         ..Default::default()
     });
+    let skip_rpc = template_json_compact(&serde_json::json!({
+        "action": "skip_item",
+        "item": item.as_str(),
+        "parent": parent.as_str(),
+    }))
+    .expect("skip item rpc json");
     html! {
         div class=(format!("vote-compare-side {side_class}")) {
             (entity_section(item, &node, false, nsfw_ok))
+            form class="vote-skip-form" method="POST" action="/ui" {
+                input type="hidden" name=(UI_RPC_FIELD) value=(skip_rpc);
+                button type="submit" class="btn-secondary vote-skip"
+                    data-testid=(format!("vote-skip-{side_name}")) {
+                    "skip this item"
+                }
+            }
         }
     }
 }
@@ -279,6 +297,7 @@ pub async fn vote_page(
     let left_param = q.left.as_deref().map(parse_item_param);
     let right_param = q.right.as_deref().map(parse_item_param);
     let nsfw_ok = nsfw_allowed(&jar);
+    let skipped = user_skips_for_jar(&state.projection_store, &jar);
 
     let tree = state
         .scope_tree(&parent)
@@ -309,26 +328,35 @@ pub async fn vote_page(
             }
         };
         return Html(
-            layout("vote · NSFW", body, views, nav_user.as_deref(), false, &return_to)
-                .into_string(),
+            layout(
+                "vote · NSFW",
+                body,
+                views,
+                nav_user.as_deref(),
+                false,
+                &return_to,
+            )
+            .into_string(),
         )
         .into_response();
     }
 
-    let pool = visible_children(&tree, &parent, nsfw_ok);
-    let (left, right) =
-        match resolve_pair_in_pool(&tree, &parent, &pool, left_param.as_ref(), right_param.as_ref())
-        {
-            Ok(p) => p,
-            Err(e) => {
-                let (msg, status) = e.status_message();
-                return (status, msg).into_response();
-            }
-        };
+    let pool = visible_unskipped_children(&tree, &parent, nsfw_ok, &skipped);
+    let (left, right) = match resolve_pair_in_pool(
+        &tree,
+        &parent,
+        &pool,
+        left_param.as_ref(),
+        right_param.as_ref(),
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            let (msg, status) = e.status_message();
+            return (status, msg).into_response();
+        }
+    };
 
-    if (!nsfw_ok)
-        && (item_is_nsfw(&tree, &left) || item_is_nsfw(&tree, &right))
-    {
+    if (!nsfw_ok) && (item_is_nsfw(&tree, &left) || item_is_nsfw(&tree, &right)) {
         let (msg, status) = PairError::NotChild.status_message();
         return (status, msg).into_response();
     }
@@ -361,15 +389,15 @@ pub async fn vote_page(
                     h1 { "compare" }
                     (breadcrumb_path(&parent))
                     div class="vote-compare-pair" data-winner="even" {
-                        (vote_compare_item_card(&tree, &left, "vote-compare-left", nsfw_ok))
+                        (vote_compare_item_card(&tree, &parent, &left, "vote-compare-left", "left", nsfw_ok))
                         span class="vote-compare-vs" { "vs" }
-                        (vote_compare_item_card(&tree, &right, "vote-compare-right", nsfw_ok))
+                        (vote_compare_item_card(&tree, &parent, &right, "vote-compare-right", "right", nsfw_ok))
                     }
                     div id="vote-edge-history-region" {
                         (edge_history)
                     }
                 }
-                (vote_ranking_sidebar(&tree, &parent, &left, &right, nsfw_ok))
+                (vote_ranking_sidebar(&tree, &parent, &left, &right, nsfw_ok, &skipped))
             }
             (vote_hud_form(&parent, &left, &right, &rpc_json, next_pair.as_ref()))
         }
@@ -412,11 +440,29 @@ mod polarity_tests {
         let right = id("right_item");
 
         // Stored a == page left: keep order.
-        let v1 = VoteData::from_event(1, left.as_str(), right.as_str(), 9, 1, DEFAULT_PSEUDONYM.to_string(), 1.0).unwrap();
+        let v1 = VoteData::from_event(
+            1,
+            left.as_str(),
+            right.as_str(),
+            9,
+            1,
+            DEFAULT_PSEUDONYM.to_string(),
+            1.0,
+        )
+        .unwrap();
         assert_eq!(ratios_for_page(&v1, &left, &right), (9, 1));
 
         // Stored a == page right: swap so left stays left.
-        let v2 = VoteData::from_event(2, right.as_str(), left.as_str(), 9, 1, DEFAULT_PSEUDONYM.to_string(), 1.0).unwrap();
+        let v2 = VoteData::from_event(
+            2,
+            right.as_str(),
+            left.as_str(),
+            9,
+            1,
+            DEFAULT_PSEUDONYM.to_string(),
+            1.0,
+        )
+        .unwrap();
         assert_eq!(ratios_for_page(&v2, &left, &right), (1, 9));
     }
 
@@ -444,7 +490,16 @@ mod polarity_tests {
         let right = id("right_item");
 
         // Slider dragged left yields e.g. 9:1 with a = left item.
-        let vote = VoteData::from_event(1, left.as_str(), right.as_str(), 9, 1, DEFAULT_PSEUDONYM.to_string(), 1.0).unwrap();
+        let vote = VoteData::from_event(
+            1,
+            left.as_str(),
+            right.as_str(),
+            9,
+            1,
+            DEFAULT_PSEUDONYM.to_string(),
+            1.0,
+        )
+        .unwrap();
         let mut tree = GlobalTree::new();
         tree.apply_vote(&parent, vote, TEST_ACTOR_UUID);
 

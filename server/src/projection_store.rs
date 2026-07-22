@@ -18,7 +18,7 @@ use crate::{
 
 const PROJECTION_CURSOR_KEY: &str = "cursor";
 const PROJECTION_SCHEMA_KEY: &str = "schema_version";
-const PROJECTION_SCHEMA_VERSION: u64 = 7;
+const PROJECTION_SCHEMA_VERSION: u64 = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectionStoreError {
@@ -79,7 +79,11 @@ impl ProjectionStore {
     pub fn reset(&self) -> Result<(), ProjectionStoreError> {
         let root = Store::root();
         self.db.apply(
-            &[root.nodes().clear(), root.proj_meta().clear()],
+            &[
+                root.nodes().clear(),
+                root.user_skips().clear(),
+                root.proj_meta().clear(),
+            ],
             Durability::SyncWal,
         )?;
         self.db.run(
@@ -151,6 +155,13 @@ impl ProjectionStore {
             ancestor = parent.parent();
         }
         Ok(tree)
+    }
+
+    pub fn user_skips(
+        &self,
+        uuid: &str,
+    ) -> Result<std::collections::HashSet<ItemId>, ProjectionStoreError> {
+        Ok(crate::storage_schema::load_user_skips(&self.db, uuid)?)
     }
 
     /// Cache Reddit display content outside the event log (must be evicted per policy).

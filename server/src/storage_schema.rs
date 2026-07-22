@@ -40,6 +40,7 @@ pub struct Store {
     pub pseudonyms: Map<String, Leaf<String>>,
     pub user_pseudonyms: Map<String, List<Leaf<String>>>,
     pub user_weights: Map<String, Leaf<f64>>,
+    pub user_skips: Map<String, Map<String, Leaf<bool>>>,
     pub proj_meta: Map<String, Leaf<u64>>,
     pub view_counts: Map<String, Leaf<u64>>,
     pub view_meta: Map<String, Leaf<u64>>,
@@ -131,6 +132,36 @@ pub const RECENT_VOTES_CAP: u64 = 200;
 
 fn id_key(id: &ItemId) -> String {
     id.as_str().to_string()
+}
+
+pub fn load_user_skips(db: &Db, uuid: &str) -> durable::Result<HashSet<ItemId>> {
+    Store::root()
+        .user_skips()
+        .key(&uuid.to_string())
+        .keys(db)?
+        .into_iter()
+        .map(|key| parse_storage_id(&key))
+        .collect()
+}
+
+pub fn skip_item_write(batch: &mut Batch, uuid: &str, item: &ItemId) {
+    batch.write(
+        Store::root()
+            .user_skips()
+            .key(&uuid.to_string())
+            .key(&id_key(item))
+            .set(&true),
+    );
+}
+
+pub fn unskip_item_write(batch: &mut Batch, uuid: &str, item: &ItemId) {
+    batch.write(
+        Store::root()
+            .user_skips()
+            .key(&uuid.to_string())
+            .key(&id_key(item))
+            .delete(),
+    );
 }
 
 pub fn node(id: &ItemId) -> durable::Path<NodeSchema> {
