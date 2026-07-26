@@ -727,3 +727,161 @@ async fn claim_pseudonym_redirects_to_pair_return_to() {
         "claim redirect must send user back to the shared pair, got: {body}"
     );
 }
+
+#[tokio::test]
+async fn item_page_shows_peer_ranking_sorted_with_links_and_thumbs() {
+    let tmp = TempDir::new().unwrap();
+    let data = tmp.path().to_string_lossy().into_owned();
+    let state = create_app_state(AppConfig {
+        data_dir: data.clone(),
+        event_log_path: format!("{data}/events.jsonl"),
+        views_log_path: format!("{data}/views.jsonl"),
+        port: 0,
+    })
+    .await;
+    let session_id = state.create_default_session().unwrap();
+    let session_cookie = format!("{SESSION_COOKIE}={session_id}");
+
+    let parent = ItemId::from_url("https://reddit.com/r/nsfw").unwrap();
+    let a = ItemId::from_url("https://reddit.com/r/nsfw/comments/1urs2g3").unwrap();
+    let b = ItemId::from_url("https://reddit.com/r/nsfw/comments/otherpost").unwrap();
+    let c = ItemId::from_url("https://reddit.com/r/nsfw/comments/thirdpost").unwrap();
+
+    state.ensure_node(&parent).await.unwrap();
+    state.ensure_node(&a).await.unwrap();
+    state.ensure_node(&b).await.unwrap();
+    state.ensure_node(&c).await.unwrap();
+
+    for (id, title, thumb) in [
+        (&parent, "nsfw", None),
+        (
+            &a,
+            "featured post",
+            Some("https://example.com/a-thumb.jpg"),
+        ),
+        (
+            &b,
+            "other post",
+            Some("https://example.com/b-thumb.jpg"),
+        ),
+        (
+            &c,
+            "third post",
+            Some("https://example.com/c-thumb.jpg"),
+        ),
+    ] {
+        state
+            .projection_store
+            .put_ephemeral_content(
+                id,
+                &EntityData {
+                    title: title.into(),
+                    author: None,
+                    body_html: None,
+                    over_18: true,
+                    thumb_url: thumb.map(str::to_string),
+                    image_url: None,
+                    link_url: None,
+                },
+                1,
+            )
+            .unwrap();
+    }
+
+    let actor = sorter2_server::auth::VoteActor::anon();
+    // a beats b and c → a should be top of peer ranking
+    state
+        .record_vote(&parent, a.as_str(), b.as_str(), 3, 1, &actor)
+        .await
+        .unwrap();
+    state
+        .record_vote(&parent, a.as_str(), c.as_str(), 2, 1, &actor)
+        .await
+        .unwrap();
+
+    let app: Router = create_app(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let nsfw_cookie = format!("{NSFW_COOKIE}=1");
+    let html = client
+        .get(format!(
+            "http://{addr}/~/https://reddit.com/r/nsfw/comments/1urs2g3"
+        ))
+        .header("Cookie", format!("{session_cookie}; {nsfw_cookie}"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(
+        !html.contains("No votes yet"),
+        "peer votes on parent must surface on item page, got: {html}"
+    );
+    assert!(
+        html.contains("item-votes-list") || html.contains(">Votes<"),
+        "item page should list sibling matchup votes: {html}"
+    );
+    assert!(
+        html.contains("data-item-vote-other=\"https://reddit.com/r/nsfw/comments/otherpost\""),
+        "vote list must include sibling opponents: {html}"
+    );
+    assert!(
+        html.contains("data-item-vote-other=\"https://reddit.com/r/nsfw/comments/thirdpost\""),
+        "vote list must include all sibling opponents: {html}"
+    );
+    // Stronger win vs otherpost (3:1) should sort above weaker win vs thirdpost (2:1)
+    let other_pos = html
+        .find("data-item-vote-other=\"https://reddit.com/r/nsfw/comments/otherpost\"")
+        .expect("other in votes");
+    let third_pos = html
+        .find("data-item-vote-other=\"https://reddit.com/r/nsfw/comments/thirdpost\"")
+        .expect("third in votes");
+    assert!(
+        other_pos < third_pos,
+        "votes should sort by score (stronger first): other@{other_pos} third@{third_pos}"
+    );
+    assert!(
+        html.contains("data-rank-item=\"https://reddit.com/r/nsfw/comments/1urs2g3\""),
+        "current item should appear in ranking: {html}"
+    );
+    assert!(
+        html.contains("data-rank-item=\"https://reddit.com/r/nsfw/comments/otherpost\""),
+        "peer should appear in ranking: {html}"
+    );
+    assert!(
+        html.contains("href=\"/~/https://reddit.com/r/nsfw/comments/otherpost\""),
+        "peer rows must link to the other item page: {html}"
+    );
+    assert!(
+        html.contains("https://example.com/b-thumb.jpg"),
+        "opted-in NSFW peers should show thumbnails: {html}"
+    );
+    assert!(
+        html.contains("is-compared"),
+        "current item should be highlighted: {html}"
+    );
+    assert!(
+        html.contains("data-testid=\"vote-pin\""),
+        "item page should offer a compare/pin CTA: {html}"
+    );
+
+    // Scores are rendered as percentages; top item (a) should appear before lower ones
+    // in the ordered list markup.
+    let a_pos = html
+        .find("data-rank-item=\"https://reddit.com/r/nsfw/comments/1urs2g3\"")
+        .expect("a in ranking");
+    let b_pos = html
+        .find("data-rank-item=\"https://reddit.com/r/nsfw/comments/otherpost\"")
+        .expect("b in ranking");
+    assert!(
+        a_pos < b_pos,
+        "higher-score item should sort first: a@{a_pos} b@{b_pos}"
+    );
+}

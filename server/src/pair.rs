@@ -250,6 +250,40 @@ pub fn suggest_next_pair_in_pool(
     None
 }
 
+/// Pick a sibling to compare against `pinned` within `pool`.
+/// Prefers an unvoted edge, then a nearest-rank neighbor, then any other pool member.
+pub fn suggest_opponent(scope: &ScopeVotes, pool: &[ItemId], pinned: &ItemId) -> Option<ItemId> {
+    if !pool.iter().any(|c| c == pinned) {
+        return None;
+    }
+    let others: Vec<&ItemId> = pool.iter().filter(|c| *c != pinned).collect();
+    if others.is_empty() {
+        return None;
+    }
+
+    // Prefer never-voted opponents first.
+    if let Some(opp) = others
+        .iter()
+        .find(|o| !pair_is_voted(scope, pinned, o))
+        .copied()
+    {
+        return Some(opp.clone());
+    }
+
+    // Otherwise pick the closest neighbor in the rank-centrality order.
+    let order = ranked_pool_order(scope, pool);
+    if let Some(pos) = order.iter().position(|id| id == pinned) {
+        if pos + 1 < order.len() {
+            return Some(order[pos + 1].clone());
+        }
+        if pos > 0 {
+            return Some(order[pos - 1].clone());
+        }
+    }
+
+    others.first().map(|o| (*o).clone())
+}
+
 /// Random distinct pair from `children` (legacy pair.rs behavior).
 pub fn random_pair(children: &[ItemId]) -> Option<(ItemId, ItemId)> {
     if children.len() < 2 {
@@ -556,6 +590,23 @@ mod tests {
         let chosen = pair_set(&pair);
         assert!(chosen.contains("https://reddit.com/r/rust/a"));
         assert!(chosen.contains("https://reddit.com/r/rust/b"));
+    }
+
+    #[test]
+    fn suggest_opponent_prefers_unvoted_then_rank_neighbor() {
+        let parent = ItemId::parse("project").unwrap();
+        let mut tree = seed_children(&parent, &["alpha", "beta", "gamma"]);
+        apply(&mut tree, &parent, test_vote(1, "alpha", "beta", 2, 1));
+        let scope = tree.get(&parent).unwrap().votes.clone();
+        let pool = children_of(&tree, &parent);
+
+        let opp = suggest_opponent(&scope, &pool, &ItemId::opaque("alpha")).unwrap();
+        assert_eq!(opp.as_str(), "gamma");
+
+        apply(&mut tree, &parent, test_vote(2, "alpha", "gamma", 2, 1));
+        let scope = tree.get(&parent).unwrap().votes.clone();
+        let opp = suggest_opponent(&scope, &pool, &ItemId::opaque("alpha")).unwrap();
+        assert!(opp.as_str() == "beta" || opp.as_str() == "gamma");
     }
 
     #[test]

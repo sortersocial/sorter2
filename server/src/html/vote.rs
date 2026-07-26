@@ -38,6 +38,10 @@ pub fn vote_href(parent: &ItemId) -> String {
     format!("/vote?parent={}", urlencoding::encode(parent.as_str()))
 }
 
+pub fn vote_compare_href_for_pin(parent: &ItemId, left: &ItemId, right: &ItemId) -> String {
+    vote_compare_href(parent, left, right)
+}
+
 fn vote_compare_href(parent: &ItemId, left: &ItemId, right: &ItemId) -> String {
     format!(
         "/vote?parent={}&left={}&right={}",
