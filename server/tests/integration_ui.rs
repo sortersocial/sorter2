@@ -864,6 +864,20 @@ async fn item_page_shows_peer_ranking_sorted_with_links_and_thumbs() {
         "opted-in NSFW peers should show thumbnails: {html}"
     );
     assert!(
+        html.contains("vote-edge-slider") || html.contains("vote-edge-range"),
+        "sibling votes should use the vote slider UI: {html}"
+    );
+    assert!(
+        html.contains("data-winner="),
+        "vote sliders should set data-winner: {html}"
+    );
+    // Item always on the left: 3:1 vs otherpost, 2:1 vs thirdpost
+    assert!(
+        html.contains("data-item-vote-left=\"3\"")
+            && html.contains("data-item-vote-right=\"1\""),
+        "ratios must keep the focus item on the left (3:1): {html}"
+    );
+    assert!(
         html.contains("is-compared"),
         "current item should be highlighted: {html}"
     );
