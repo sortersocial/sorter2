@@ -267,7 +267,7 @@ fn vote_compare_item_card(
     .expect("skip item rpc json");
     html! {
         div class=(format!("vote-compare-side {side_class}")) {
-            (entity_section(item, &node, false, nsfw_ok))
+            (entity_section(item, &node, None, nsfw_ok))
             form class="vote-skip-form" method="POST" action="/ui" {
                 input type="hidden" name=(UI_RPC_FIELD) value=(skip_rpc);
                 button type="submit" class="btn-secondary vote-skip"

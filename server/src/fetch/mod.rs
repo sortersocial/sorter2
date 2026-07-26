@@ -95,7 +95,10 @@ pub fn fetch_entity_stream(
             let node = tree.get(&id).unwrap_or(&empty);
             let sel = html::entity_section_selector(&id);
             JsBuilder::new()
-                .morph_selector(&sel, html::entity_section(&id, node, true, nsfw_ok))
+                .morph_selector(
+                    &sel,
+                    html::entity_section(&id, node, Some(kind), nsfw_ok),
+                )
                 .build()
         };
         yield Ok(js_event(fetching_js));
@@ -131,7 +134,7 @@ pub fn fetch_entity_stream(
                 let node = tree.get(&id).unwrap_or(&empty);
                 let sel = html::entity_section_selector(&id);
                 let mut b = JsBuilder::new()
-                    .morph_selector(&sel, html::entity_section(&id, node, false, nsfw_ok));
+                    .morph_selector(&sel, html::entity_section(&id, node, None, nsfw_ok));
                 if kind == FetchKind::Children || kind == FetchKind::Ranked {
                     b = b.morph_selector(
                         "#ranking-panel",
@@ -146,7 +149,7 @@ pub fn fetch_entity_stream(
                 let node = tree.get(&id).unwrap_or(&empty);
                 let sel = html::entity_section_selector(&id);
                 let js = JsBuilder::new()
-                    .morph_selector(&sel, html::entity_section(&id, node, false, nsfw_ok))
+                    .morph_selector(&sel, html::entity_section(&id, node, None, nsfw_ok))
                     .raw(&error_js(&format!("Reddit rate limit — retry in {reset_secs}s.")))
                     .build();
                 yield Ok(js_event(js));
@@ -157,7 +160,7 @@ pub fn fetch_entity_stream(
                 let node = tree.get(&id).unwrap_or(&empty);
                 let sel = html::entity_section_selector(&id);
                 let js = JsBuilder::new()
-                    .morph_selector(&sel, html::entity_section(&id, node, false, nsfw_ok))
+                    .morph_selector(&sel, html::entity_section(&id, node, None, nsfw_ok))
                     .raw(&error_js(&format!("Fetch failed: {msg}")))
                     .build();
                 yield Ok(js_event(js));

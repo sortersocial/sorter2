@@ -7,7 +7,9 @@ use crate::{
     html::sanitize::entity_body_html,
     nsfw::{node_is_nsfw, nsfw_entity_gate},
     path_types::ItemId,
-    reddit::{is_children_fetchable, is_fetchable, is_ranked_fetchable},
+    reddit::{
+        is_children_fetchable, is_fetchable, is_ranked_fetchable, FetchKind,
+    },
     reducer::NodeState,
     render::reddit::is_reddit_post,
     ui_action::UI_RPC_FIELD,
@@ -70,7 +72,14 @@ fn fetch_button(item: &ItemId, kind: &str, label: &str, fetching: bool) -> Marku
 
 /// Reddit/API import controls — `POST /ui` with `fetch_entity` returns an SSE
 /// stream whose events are JS snippets to `eval`.
-pub fn fetch_entity_panel(item: &ItemId, node: &NodeState, fetching: bool) -> Markup {
+///
+/// When `fetching` is `Some(kind)`, only the button for that kind shows the
+/// loading state; sibling fetch buttons stay interactive.
+pub fn fetch_entity_panel(
+    item: &ItemId,
+    node: &NodeState,
+    fetching: Option<FetchKind>,
+) -> Markup {
     let has_data = node.data.is_some();
     let self_ok = is_fetchable(item);
     let children_ok = is_children_fetchable(item);
@@ -78,7 +87,10 @@ pub fn fetch_entity_panel(item: &ItemId, node: &NodeState, fetching: bool) -> Ma
     if !self_ok && !children_ok && !ranked_ok {
         return html! {};
     }
-    let self_label = if fetching {
+    let self_fetching = fetching == Some(FetchKind::SelfEntity);
+    let children_fetching = fetching == Some(FetchKind::Children);
+    let ranked_fetching = fetching == Some(FetchKind::Ranked);
+    let self_label = if self_fetching {
         "Fetching…"
     } else if has_data {
         "Refresh this"
@@ -88,17 +100,22 @@ pub fn fetch_entity_panel(item: &ItemId, node: &NodeState, fetching: bool) -> Ma
     html! {
         div id="fetch-controls" class="fetch-controls" {
             @if self_ok {
-                (fetch_button(item, "self", self_label, fetching))
+                (fetch_button(item, "self", self_label, self_fetching))
             }
             @if children_ok {
-                (fetch_button(item, "children", if fetching { "Fetching…" } else { "Fetch posts" }, fetching))
+                (fetch_button(
+                    item,
+                    "children",
+                    if children_fetching { "Fetching…" } else { "Fetch posts" },
+                    children_fetching
+                ))
             }
             @if ranked_ok {
                 (fetch_button(
                     item,
                     "ranked",
-                    if fetching { "Fetching…" } else { "Refresh ranking" },
-                    fetching
+                    if ranked_fetching { "Fetching…" } else { "Refresh ranking" },
+                    ranked_fetching
                 ))
             }
         }
@@ -106,7 +123,12 @@ pub fn fetch_entity_panel(item: &ItemId, node: &NodeState, fetching: bool) -> Ma
 }
 
 /// Entity card + fetch control (morph target [`entity_section_selector`]).
-pub fn entity_section(item: &ItemId, node: &NodeState, fetching: bool, nsfw_ok: bool) -> Markup {
+pub fn entity_section(
+    item: &ItemId,
+    node: &NodeState,
+    fetching: Option<FetchKind>,
+    nsfw_ok: bool,
+) -> Markup {
     let gated = node_is_nsfw(node) && !nsfw_ok;
     html! {
         section class="entity-section demo-panel" data-entity-section=(item.as_str()) {
@@ -138,7 +160,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let html = entity_section(&node.id, &node, false, false).into_string();
+        let html = entity_section(&node.id, &node, None, false).into_string();
         assert!(html.contains("NSFW content is hidden until you opt in."));
         assert!(
             html.contains("Yes, I am 18+"),
@@ -149,6 +171,39 @@ mod tests {
         assert!(
             !html.contains("Fetch from Reddit") && !html.contains("Fetch posts"),
             "gated entity should not show fetch controls: {html}"
+        );
+    }
+
+    #[test]
+    fn only_active_fetch_button_shows_loading_state() {
+        let id = ItemId::from_url("https://reddit.com/r/rust").unwrap();
+        let node = NodeState {
+            id: id.clone(),
+            ..Default::default()
+        };
+        let html =
+            fetch_entity_panel(&id, &node, Some(FetchKind::Children)).into_string();
+        assert!(
+            html.contains("disabled"),
+            "active fetch button should be disabled: {html}"
+        );
+        assert!(
+            html.contains(">Fetching…</button>"),
+            "active fetch button should show loading label: {html}"
+        );
+        assert!(
+            html.contains(">Fetch from Reddit</button>"),
+            "sibling self button must stay idle: {html}"
+        );
+        assert!(
+            !html.contains("disabled\">Fetch from Reddit"),
+            "sibling self button must not be disabled: {html}"
+        );
+        // Children button is the only disabled one; self stays enabled.
+        let disabled_count = html.matches("disabled").count();
+        assert_eq!(
+            disabled_count, 1,
+            "exactly one button should be disabled while fetching: {html}"
         );
     }
 }
