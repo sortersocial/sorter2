@@ -478,6 +478,14 @@ h1 {
 
 .item-votes-list .item-vote-row {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+  padding: 0.65rem 0;
+}
+
+.item-vote-opponent {
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.45rem 0.6rem;
@@ -491,6 +499,10 @@ h1 {
 
 .item-vote-compare {
   margin-left: auto;
+}
+
+.item-votes-list .vote-edge-slider {
+  width: 100%;
 }
 
 .scope-theme {
