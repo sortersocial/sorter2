@@ -848,20 +848,16 @@ async fn item_page_shows_peer_ranking_sorted_with_links_and_thumbs() {
         "votes should sort by score (stronger first): other@{other_pos} third@{third_pos}"
     );
     assert!(
-        html.contains("data-rank-item=\"https://reddit.com/r/nsfw/comments/1urs2g3\""),
-        "current item should appear in ranking: {html}"
-    );
-    assert!(
-        html.contains("data-rank-item=\"https://reddit.com/r/nsfw/comments/otherpost\""),
-        "peer should appear in ranking: {html}"
+        !html.contains("data-rank-item="),
+        "item page must not show the sibling ranking list, got: {html}"
     );
     assert!(
         html.contains("href=\"/~/https://reddit.com/r/nsfw/comments/otherpost\""),
-        "peer rows must link to the other item page: {html}"
+        "vote rows must link to the other item page: {html}"
     );
     assert!(
         html.contains("https://example.com/b-thumb.jpg"),
-        "opted-in NSFW peers should show thumbnails: {html}"
+        "opted-in NSFW opponents should show thumbnails: {html}"
     );
     assert!(
         html.contains("vote-edge-slider") || html.contains("vote-edge-range"),
@@ -878,24 +874,7 @@ async fn item_page_shows_peer_ranking_sorted_with_links_and_thumbs() {
         "ratios must keep the focus item on the left (3:1): {html}"
     );
     assert!(
-        html.contains("is-compared"),
-        "current item should be highlighted: {html}"
-    );
-    assert!(
         html.contains("data-testid=\"vote-pin\""),
         "item page should offer a compare/pin CTA: {html}"
-    );
-
-    // Scores are rendered as percentages; top item (a) should appear before lower ones
-    // in the ordered list markup.
-    let a_pos = html
-        .find("data-rank-item=\"https://reddit.com/r/nsfw/comments/1urs2g3\"")
-        .expect("a in ranking");
-    let b_pos = html
-        .find("data-rank-item=\"https://reddit.com/r/nsfw/comments/otherpost\"")
-        .expect("b in ranking");
-    assert!(
-        a_pos < b_pos,
-        "higher-score item should sort first: a@{a_pos} b@{b_pos}"
     );
 }

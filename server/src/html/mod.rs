@@ -20,8 +20,8 @@ use crate::{
     },
     path_types::ItemId,
     ranking::{
-        ranked_items_subset, ranked_peers_for_item, sibling_votes_for_item, scope_components,
-        RankedItem, SiblingVote, MAX_ITERS, TOL,
+        ranked_items_subset, sibling_votes_for_item, scope_components, RankedItem, SiblingVote,
+        MAX_ITERS, TOL,
     },
     reducer::{GlobalTree, NodeState},
     skip::{for_jar as user_skips_for_jar, visible_unskipped_children},
@@ -436,37 +436,6 @@ fn unranked_list(
     }
 }
 
-/// Peer ranking for `item` from its parent scope (where votes comparing this
-/// item to siblings actually live). Sorted by score; rows link to the other
-/// item pages and show thumbnails when available.
-fn peer_ranking_markup(
-    item: &ItemId,
-    tree: &GlobalTree,
-    nsfw_ok: bool,
-    skipped: &HashSet<ItemId>,
-) -> Option<(ItemId, Vec<RankedItem>)> {
-    let parent = item.parent()?;
-    let parent_node = tree.get(&parent)?;
-    let visible: HashSet<ItemId> = visible_unskipped_children(tree, &parent, nsfw_ok, skipped)
-        .into_iter()
-        .collect();
-    // Always include the page item so its own rank is visible even if skipped.
-    let mut ranked: Vec<RankedItem> = ranked_peers_for_item(&parent_node.votes, item)
-        .into_iter()
-        .filter(|r| r.item == *item || visible.contains(&r.item))
-        .collect();
-    if ranked.len() < 2 || !ranked.iter().any(|r| r.item == *item) {
-        return None;
-    }
-    // Re-normalize display order after filtering (already score-desc from ranking).
-    ranked.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    Some((parent, ranked))
-}
-
 /// Head-to-head votes between `item` and each sibling it has been compared with.
 fn sibling_vote_rows(
     item: &ItemId,
@@ -615,28 +584,17 @@ fn ranking_panel_inner(
     highlighted: &HashSet<ItemId>,
     nsfw_ok: bool,
     skipped: &HashSet<ItemId>,
-    include_peers: bool,
+    include_item_votes: bool,
 ) -> Markup {
-    let sibling_votes = if include_peers {
+    let sibling_votes = if include_item_votes {
         sibling_vote_rows(item, tree, nsfw_ok, skipped)
-    } else {
-        None
-    };
-    let peer = if include_peers {
-        peer_ranking_markup(item, tree, nsfw_ok, skipped)
     } else {
         None
     };
     let (ranked_groups, unranked) = children_ranking_groups(item, node, tree, nsfw_ok, skipped);
     let has_children_ranked = !ranked_groups.is_empty();
     let multi = ranked_groups.len() > 1;
-    let has_any =
-        sibling_votes.is_some() || peer.is_some() || has_children_ranked || !unranked.is_empty();
-
-    let mut peer_highlight = highlighted.clone();
-    if peer.is_some() {
-        peer_highlight.insert(item.clone());
-    }
+    let has_any = sibling_votes.is_some() || has_children_ranked || !unranked.is_empty();
 
     html! {
         section id="ranking-panel" class="demo-panel" {
@@ -652,19 +610,8 @@ fn ranking_panel_inner(
                 @if let Some((parent, rows)) = &sibling_votes {
                     (sibling_votes_list(item, parent, rows, tree, nsfw_ok))
                 }
-                @if let Some((parent, ranked)) = &peer {
-                    (rank_list(
-                        parent,
-                        "Ranking",
-                        ranked,
-                        1,
-                        &peer_highlight,
-                        tree,
-                        nsfw_ok,
-                    ))
-                }
                 @for (gi, ranked) in ranked_groups.iter().enumerate() {
-                    @let label = if sibling_votes.is_some() || peer.is_some() {
+                    @let label = if sibling_votes.is_some() {
                         if multi {
                             format!("Children · group {}", gi + 1)
                         } else {
@@ -678,7 +625,7 @@ fn ranking_panel_inner(
                     (rank_list(item, &label, ranked, 1, highlighted, tree, nsfw_ok))
                 }
                 (unranked_list(
-                    if sibling_votes.is_some() || peer.is_some() || has_children_ranked {
+                    if sibling_votes.is_some() || has_children_ranked {
                         "Unranked children"
                     } else {
                         "Unranked"
