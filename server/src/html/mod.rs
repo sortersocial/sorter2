@@ -19,7 +19,9 @@ use crate::{
         item_is_nsfw, nsfw_allowed, nsfw_enter_cookie, nsfw_enter_panel, nsfw_leave_cookie,
     },
     path_types::ItemId,
-    ranking::{ranked_items_subset, scope_components, RankedItem, MAX_ITERS, TOL},
+    ranking::{
+        ranked_items_subset, ranked_peers_for_item, scope_components, RankedItem, MAX_ITERS, TOL,
+    },
     reducer::{GlobalTree, NodeState},
     skip::{for_jar as user_skips_for_jar, visible_unskipped_children},
     state::AppState,
@@ -335,6 +337,7 @@ fn rank_list(
     start_rank: usize,
     highlighted: &HashSet<ItemId>,
     tree: &GlobalTree,
+    nsfw_ok: bool,
 ) -> Markup {
     let min_score = items.iter().map(|r| r.score).fold(f64::INFINITY, f64::min);
     let max_score = items
@@ -353,7 +356,12 @@ fn rank_list(
                         data-rank-item=(r.item.as_str())
                         style=(style) {
                         span class="rank-num" { (start_rank + i) ". " }
-                        @if let Some(row) = crate::render::reddit::child_row_markup(tree, &r.item, &href) {
+                        @if let Some(row) = crate::render::reddit::child_row_markup(
+                            tree,
+                            &r.item,
+                            &href,
+                            nsfw_ok,
+                        ) {
                             (row)
                         } @else {
                             a href=(href) {
@@ -400,6 +408,7 @@ fn unranked_list(
     items: &[ItemId],
     highlighted: &HashSet<ItemId>,
     tree: &GlobalTree,
+    nsfw_ok: bool,
 ) -> Markup {
     html! {
         @if !items.is_empty() {
@@ -410,7 +419,9 @@ fn unranked_list(
                     @let class = rank_row_class(it, highlighted);
                     li class=(class)
                         data-rank-item=(it.as_str()) {
-                        @if let Some(row) = crate::render::reddit::child_row_markup(tree, it, &href) {
+                        @if let Some(row) = crate::render::reddit::child_row_markup(
+                            tree, it, &href, nsfw_ok,
+                        ) {
                             (row)
                         } @else {
                             a href=(href) {
@@ -424,33 +435,50 @@ fn unranked_list(
     }
 }
 
-pub fn ranking_panel(
+/// Peer ranking for `item` from its parent scope (where votes comparing this
+/// item to siblings actually live). Sorted by score; rows link to the other
+/// item pages and show thumbnails when available.
+fn peer_ranking_markup(
     item: &ItemId,
-    node: &NodeState,
     tree: &GlobalTree,
     nsfw_ok: bool,
     skipped: &HashSet<ItemId>,
-) -> Markup {
-    ranking_panel_with_highlights(item, node, tree, &HashSet::new(), nsfw_ok, skipped)
+) -> Option<(ItemId, Vec<RankedItem>)> {
+    let parent = item.parent()?;
+    let parent_node = tree.get(&parent)?;
+    let visible: HashSet<ItemId> = visible_unskipped_children(tree, &parent, nsfw_ok, skipped)
+        .into_iter()
+        .collect();
+    // Always include the page item so its own rank is visible even if skipped.
+    let mut ranked: Vec<RankedItem> = ranked_peers_for_item(&parent_node.votes, item)
+        .into_iter()
+        .filter(|r| r.item == *item || visible.contains(&r.item))
+        .collect();
+    if ranked.len() < 2 || !ranked.iter().any(|r| r.item == *item) {
+        return None;
+    }
+    // Re-normalize display order after filtering (already score-desc from ranking).
+    ranked.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Some((parent, ranked))
 }
 
-pub fn ranking_panel_with_highlights(
+fn children_ranking_groups(
     item: &ItemId,
     node: &NodeState,
     tree: &GlobalTree,
-    highlighted: &HashSet<ItemId>,
     nsfw_ok: bool,
     skipped: &HashSet<ItemId>,
-) -> Markup {
+) -> (Vec<Vec<RankedItem>>, Vec<ItemId>) {
     let scope = &node.votes;
     let visible: HashSet<ItemId> = visible_unskipped_children(tree, item, nsfw_ok, skipped)
         .into_iter()
         .collect();
     let (comps, _isolates, _) = scope_components(scope);
 
-    // Each connected component of voted items is its own ranking; isolated and
-    // never-voted children fall into the "unranked" bucket below.
-    // NSFW children are omitted entirely unless the NSFW dimension is active.
     let mut ranked_ids: HashSet<ItemId> = HashSet::new();
     let mut ranked_groups: Vec<Vec<RankedItem>> = Vec::new();
     for comp in &comps {
@@ -477,13 +505,58 @@ pub fn ranking_panel_with_highlights(
         .cloned()
         .collect();
     unranked.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    (ranked_groups, unranked)
+}
 
-    let has_ranked = !ranked_groups.is_empty();
+pub fn ranking_panel(
+    item: &ItemId,
+    node: &NodeState,
+    tree: &GlobalTree,
+    nsfw_ok: bool,
+    skipped: &HashSet<ItemId>,
+) -> Markup {
+    ranking_panel_inner(item, node, tree, &HashSet::new(), nsfw_ok, skipped, true)
+}
+
+pub fn ranking_panel_with_highlights(
+    item: &ItemId,
+    node: &NodeState,
+    tree: &GlobalTree,
+    highlighted: &HashSet<ItemId>,
+    nsfw_ok: bool,
+    skipped: &HashSet<ItemId>,
+) -> Markup {
+    // Vote sidebar: children of the comparison scope only (no parent peer list).
+    ranking_panel_inner(item, node, tree, highlighted, nsfw_ok, skipped, false)
+}
+
+fn ranking_panel_inner(
+    item: &ItemId,
+    node: &NodeState,
+    tree: &GlobalTree,
+    highlighted: &HashSet<ItemId>,
+    nsfw_ok: bool,
+    skipped: &HashSet<ItemId>,
+    include_peers: bool,
+) -> Markup {
+    let peer = if include_peers {
+        peer_ranking_markup(item, tree, nsfw_ok, skipped)
+    } else {
+        None
+    };
+    let (ranked_groups, unranked) = children_ranking_groups(item, node, tree, nsfw_ok, skipped);
+    let has_children_ranked = !ranked_groups.is_empty();
     let multi = ranked_groups.len() > 1;
+    let has_any = peer.is_some() || has_children_ranked || !unranked.is_empty();
+
+    let mut peer_highlight = highlighted.clone();
+    if peer.is_some() {
+        peer_highlight.insert(item.clone());
+    }
 
     html! {
         section id="ranking-panel" class="demo-panel" {
-            @if !has_ranked && unranked.is_empty() {
+            @if !has_any {
                 p class="muted" {
                     @if item.is_root() {
                         "No votes yet — compare two items below."
@@ -492,11 +565,42 @@ pub fn ranking_panel_with_highlights(
                     }
                 }
             } @else {
-                @for (gi, ranked) in ranked_groups.iter().enumerate() {
-                    @let label = if multi { format!("Ranking group {}", gi + 1) } else { "Ranking".to_string() };
-                    (rank_list(item, &label, ranked, 1, highlighted, tree))
+                @if let Some((parent, ranked)) = &peer {
+                    (rank_list(
+                        parent,
+                        "Ranking",
+                        ranked,
+                        1,
+                        &peer_highlight,
+                        tree,
+                        nsfw_ok,
+                    ))
                 }
-                (unranked_list("Unranked", &unranked, highlighted, tree))
+                @for (gi, ranked) in ranked_groups.iter().enumerate() {
+                    @let label = if peer.is_some() {
+                        if multi {
+                            format!("Children · group {}", gi + 1)
+                        } else {
+                            "Children".to_string()
+                        }
+                    } else if multi {
+                        format!("Ranking group {}", gi + 1)
+                    } else {
+                        "Ranking".to_string()
+                    };
+                    (rank_list(item, &label, ranked, 1, highlighted, tree, nsfw_ok))
+                }
+                (unranked_list(
+                    if peer.is_some() || has_children_ranked {
+                        "Unranked children"
+                    } else {
+                        "Unranked"
+                    },
+                    &unranked,
+                    highlighted,
+                    tree,
+                    nsfw_ok,
+                ))
             }
         }
     }
@@ -544,19 +648,29 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId, jar: CookieJar) -> M
     let nsfw_ok = nsfw_allowed(&jar);
     let skipped = user_skips_for_jar(&state.projection_store, &jar);
 
-    let tree = state
+    // Load this item + children, then hydrate the parent scope so peer rankings
+    // can show sibling titles/thumbnails (votes live on the parent node).
+    let mut tree = state
         .scope_tree(&item)
         .unwrap_or_else(|_| GlobalTree::new());
+    if let Some(parent) = item.parent() {
+        let _ = state.projection_store.hydrate_scope(&mut tree, &parent);
+    }
     let empty_node = NodeState::default();
     let node = tree.get(&item).unwrap_or(&empty_node);
     let page_is_nsfw = item_is_nsfw(&tree, &item);
     let gated = page_is_nsfw && !nsfw_ok;
 
     let visible = visible_unskipped_children(&tree, &item, nsfw_ok, &skipped);
-    let vote_link = if !gated && visible.len() >= 2 {
+    let vote_children = if !gated && visible.len() >= 2 {
         Some(vote::vote_href(&item))
     } else {
         None
+    };
+    let vote_pin = if gated {
+        None
+    } else {
+        pin_vote_href(&item, &tree, nsfw_ok, &skipped)
     };
 
     let body = html! {
@@ -568,7 +682,12 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId, jar: CookieJar) -> M
                 (nsfw_enter_panel(&return_to))
             } @else {
                 (entity_section(&item, node, None, nsfw_ok))
-                @if let Some(href) = vote_link {
+                @if let Some(href) = vote_pin {
+                    p class="vote-cta" {
+                        a class="btn-primary" href=(href) data-testid="vote-pin" { "Compare this item" }
+                    }
+                }
+                @if let Some(href) = vote_children {
                     p class="vote-cta" {
                         a class="btn-primary" href=(href) data-testid="vote-children" { "Vote on children" }
                     }
@@ -585,6 +704,23 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId, jar: CookieJar) -> M
         nsfw_ok,
         &return_to,
     )
+}
+
+/// `/vote` link that pins `item` as one side against a sibling opponent.
+fn pin_vote_href(
+    item: &ItemId,
+    tree: &GlobalTree,
+    nsfw_ok: bool,
+    skipped: &HashSet<ItemId>,
+) -> Option<String> {
+    let parent = item.parent()?;
+    let pool = visible_unskipped_children(tree, &parent, nsfw_ok, skipped);
+    if pool.len() < 2 || !pool.iter().any(|c| c == item) {
+        return None;
+    }
+    let scope = tree.get(&parent).map(|n| &n.votes)?;
+    let opponent = crate::pair::suggest_opponent(scope, &pool, item)?;
+    Some(vote::vote_compare_href_for_pin(&parent, item, &opponent))
 }
 
 #[derive(Debug, Deserialize)]

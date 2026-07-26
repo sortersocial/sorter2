@@ -314,6 +314,19 @@ pub fn group_summary_scores(scope: &ScopeVotes) -> HashMap<ItemId, f64> {
         .collect()
 }
 
+/// Rank-centrality ordering for the connected voted component that contains `item`.
+/// Returns an empty vec when the item has no multi-item voted component yet.
+pub fn ranked_peers_for_item(scope: &ScopeVotes, item: &ItemId) -> Vec<RankedItem> {
+    let (comps, _isolates, idx_to_item) = scope_components(scope);
+    let Some(item_idx) = idx_to_item.iter().position(|id| id == item) else {
+        return vec![];
+    };
+    let Some(comp) = comps.iter().find(|c| c.len() >= 2 && c.contains(&item_idx)) else {
+        return vec![];
+    };
+    ranked_items_subset(scope, comp, MAX_ITERS, TOL)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +460,24 @@ mod tests {
                 assert_eq!(names[0], "d");
             }
         }
+    }
+
+    #[test]
+    fn ranked_peers_for_item_returns_score_sorted_component() {
+        let mut scope = mk_scope();
+        apply(&mut scope, vote(1, "alpha", "beta", 3, 1));
+        apply(&mut scope, vote(2, "alpha", "gamma", 2, 1));
+        apply(&mut scope, vote(3, "delta", "epsilon", 2, 1));
+
+        let ranked = ranked_peers_for_item(&scope, &ItemId::opaque("beta"));
+        assert!(ranked.len() >= 2);
+        assert!(ranked.iter().any(|r| r.item.as_str() == "beta"));
+        assert!(ranked.iter().any(|r| r.item.as_str() == "alpha"));
+        for w in ranked.windows(2) {
+            assert!(w[0].score >= w[1].score);
+        }
+        assert!(!ranked.iter().any(|r| r.item.as_str() == "delta"));
+
+        assert!(ranked_peers_for_item(&scope, &ItemId::opaque("missing")).is_empty());
     }
 }
