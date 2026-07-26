@@ -7,9 +7,7 @@ use crate::{
     html::sanitize::entity_body_html,
     nsfw::{node_is_nsfw, nsfw_entity_gate},
     path_types::ItemId,
-    reddit::{
-        is_children_fetchable, is_fetchable, is_ranked_fetchable, FetchKind,
-    },
+    reddit::{is_children_fetchable, is_fetchable, is_ranked_fetchable, FetchKind},
     reducer::NodeState,
     render::reddit::is_reddit_post,
     ui_action::UI_RPC_FIELD,
@@ -75,11 +73,7 @@ fn fetch_button(item: &ItemId, kind: &str, label: &str, fetching: bool) -> Marku
 ///
 /// When `fetching` is `Some(kind)`, only the button for that kind shows the
 /// loading state; sibling fetch buttons stay interactive.
-pub fn fetch_entity_panel(
-    item: &ItemId,
-    node: &NodeState,
-    fetching: Option<FetchKind>,
-) -> Markup {
+pub fn fetch_entity_panel(item: &ItemId, node: &NodeState, fetching: Option<FetchKind>) -> Markup {
     let has_data = node.data.is_some();
     let self_ok = is_fetchable(item);
     let children_ok = is_children_fetchable(item);
@@ -181,8 +175,7 @@ mod tests {
             id: id.clone(),
             ..Default::default()
         };
-        let html =
-            fetch_entity_panel(&id, &node, Some(FetchKind::Children)).into_string();
+        let html = fetch_entity_panel(&id, &node, Some(FetchKind::Children)).into_string();
         assert!(
             html.contains("disabled"),
             "active fetch button should be disabled: {html}"
