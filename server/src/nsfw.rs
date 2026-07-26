@@ -6,6 +6,7 @@
 //! opted in via the `sorter2_nsfw` cookie ("Yes, I am 18+").
 
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use maud::{html, Markup};
 
 use crate::{
     auth::config,
@@ -43,6 +44,43 @@ pub fn nsfw_leave_cookie() -> Cookie<'static> {
         builder = builder.secure(true);
     }
     builder.build()
+}
+
+/// Opt-in form posting to `/nsfw/enter` (sets the dimension cookie, then redirects).
+pub fn nsfw_enter_form(return_to: &str) -> Markup {
+    html! {
+        form method="post" action="/nsfw/enter" data-navigate="full" {
+            input type="hidden" name="return_to" value=(return_to);
+            button type="submit" class="btn-primary" data-testid="nsfw-enter" {
+                "Yes, I am 18+"
+            }
+        }
+    }
+}
+
+/// Full-page age gate when the current browse/vote URL is in the NSFW dimension.
+pub fn nsfw_enter_panel(return_to: &str) -> Markup {
+    html! {
+        div class="nsfw-gate-panel demo-panel" data-testid="nsfw-enter-panel" {
+            h2 { "NSFW dimension" }
+            p {
+                "This page contains adult content. Nothing NSFW is listed or shown until you confirm you are 18 or older."
+            }
+            (nsfw_enter_form(return_to))
+        }
+    }
+}
+
+/// Inline failsafe when an entity card would otherwise render NSFW payloads.
+/// Always includes the same opt-in CTA as the page gate.
+pub fn nsfw_entity_gate(return_to: &str) -> Markup {
+    html! {
+        div class="nsfw-gate" data-testid="nsfw-gate" {
+            span class="nsfw-badge" { "NSFW" }
+            p { "NSFW content is hidden until you opt in." }
+            (nsfw_enter_form(return_to))
+        }
+    }
 }
 
 pub fn entity_is_nsfw(data: &EntityData) -> bool {

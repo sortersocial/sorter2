@@ -4,7 +4,7 @@ use maud::{html, Markup};
 
 use crate::{
     html::sanitize::entity_body_html,
-    nsfw::{item_nsfw_status, node_is_nsfw, NsfwStatus},
+    nsfw::{item_nsfw_status, node_is_nsfw, nsfw_entity_gate, NsfwStatus},
     path_types::ItemId,
     reducer::{EntityData, GlobalTree, NodeState},
 };
@@ -16,13 +16,19 @@ pub fn is_reddit_post(id: &ItemId) -> bool {
 /// Post detail card (inside [`crate::fetch::html::entity_panel`]).
 ///
 /// When `nsfw_ok` is false and the post is NSFW, callers should show the age
-/// gate instead — this function still refuses to emit media/body/links.
+/// gate instead — this function still refuses to emit media/body/links and
+/// includes the opt-in CTA so "until you opt in" is never a dead end.
 pub fn entity_markup(node: &NodeState, nsfw_ok: bool) -> Option<Markup> {
     if !is_reddit_post(&node.id) {
         return None;
     }
     let data = node.data.as_ref()?;
-    Some(post_entity_card(data, node_is_nsfw(node), nsfw_ok))
+    Some(post_entity_card(
+        data,
+        node_is_nsfw(node),
+        nsfw_ok,
+        &node.id.browse_href(),
+    ))
 }
 
 /// One row in a parent ranking list (thumbnail + title).
@@ -54,40 +60,36 @@ pub fn child_row_markup(tree: &GlobalTree, id: &ItemId, href: &str) -> Option<Ma
     })
 }
 
-fn post_entity_card(data: &EntityData, is_nsfw: bool, nsfw_ok: bool) -> Markup {
+fn post_entity_card(data: &EntityData, is_nsfw: bool, nsfw_ok: bool, return_to: &str) -> Markup {
     let image = data.image_url.as_ref().or(data.thumb_url.as_ref());
     let gated = is_nsfw && !nsfw_ok;
+    if gated {
+        return nsfw_entity_gate(return_to);
+    }
     html! {
         div class="entity-card reddit-post" {
-            @if gated {
-                div class="nsfw-gate" data-testid="nsfw-gate" {
+            h2 { (data.title) }
+            @if let Some(author) = &data.author {
+                p class="muted small" { "by " (author) }
+            }
+            @if is_nsfw {
+                p class="muted small" {
                     span class="nsfw-badge" { "NSFW" }
-                    p { "This post is in the NSFW dimension. Its title, media, body text, and links stay hidden until you opt in." }
+                    " adult Reddit content"
                 }
-            } @else {
-                h2 { (data.title) }
-                @if let Some(author) = &data.author {
-                    p class="muted small" { "by " (author) }
+            }
+            @if let Some(url) = &data.link_url {
+                p class="reddit-post-url muted small" {
+                    a href=(url) rel="noopener noreferrer" { (url) }
                 }
-                @if is_nsfw {
-                    p class="muted small" {
-                        span class="nsfw-badge" { "NSFW" }
-                        " adult Reddit content"
-                    }
+            }
+            @if let Some(src) = image {
+                figure class="reddit-post-figure" {
+                    img class="reddit-post-image" src=(src) alt="" loading="lazy";
                 }
-                @if let Some(url) = &data.link_url {
-                    p class="reddit-post-url muted small" {
-                        a href=(url) rel="noopener noreferrer" { (url) }
-                    }
-                }
-                @if let Some(src) = image {
-                    figure class="reddit-post-figure" {
-                        img class="reddit-post-image" src=(src) alt="" loading="lazy";
-                    }
-                }
-                @if let Some(body) = &data.body_html {
-                    div class="entity-body" { (maud::PreEscaped(entity_body_html(body))) }
-                }
+            }
+            @if let Some(body) = &data.body_html {
+                div class="entity-body" { (maud::PreEscaped(entity_body_html(body))) }
             }
         }
     }
@@ -118,6 +120,11 @@ mod tests {
         let html = entity_markup(&nsfw_node(), false).unwrap().into_string();
         assert!(html.contains("NSFW"));
         assert!(html.contains("nsfw-gate"));
+        assert!(
+            html.contains("Yes, I am 18+"),
+            "soft gate must offer opt-in: {html}"
+        );
+        assert!(html.contains("action=\"/nsfw/enter\""));
         assert!(!html.contains("adult post"));
         assert!(!html.contains("adult body"));
         assert!(!html.contains("https://example.com/image.jpg"));

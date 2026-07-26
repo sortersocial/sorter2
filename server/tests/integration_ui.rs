@@ -520,6 +520,11 @@ async fn nsfw_items_hidden_until_opt_in_and_leave_returns() {
         "direct NSFW URL should gate: {nsfw_page}"
     );
     assert!(
+        nsfw_page.contains("data-testid=\"nsfw-enter-panel\"")
+            || nsfw_page.contains("data-testid=\"nsfw-gate\""),
+        "gate must expose an opt-in control: {nsfw_page}"
+    );
+    assert!(
         !nsfw_page.contains("https://example.com/nsfw-full.jpg"),
         "gated page must hide media: {nsfw_page}"
     );

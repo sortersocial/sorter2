@@ -16,6 +16,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     html::{ranking_panel, JsBuilder},
+    nsfw::item_is_nsfw,
     path_types::ItemId,
     reddit::{FetchJobResult, FetchKind},
     reducer::NodeState,
@@ -116,8 +117,16 @@ pub fn fetch_entity_stream(
             FetchJobResult::Imported(_)
             | FetchJobResult::NotFound
             | FetchJobResult::SkippedCached
-            |             FetchJobResult::SkippedDuplicate => {
+            | FetchJobResult::SkippedDuplicate => {
                 let tree = state.scope_tree(&id).unwrap_or_else(|_| crate::reducer::GlobalTree::new());
+                // Fetch may be the moment a page first becomes classified NSFW.
+                // Morphing only the entity card would show a soft gate without
+                // replacing the rest of the page — reload so item_page/vote can
+                // render the full dimension enter panel.
+                if !nsfw_ok && item_is_nsfw(&tree, &id) {
+                    yield Ok(js_event("window.location.reload();".to_string()));
+                    return;
+                }
                 let empty = NodeState::default();
                 let node = tree.get(&id).unwrap_or(&empty);
                 let sel = html::entity_section_selector(&id);

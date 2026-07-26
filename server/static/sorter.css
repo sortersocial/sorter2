@@ -868,6 +868,7 @@ h1 {
   font-size: 1.15rem;
 }
 
+.nsfw-gate form,
 .nsfw-gate-panel form {
   margin-top: 0.85rem;
 }

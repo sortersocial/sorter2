@@ -5,7 +5,7 @@ use maud::{html, Markup};
 use crate::{
     form_template::template_json_compact,
     html::sanitize::entity_body_html,
-    nsfw::node_is_nsfw,
+    nsfw::{node_is_nsfw, nsfw_entity_gate},
     path_types::ItemId,
     reddit::{is_children_fetchable, is_fetchable, is_ranked_fetchable},
     reducer::NodeState,
@@ -19,30 +19,29 @@ pub fn entity_section_selector(item: &ItemId) -> String {
 }
 
 pub fn entity_panel(node: &NodeState, nsfw_ok: bool) -> Markup {
+    // Fail closed before any entity renderer: fetch morph can land here after a
+    // Reddit import marks the node NSFW, before a full page reload shows the
+    // page-level gate. Always include the opt-in CTA when we hide content.
+    if node_is_nsfw(node) && !nsfw_ok {
+        return nsfw_entity_gate(&node.id.browse_href());
+    }
     if let Some(markup) = crate::render::reddit::entity_markup(node, nsfw_ok) {
         return markup;
     }
     html! {
         @if let Some(data) = &node.data {
             div class="entity-card" {
-                @if node_is_nsfw(node) && !nsfw_ok {
-                    div class="nsfw-gate" data-testid="nsfw-gate" {
+                h2 { (data.title) }
+                @if let Some(author) = &data.author {
+                    p class="muted small" { "by " (author) }
+                }
+                @if node_is_nsfw(node) {
+                    p class="muted small" {
                         span class="nsfw-badge" { "NSFW" }
-                        p { "NSFW content is hidden until you opt in." }
                     }
-                } @else {
-                    h2 { (data.title) }
-                    @if let Some(author) = &data.author {
-                        p class="muted small" { "by " (author) }
-                    }
-                    @if node_is_nsfw(node) {
-                        p class="muted small" {
-                            span class="nsfw-badge" { "NSFW" }
-                        }
-                    }
-                    @if let Some(body) = &data.body_html {
-                        div class="entity-body" { (maud::PreEscaped(entity_body_html(body))) }
-                    }
+                }
+                @if let Some(body) = &data.body_html {
+                    div class="entity-body" { (maud::PreEscaped(entity_body_html(body))) }
                 }
             }
         }
@@ -106,30 +105,50 @@ pub fn fetch_entity_panel(item: &ItemId, node: &NodeState, fetching: bool) -> Ma
     }
 }
 
-/// Age-gate CTA for the current page when content is NSFW and the user has not opted in.
-pub fn nsfw_enter_panel(return_to: &str) -> Markup {
+/// Entity card + fetch control (morph target [`entity_section_selector`]).
+pub fn entity_section(item: &ItemId, node: &NodeState, fetching: bool, nsfw_ok: bool) -> Markup {
+    let gated = node_is_nsfw(node) && !nsfw_ok;
     html! {
-        div class="nsfw-gate-panel demo-panel" data-testid="nsfw-enter-panel" {
-            h2 { "NSFW dimension" }
-            p {
-                "This page contains adult content. Nothing NSFW is listed or shown until you confirm you are 18 or older."
-            }
-            form method="post" action="/nsfw/enter" data-navigate="full" {
-                input type="hidden" name="return_to" value=(return_to);
-                button type="submit" class="btn-primary" data-testid="nsfw-enter" {
-                    "Yes, I am 18+"
-                }
+        section class="entity-section demo-panel" data-entity-section=(item.as_str()) {
+            (entity_panel(node, nsfw_ok))
+            @if !gated {
+                (fetch_entity_panel(item, node, fetching))
             }
         }
     }
 }
 
-/// Entity card + fetch control (morph target [`entity_section_selector`]).
-pub fn entity_section(item: &ItemId, node: &NodeState, fetching: bool, nsfw_ok: bool) -> Markup {
-    html! {
-        section class="entity-section demo-panel" data-entity-section=(item.as_str()) {
-            (entity_panel(node, nsfw_ok))
-            (fetch_entity_panel(item, node, fetching))
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reducer::EntityData;
+
+    #[test]
+    fn nsfw_subreddit_soft_gate_offers_opt_in() {
+        let node = NodeState {
+            id: ItemId::from_url("https://reddit.com/r/nsfw").unwrap(),
+            data: Some(EntityData {
+                title: "nsfw".into(),
+                author: None,
+                body_html: None,
+                over_18: true,
+                thumb_url: None,
+                image_url: None,
+                link_url: None,
+            }),
+            ..Default::default()
+        };
+        let html = entity_section(&node.id, &node, false, false).into_string();
+        assert!(html.contains("NSFW content is hidden until you opt in."));
+        assert!(
+            html.contains("Yes, I am 18+"),
+            "soft gate must offer opt-in: {html}"
+        );
+        assert!(html.contains("action=\"/nsfw/enter\""));
+        assert!(html.contains("/~/https://reddit.com/r/nsfw"));
+        assert!(
+            !html.contains("Fetch from Reddit") && !html.contains("Fetch posts"),
+            "gated entity should not show fetch controls: {html}"
+        );
     }
 }
