@@ -825,6 +825,29 @@ async fn item_page_shows_peer_ranking_sorted_with_links_and_thumbs() {
         "peer votes on parent must surface on item page, got: {html}"
     );
     assert!(
+        html.contains("item-votes-list") || html.contains(">Votes<"),
+        "item page should list sibling matchup votes: {html}"
+    );
+    assert!(
+        html.contains("data-item-vote-other=\"https://reddit.com/r/nsfw/comments/otherpost\""),
+        "vote list must include sibling opponents: {html}"
+    );
+    assert!(
+        html.contains("data-item-vote-other=\"https://reddit.com/r/nsfw/comments/thirdpost\""),
+        "vote list must include all sibling opponents: {html}"
+    );
+    // Stronger win vs otherpost (3:1) should sort above weaker win vs thirdpost (2:1)
+    let other_pos = html
+        .find("data-item-vote-other=\"https://reddit.com/r/nsfw/comments/otherpost\"")
+        .expect("other in votes");
+    let third_pos = html
+        .find("data-item-vote-other=\"https://reddit.com/r/nsfw/comments/thirdpost\"")
+        .expect("third in votes");
+    assert!(
+        other_pos < third_pos,
+        "votes should sort by score (stronger first): other@{other_pos} third@{third_pos}"
+    );
+    assert!(
         html.contains("data-rank-item=\"https://reddit.com/r/nsfw/comments/1urs2g3\""),
         "current item should appear in ranking: {html}"
     );

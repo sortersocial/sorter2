@@ -476,6 +476,23 @@ h1 {
   will-change: transform;
 }
 
+.item-votes-list .item-vote-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.6rem;
+}
+
+.item-vote-vs {
+  flex-shrink: 0;
+  font-size: 0.85em;
+  text-transform: lowercase;
+}
+
+.item-vote-compare {
+  margin-left: auto;
+}
+
 .scope-theme {
   min-height: 100vh;
   background:

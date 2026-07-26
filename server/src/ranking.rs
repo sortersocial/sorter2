@@ -314,6 +314,69 @@ pub fn group_summary_scores(scope: &ScopeVotes) -> HashMap<ItemId, f64> {
         .collect()
 }
 
+/// One aggregated head-to-head between `item` and a sibling in a parent scope.
+#[derive(Debug, Clone)]
+pub struct SiblingVote {
+    pub other: ItemId,
+    /// Trust-weighted mass favoring the focus item.
+    pub for_item: f64,
+    /// Trust-weighted mass favoring `other`.
+    pub for_other: f64,
+}
+
+impl SiblingVote {
+    /// Share of edge mass favoring the focus item (0..=1). Used for sorting.
+    pub fn score(&self) -> f64 {
+        let sum = self.for_item + self.for_other;
+        if sum <= 0.0 {
+            0.5
+        } else {
+            self.for_item / sum
+        }
+    }
+}
+
+/// Aggregated votes involving `item` against each sibling, sorted by score (best first).
+pub fn sibling_votes_for_item(scope: &ScopeVotes, item: &ItemId) -> Vec<SiblingVote> {
+    let mut by_other: HashMap<ItemId, (f64, f64)> = HashMap::new();
+    for vote in scope.uuid_votes.values() {
+        let (for_item, for_other, other) = if vote.a == *item {
+            (
+                vote.ratio_left as f64 * vote.trust_weight,
+                vote.ratio_right as f64 * vote.trust_weight,
+                vote.b.clone(),
+            )
+        } else if vote.b == *item {
+            (
+                vote.ratio_right as f64 * vote.trust_weight,
+                vote.ratio_left as f64 * vote.trust_weight,
+                vote.a.clone(),
+            )
+        } else {
+            continue;
+        };
+        let entry = by_other.entry(other).or_insert((0.0, 0.0));
+        entry.0 += for_item;
+        entry.1 += for_other;
+    }
+
+    let mut rows: Vec<SiblingVote> = by_other
+        .into_iter()
+        .map(|(other, (for_item, for_other))| SiblingVote {
+            other,
+            for_item,
+            for_other,
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.score()
+            .partial_cmp(&a.score())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.other.as_str().cmp(b.other.as_str()))
+    });
+    rows
+}
+
 /// Rank-centrality ordering for the connected voted component that contains `item`.
 /// Returns an empty vec when the item has no multi-item voted component yet.
 pub fn ranked_peers_for_item(scope: &ScopeVotes, item: &ItemId) -> Vec<RankedItem> {
@@ -479,5 +542,22 @@ mod tests {
         assert!(!ranked.iter().any(|r| r.item.as_str() == "delta"));
 
         assert!(ranked_peers_for_item(&scope, &ItemId::opaque("missing")).is_empty());
+    }
+
+    #[test]
+    fn sibling_votes_for_item_aggregates_and_sorts_by_score() {
+        let mut scope = mk_scope();
+        apply(&mut scope, vote(1, "alpha", "beta", 3, 1)); // alpha 75%
+        apply(&mut scope, vote(2, "alpha", "gamma", 1, 1)); // alpha 50%
+        apply(&mut scope, vote(3, "delta", "alpha", 4, 1)); // alpha is b → 1:4 → 20%
+
+        let rows = sibling_votes_for_item(&scope, &ItemId::opaque("alpha"));
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].other.as_str(), "beta");
+        assert!((rows[0].score() - 0.75).abs() < 1e-9);
+        assert_eq!(rows[1].other.as_str(), "gamma");
+        assert!((rows[1].score() - 0.5).abs() < 1e-9);
+        assert_eq!(rows[2].other.as_str(), "delta");
+        assert!((rows[2].score() - 0.2).abs() < 1e-9);
     }
 }

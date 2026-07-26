@@ -20,7 +20,8 @@ use crate::{
     },
     path_types::ItemId,
     ranking::{
-        ranked_items_subset, ranked_peers_for_item, scope_components, RankedItem, MAX_ITERS, TOL,
+        ranked_items_subset, ranked_peers_for_item, sibling_votes_for_item, scope_components,
+        RankedItem, SiblingVote, MAX_ITERS, TOL,
     },
     reducer::{GlobalTree, NodeState},
     skip::{for_jar as user_skips_for_jar, visible_unskipped_children},
@@ -466,6 +467,97 @@ fn peer_ranking_markup(
     Some((parent, ranked))
 }
 
+/// Head-to-head votes between `item` and each sibling it has been compared with.
+fn sibling_vote_rows(
+    item: &ItemId,
+    tree: &GlobalTree,
+    nsfw_ok: bool,
+    skipped: &HashSet<ItemId>,
+) -> Option<(ItemId, Vec<SiblingVote>)> {
+    let parent = item.parent()?;
+    let parent_node = tree.get(&parent)?;
+    let visible: HashSet<ItemId> = visible_unskipped_children(tree, &parent, nsfw_ok, skipped)
+        .into_iter()
+        .collect();
+    let rows: Vec<SiblingVote> = sibling_votes_for_item(&parent_node.votes, item)
+        .into_iter()
+        .filter(|v| visible.contains(&v.other))
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+    Some((parent, rows))
+}
+
+fn sibling_votes_list(
+    item: &ItemId,
+    parent: &ItemId,
+    rows: &[SiblingVote],
+    tree: &GlobalTree,
+    nsfw_ok: bool,
+) -> Markup {
+    html! {
+        h3 class="rank-heading muted small" { "Votes" }
+        ul class="rank-list item-votes-list" {
+            @for v in rows {
+                @let href = item_href(&v.other);
+                @let score = v.score();
+                @let style = rank_row_style(parent, score, 0.0, 1.0);
+                @let class = rank_row_class(&v.other, &HashSet::new());
+                @let ratio = format_vote_ratio(v.for_item, v.for_other);
+                li class=(format!("{class} item-vote-row"))
+                    data-item-vote-other=(v.other.as_str())
+                    data-item-vote-score=({ format!("{:.4}", score) })
+                    style=(style) {
+                    span class="item-vote-vs muted" { "vs " }
+                    @if let Some(row) = crate::render::reddit::child_row_markup(
+                        tree,
+                        &v.other,
+                        &href,
+                        nsfw_ok,
+                    ) {
+                        (row)
+                    } @else {
+                        a href=(href) {
+                            strong { (child_label(tree, &v.other)) }
+                        }
+                    }
+                    span class="muted" {
+                        " — "
+                        (ratio)
+                        " · "
+                        ({ format!("{:.0}%", score * 100.0) })
+                    }
+                    a class="item-vote-compare muted small"
+                        href=(vote::vote_compare_href_for_pin(parent, item, &v.other)) {
+                        "compare"
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn format_vote_ratio(for_item: f64, for_other: f64) -> String {
+    let scale = |w: f64| -> i32 {
+        if w <= 0.0 {
+            0
+        } else if w < 1.0 {
+            1
+        } else {
+            w.round().max(1.0) as i32
+        }
+    };
+    // Prefer small integers when weights are already near-integers (typical votes).
+    let left = scale(for_item);
+    let right = scale(for_other);
+    if left == 0 && right == 0 {
+        "0:0".into()
+    } else {
+        format!("{left}:{right}")
+    }
+}
+
 fn children_ranking_groups(
     item: &ItemId,
     node: &NodeState,
@@ -539,6 +631,11 @@ fn ranking_panel_inner(
     skipped: &HashSet<ItemId>,
     include_peers: bool,
 ) -> Markup {
+    let sibling_votes = if include_peers {
+        sibling_vote_rows(item, tree, nsfw_ok, skipped)
+    } else {
+        None
+    };
     let peer = if include_peers {
         peer_ranking_markup(item, tree, nsfw_ok, skipped)
     } else {
@@ -547,7 +644,8 @@ fn ranking_panel_inner(
     let (ranked_groups, unranked) = children_ranking_groups(item, node, tree, nsfw_ok, skipped);
     let has_children_ranked = !ranked_groups.is_empty();
     let multi = ranked_groups.len() > 1;
-    let has_any = peer.is_some() || has_children_ranked || !unranked.is_empty();
+    let has_any =
+        sibling_votes.is_some() || peer.is_some() || has_children_ranked || !unranked.is_empty();
 
     let mut peer_highlight = highlighted.clone();
     if peer.is_some() {
@@ -565,6 +663,9 @@ fn ranking_panel_inner(
                     }
                 }
             } @else {
+                @if let Some((parent, rows)) = &sibling_votes {
+                    (sibling_votes_list(item, parent, rows, tree, nsfw_ok))
+                }
                 @if let Some((parent, ranked)) = &peer {
                     (rank_list(
                         parent,
@@ -577,7 +678,7 @@ fn ranking_panel_inner(
                     ))
                 }
                 @for (gi, ranked) in ranked_groups.iter().enumerate() {
-                    @let label = if peer.is_some() {
+                    @let label = if sibling_votes.is_some() || peer.is_some() {
                         if multi {
                             format!("Children · group {}", gi + 1)
                         } else {
@@ -591,7 +692,7 @@ fn ranking_panel_inner(
                     (rank_list(item, &label, ranked, 1, highlighted, tree, nsfw_ok))
                 }
                 (unranked_list(
-                    if peer.is_some() || has_children_ranked {
+                    if sibling_votes.is_some() || peer.is_some() || has_children_ranked {
                         "Unranked children"
                     } else {
                         "Unranked"
