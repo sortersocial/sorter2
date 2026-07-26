@@ -11,10 +11,10 @@ use std::collections::HashSet;
 
 use crate::{
     auth::nav_pseudonym,
-    fetch::html::{entity_section, nsfw_enter_panel},
+    fetch::html::entity_section,
     form_template::template_json_compact,
     html::{ranking_panel_with_highlights, scope_theme_style, JsBuilder},
-    nsfw::{item_is_nsfw, nsfw_allowed},
+    nsfw::{item_is_nsfw, nsfw_allowed, nsfw_enter_panel},
     pair::{resolve_pair_in_pool, suggest_next_pair_in_pool, PairError},
     path_types::ItemId,
     reducer::{GlobalTree, NodeState, ScopeVotes, VoteData},

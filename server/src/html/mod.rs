@@ -13,9 +13,11 @@ use std::collections::HashSet;
 
 use crate::{
     auth::{config::sanitize_return_to, nav_pseudonym},
-    fetch::html::{entity_section, nsfw_enter_panel},
+    fetch::html::entity_section,
     form_template::template_json_compact,
-    nsfw::{item_is_nsfw, nsfw_allowed, nsfw_enter_cookie, nsfw_leave_cookie},
+    nsfw::{
+        item_is_nsfw, nsfw_allowed, nsfw_enter_cookie, nsfw_enter_panel, nsfw_leave_cookie,
+    },
     path_types::ItemId,
     ranking::{ranked_items_subset, scope_components, RankedItem, MAX_ITERS, TOL},
     reducer::{GlobalTree, NodeState},
