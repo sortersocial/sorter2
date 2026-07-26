@@ -567,7 +567,7 @@ async fn item_page(state: AppState, uri: Uri, item: ItemId, jar: CookieJar) -> M
             @if gated {
                 (nsfw_enter_panel(&return_to))
             } @else {
-                (entity_section(&item, node, false, nsfw_ok))
+                (entity_section(&item, node, None, nsfw_ok))
                 @if let Some(href) = vote_link {
                     p class="vote-cta" {
                         a class="btn-primary" href=(href) data-testid="vote-children" { "Vote on children" }
