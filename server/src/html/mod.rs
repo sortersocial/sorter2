@@ -498,63 +498,49 @@ fn sibling_votes_list(
 ) -> Markup {
     html! {
         h3 class="rank-heading muted small" { "Votes" }
-        ul class="rank-list item-votes-list" {
+        p class="muted small vote-edge-legend" {
+            "left: this item — right: opponent"
+        }
+        ul class="vote-edge-history item-votes-list" {
             @for v in rows {
                 @let href = item_href(&v.other);
                 @let score = v.score();
-                @let style = rank_row_style(parent, score, 0.0, 1.0);
+                @let label = vote::winner_text(v.ratio_left, v.ratio_right);
                 @let class = rank_row_class(&v.other, &HashSet::new());
-                @let ratio = format_vote_ratio(v.for_item, v.for_other);
-                li class=(format!("{class} item-vote-row"))
+                li class=(format!("vote-edge-history-row item-vote-row {class}"))
                     data-item-vote-other=(v.other.as_str())
                     data-item-vote-score=({ format!("{:.4}", score) })
-                    style=(style) {
-                    span class="item-vote-vs muted" { "vs " }
-                    @if let Some(row) = crate::render::reddit::child_row_markup(
-                        tree,
-                        &v.other,
-                        &href,
-                        nsfw_ok,
-                    ) {
-                        (row)
-                    } @else {
-                        a href=(href) {
-                            strong { (child_label(tree, &v.other)) }
+                    data-item-vote-left=(v.ratio_left)
+                    data-item-vote-right=(v.ratio_right) {
+                    div class="item-vote-opponent reddit-post-row" {
+                        span class="item-vote-vs muted" { "vs " }
+                        @if let Some(row) = crate::render::reddit::child_row_markup(
+                            tree,
+                            &v.other,
+                            &href,
+                            nsfw_ok,
+                        ) {
+                            (row)
+                        } @else {
+                            a href=(href) {
+                                strong { (child_label(tree, &v.other)) }
+                            }
+                        }
+                        a class="item-vote-compare muted small"
+                            href=(vote::vote_compare_href_for_pin(parent, item, &v.other)) {
+                            "compare"
                         }
                     }
-                    span class="muted" {
-                        " — "
-                        (ratio)
-                        " · "
-                        ({ format!("{:.0}%", score * 100.0) })
+                    div class="vote-edge-meta" {
+                        span class="vote-edge-ratio" {
+                            (format!("{}:{}", v.ratio_left, v.ratio_right))
+                        }
+                        span class="vote-edge-winner muted small" { " · " (label) }
                     }
-                    a class="item-vote-compare muted small"
-                        href=(vote::vote_compare_href_for_pin(parent, item, &v.other)) {
-                        "compare"
-                    }
+                    (vote::read_only_vote_slider(v.ratio_left, v.ratio_right))
                 }
             }
         }
-    }
-}
-
-fn format_vote_ratio(for_item: f64, for_other: f64) -> String {
-    let scale = |w: f64| -> i32 {
-        if w <= 0.0 {
-            0
-        } else if w < 1.0 {
-            1
-        } else {
-            w.round().max(1.0) as i32
-        }
-    };
-    // Prefer small integers when weights are already near-integers (typical votes).
-    let left = scale(for_item);
-    let right = scale(for_other);
-    if left == 0 && right == 0 {
-        "0:0".into()
-    } else {
-        format!("{left}:{right}")
     }
 }
 

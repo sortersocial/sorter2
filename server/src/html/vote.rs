@@ -89,7 +89,7 @@ fn edge_votes(scope: &ScopeVotes, left: &ItemId, right: &ItemId) -> Vec<VoteData
 }
 
 /// HUD `data-winner` value: which side the ratio favours on this page.
-fn winner_side(r_left: i32, r_right: i32) -> &'static str {
+pub(crate) fn winner_side(r_left: i32, r_right: i32) -> &'static str {
     if r_left > r_right {
         "left"
     } else if r_right > r_left {
@@ -99,7 +99,7 @@ fn winner_side(r_left: i32, r_right: i32) -> &'static str {
     }
 }
 
-fn winner_text(r_left: i32, r_right: i32) -> &'static str {
+pub(crate) fn winner_text(r_left: i32, r_right: i32) -> &'static str {
     match winner_side(r_left, r_right) {
         "left" => "left wins",
         "right" => "right wins",
@@ -109,7 +109,7 @@ fn winner_text(r_left: i32, r_right: i32) -> &'static str {
 
 /// Map stored ratios to the live slider position (0 = full left, 100 = full right).
 /// Matches `sorter_ui.js`: `left = 100 - v`, `right = v`.
-fn slider_value_from_ratios(r_left: i32, r_right: i32) -> i32 {
+pub(crate) fn slider_value_from_ratios(r_left: i32, r_right: i32) -> i32 {
     let l = r_left.max(0) as f64;
     let r = r_right.max(0) as f64;
     let sum = l + r;
@@ -117,6 +117,21 @@ fn slider_value_from_ratios(r_left: i32, r_right: i32) -> i32 {
         return 50;
     }
     ((r / sum) * 100.0).round().clamp(0.0, 100.0) as i32
+}
+
+/// Read-only preference slider matching the vote HUD / edge-history control.
+pub(crate) fn read_only_vote_slider(r_left: i32, r_right: i32) -> Markup {
+    let slider_val = slider_value_from_ratios(r_left, r_right);
+    let side = winner_side(r_left, r_right);
+    html! {
+        label class="vote-hud-slider vote-edge-slider" aria-hidden="true" {
+            input type="range" class="vote-edge-range" min="0" max="100" value=(slider_val)
+                data-winner=(side)
+                style={(format!("--vote-slider-pct: {}%;", slider_val))}
+                disabled
+                tabindex="-1";
+        }
+    }
 }
 
 fn vote_edge_history(
@@ -142,21 +157,13 @@ fn vote_edge_history(
             ul class="vote-edge-history" {
                 @for v in &votes {
                     @let (r_left, r_right) = ratios_for_page(v, left, right);
-                    @let slider_val = slider_value_from_ratios(r_left, r_right);
-                    @let side = winner_side(r_left, r_right);
                     @let label = winner_text(r_left, r_right);
                     li class="vote-edge-history-row" {
                         div class="vote-edge-meta" {
                             span class="vote-edge-ratio" { (format!("{}:{}", r_left, r_right)) }
                             span class="vote-edge-winner muted small" { " · " (label) }
                         }
-                        label class="vote-hud-slider vote-edge-slider" aria-hidden="true" {
-                            input type="range" class="vote-edge-range" min="0" max="100" value=(slider_val)
-                                data-winner=(side)
-                                style={(format!("--vote-slider-pct: {}%;", slider_val))}
-                                disabled
-                                tabindex="-1";
-                        }
+                        (read_only_vote_slider(r_left, r_right))
                     }
                 }
             }
