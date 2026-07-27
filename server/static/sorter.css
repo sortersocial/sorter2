@@ -429,7 +429,7 @@ code {
   height: 64px;
   object-fit: cover;
   border-radius: 0;
-  border: 1px solid var(--border);
+  border: none;
 }
 
 .reddit-post-url a {
@@ -445,7 +445,7 @@ code {
   max-width: 100%;
   height: auto;
   border-radius: 0;
-  border: 1px solid var(--border);
+  border: none;
 }
 
 .scope-name {
@@ -933,7 +933,9 @@ h1 {
 
 @media (max-width: 640px) {
   .scope-theme {
+    --page-inline: 0.75rem;
     padding: 0.75rem;
+    padding-inline: var(--page-inline);
     padding-bottom: 0.5rem;
     overflow-x: clip;
   }
@@ -967,7 +969,11 @@ h1 {
 
   .vote-compare-pair[data-winner="even"] {
     grid-template-columns: 1fr 1fr;
-    gap: 0.5rem;
+    /* Flush to screen edges; no gap so halves meet. */
+    gap: 0;
+    margin-left: calc(-1 * var(--page-inline));
+    margin-right: calc(-1 * var(--page-inline));
+    width: calc(100% + 2 * var(--page-inline));
   }
 
   .vote-compare-pair[data-winner="even"] .vote-compare-side {
@@ -977,12 +983,21 @@ h1 {
   .vote-compare-pair[data-winner="even"] .entity-card h2 {
     font-size: 0.95rem;
     line-height: 1.25;
+    padding-inline: 0.5rem;
   }
 
   .vote-compare-pair[data-winner="even"] .entity-body,
   .vote-compare-pair[data-winner="even"] .reddit-post-url,
   .vote-compare-pair[data-winner="even"] .fetch-controls {
     display: none;
+  }
+
+  .vote-compare-pair[data-winner="even"] .reddit-post-figure {
+    /* Parent pair is already full-bleed; don't double 100vw. */
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
+    margin-right: 0;
   }
 
   .vote-compare-pair[data-winner="even"] .reddit-post-image {
@@ -992,7 +1007,9 @@ h1 {
   }
 
   .vote-compare-pair[data-winner="even"] .entity-section {
-    padding: 0.65rem;
+    padding: 0;
+    border-left: none;
+    border-right: none;
   }
 
   .vote-compare-side {
@@ -1001,13 +1018,25 @@ h1 {
 
   .vote-compare-side .entity-section {
     overflow-wrap: anywhere;
+    overflow: visible;
+  }
+
+  /* Full-bleed: every image pixel touches the phone screen edges. */
+  .reddit-post-figure {
+    width: 100vw;
+    max-width: 100vw;
+    margin-left: calc(50% - 50vw);
+    margin-right: calc(50% - 50vw);
   }
 
   .reddit-post-image {
-    max-height: min(55vh, 22rem);
     width: 100%;
-    object-fit: contain;
-    background: color-mix(in oklch, var(--panel) 70%, black);
+    max-width: none;
+    height: auto;
+    max-height: none;
+    object-fit: unset;
+    background: transparent;
+    border: none;
   }
 
   .vote-hud-inner {
