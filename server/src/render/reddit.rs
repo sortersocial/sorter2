@@ -28,6 +28,7 @@ pub fn entity_markup(node: &NodeState, nsfw_ok: bool) -> Option<Markup> {
         node_is_nsfw(node),
         nsfw_ok,
         &node.id.browse_href(),
+        &node.id.to_browse_url(),
     ))
 }
 
@@ -66,7 +67,13 @@ pub fn child_row_markup(tree: &GlobalTree, id: &ItemId, href: &str, nsfw_ok: boo
     })
 }
 
-fn post_entity_card(data: &EntityData, is_nsfw: bool, nsfw_ok: bool, return_to: &str) -> Markup {
+fn post_entity_card(
+    data: &EntityData,
+    is_nsfw: bool,
+    nsfw_ok: bool,
+    return_to: &str,
+    item_url: &str,
+) -> Markup {
     let image = data.image_url.as_ref().or(data.thumb_url.as_ref());
     let gated = is_nsfw && !nsfw_ok;
     if gated {
@@ -84,14 +91,16 @@ fn post_entity_card(data: &EntityData, is_nsfw: bool, nsfw_ok: bool, return_to: 
                     " adult Reddit content"
                 }
             }
-            @if let Some(url) = &data.link_url {
+            @if !item_url.is_empty() {
                 p class="reddit-post-url muted small" {
-                    a href=(url) rel="noopener noreferrer" { (url) }
+                    a href=(item_url) target="_blank" rel="noopener noreferrer" { (item_url) }
                 }
             }
             @if let Some(src) = image {
                 figure class="reddit-post-figure" {
-                    img class="reddit-post-image" src=(src) alt="" loading="lazy";
+                    a class="reddit-post-image-link" href=(item_url) target="_blank" rel="noopener noreferrer" {
+                        img class="reddit-post-image" src=(src) alt="" loading="lazy";
+                    }
                 }
             }
             @if let Some(body) = &data.body_html {
@@ -142,7 +151,19 @@ mod tests {
         let html = entity_markup(&nsfw_node(), true).unwrap().into_string();
         assert!(html.contains("adult body"));
         assert!(html.contains("https://example.com/image.jpg"));
-        assert!(html.contains("https://example.com/out"));
+        assert!(
+            html.contains("https://reddit.com/r/nsfw/comments/abc"),
+            "link and image should use the item URL: {html}"
+        );
+        assert!(
+            html.contains("target=\"_blank\""),
+            "item links must open in a new tab: {html}"
+        );
+        assert!(
+            html.contains("reddit-post-image-link"),
+            "image should be wrapped in a link: {html}"
+        );
+        assert!(!html.contains("https://example.com/out"));
         assert!(!html.contains("nsfw-gate"));
     }
 
